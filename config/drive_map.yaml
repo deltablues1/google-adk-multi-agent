@@ -1,0 +1,47 @@
+# Canonical Drive Map
+# Defines the standard folder structure for the ADK System.
+# The DriveNavigator tool uses this to ensure folders exist and to resolve aliases.
+
+structure:
+  root:
+    name: "ADK_Workspace"
+    alias: "root"
+    description: "Root folder for all ADK operations"
+    subfolders:
+      - name: "Invoices_Input"
+        alias: "invoices_input"
+        description: "Drop new invoices here for processing"
+      
+      - name: "Invoices_Archive"
+        alias: "invoices_archive"
+        description: "Processed invoices are moved here"
+      
+      - name: "ADK_Brain"
+        alias: "brain"
+        description: "Knowledge Base: Drop PDFs/Docs here for RAG ingestion"
+      
+      - name: "Reports_Output"
+        alias: "reports"
+        description: "Generated reports and summaries are saved here"
+      
+      - name: "Temp_Work"
+        alias: "temp"
+        description: "Temporary working directory for agents"
+
+      - name: "Company_Knowledge"
+        alias: "company"
+        description: "Company information, policies, procedures (RAG ingestion)"
+
+      - name: "Expense_Receipts"
+        alias: "expense_receipts"
+        description: "Receipt images for expense agent OCR processing"
+
+      - name: "Marketing_Assets"
+        alias: "marketing"
+        description: "Generated marketing images/videos from Marketing agent"
+
+# Folder IDs will be cached here at runtime (or can be hardcoded if known)
+# Do not edit manually unless you know the IDs.
+cache:
+  root_id: null
+  folders: {}

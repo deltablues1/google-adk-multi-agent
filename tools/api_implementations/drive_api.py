@@ -1,0 +1,750 @@
+"""
+Google Drive API Implementation
+
+Real Drive API functions using Google Drive API v3
+"""
+
+from typing import Dict, Any, List, Optional
+from google.oauth2.credentials import Credentials
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
+import io
+import logging
+
+from tools.resilience.retry_handler import with_retry, RetryConfig
+from tools.resilience.circuit_breaker import with_circuit_breaker
+from tools.resilience.rate_limiter import with_rate_limit
+from tools.resilience.cache import with_cache
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# DRIVE API FUNCTIONS
+# ============================================================================
+
+@with_circuit_breaker("drive")
+@with_cache("drive", ttl=600, user_id_param="credentials")  # Cache for 10 min (file metadata changes less frequently)
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_search_files(
+    credentials: Credentials,
+    query: str,
+    max_results: int = 10,
+    order_by: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Search for files in Google Drive
+
+    Args:
+        credentials: OAuth2 credentials
+        query: Search query (Drive Query Language or natural language)
+        max_results: Maximum number of files to return (use 1000 for all results)
+        order_by: Sort order (e.g., 'modifiedTime desc', 'name')
+
+    Returns:
+        Dictionary with list of files
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Searching Drive files: query='{query}', max={max_results}")
+
+        # Collect all files across pages
+        all_files = []
+        page_token = None
+        page_num = 0
+
+        # Drive API max pageSize is 1000
+        page_size = min(max_results, 1000)
+
+        while True:
+            page_num += 1
+
+            # Build request with pagination
+            request_params = {
+                'q': query,
+                'pageSize': page_size,
+                'fields': 'nextPageToken, files(id, name, mimeType, modifiedTime, size, webViewLink, owners)'
+            }
+
+            if order_by:
+                request_params['orderBy'] = order_by
+
+            if page_token:
+                request_params['pageToken'] = page_token
+
+            # Execute search
+            results = service.files().list(**request_params).execute()
+            files = results.get('files', [])
+            all_files.extend(files)
+
+            logger.info(f"Page {page_num}: Found {len(files)} files (total: {len(all_files)})")
+
+            # Check if we have more pages
+            page_token = results.get('nextPageToken')
+
+            # Stop if no more pages or reached max_results
+            if not page_token or len(all_files) >= max_results:
+                break
+
+        # Trim to max_results if needed
+        if len(all_files) > max_results:
+            all_files = all_files[:max_results]
+
+        logger.info(f"Total found: {len(all_files)} files")
+
+        return {
+            'files': all_files,
+            'count': len(all_files),
+            'query': query
+        }
+
+    except HttpError as e:
+        logger.error(f"Drive search failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_search_files: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_cache("drive", ttl=600, user_id_param="credentials")  # Cache for 10 min (metadata changes less frequently)
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_get_file(
+    credentials: Credentials,
+    file_id: str,
+    include_content: bool = False
+) -> Dict[str, Any]:
+    """
+    Get metadata and optionally content of a specific file
+
+    Args:
+        credentials: OAuth2 credentials
+        file_id: Google Drive file ID
+        include_content: Whether to download file content
+
+    Returns:
+        Dictionary with file metadata and optionally content
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Getting Drive file: {file_id}, include_content={include_content}")
+
+        # Get file metadata
+        file_metadata = service.files().get(
+            fileId=file_id,
+            fields='id, name, mimeType, size, createdTime, modifiedTime, webViewLink, owners, permissions, parents, trashed'
+        ).execute()
+
+        result = {
+            'metadata': file_metadata
+        }
+
+        # Download content if requested
+        if include_content:
+            logger.info(f"Downloading file content: {file_id}")
+
+            # Check if file is a Google Workspace doc (needs export)
+            mime_type = file_metadata.get('mimeType', '')
+
+            if mime_type.startswith('application/vnd.google-apps'):
+                # Export Google Workspace files
+                export_mime = _get_export_mime_type(mime_type)
+                request = service.files().export_media(fileId=file_id, mimeType=export_mime)
+            else:
+                # Download regular files
+                request = service.files().get_media(fileId=file_id)
+
+            # Download to bytes
+            file_content = io.BytesIO()
+            downloader = request.execute()
+
+            # Handle content based on type
+            if isinstance(downloader, bytes):
+                # Check if it looks like text or binary based on mime_type
+                is_text = mime_type.startswith('text/') or mime_type in [
+                    'application/json', 'application/xml', 'application/javascript', 
+                    'application/x-yaml'
+                ]
+                
+                if is_text:
+                    try:
+                        result['content'] = downloader.decode('utf-8')
+                        result['encoding'] = 'utf-8'
+                    except UnicodeDecodeError:
+                        # Fallback to base64 if decoding fails
+                        import base64
+                        result['content'] = base64.b64encode(downloader).decode('utf-8')
+                        result['encoding'] = 'base64'
+                else:
+                    # Binary content (images, pdfs, etc.) -> Base64
+                    import base64
+                    result['content'] = base64.b64encode(downloader).decode('utf-8')
+                    result['encoding'] = 'base64'
+            else:
+                result['content'] = str(downloader)
+                result['encoding'] = 'str'
+            
+            result['content_size'] = len(downloader) if isinstance(downloader, bytes) else 0
+
+        logger.info(f"File retrieved successfully: {file_metadata.get('name')}")
+
+        return result
+
+    except HttpError as e:
+        logger.error(f"Failed to get Drive file: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_get_file: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_upload_file(
+    credentials: Credentials,
+    file_name: str,
+    content: str,
+    mime_type: str,
+    parent_folder_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Upload a new file to Google Drive
+
+    Args:
+        credentials: OAuth2 credentials
+        file_name: Name of the file
+        content: File content (text or base64 encoded)
+        mime_type: MIME type of the file
+        parent_folder_id: Optional parent folder ID
+
+    Returns:
+        Dictionary with uploaded file details
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Uploading file to Drive: {file_name}")
+
+        # Prepare file metadata
+        file_metadata = {
+            'name': file_name,
+            'mimeType': mime_type
+        }
+
+        if parent_folder_id:
+            file_metadata['parents'] = [parent_folder_id]
+
+        # Determine if content is base64 (for binary files)
+        # Binary MIME types should be base64 encoded
+        binary_mime_types = [
+            'application/pdf',
+            'application/zip',
+            'application/octet-stream',
+            'image/',
+            'video/',
+            'audio/'
+        ]
+
+        is_binary = any(mime_type.startswith(prefix) for prefix in binary_mime_types)
+
+        # Decode base64 for binary files, encode UTF-8 for text files
+        if is_binary:
+            import base64
+            try:
+                # Assume content is base64 encoded for binary files
+                file_bytes = base64.b64decode(content)
+                logger.info(f"Decoded base64 content: {len(file_bytes)} bytes")
+            except Exception as e:
+                logger.warning(f"Failed to decode base64, treating as raw bytes: {e}")
+                file_bytes = content.encode('utf-8')
+        else:
+            # Text files - encode as UTF-8
+            file_bytes = content.encode('utf-8')
+
+        # Create media upload
+        media = MediaIoBaseUpload(
+            io.BytesIO(file_bytes),
+            mimetype=mime_type,
+            resumable=True
+        )
+
+        # Upload file
+        uploaded_file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, name, mimeType, webViewLink'
+        ).execute()
+
+        logger.info(f"File uploaded successfully: {uploaded_file['id']}")
+
+        return {
+            'id': uploaded_file['id'],
+            'name': uploaded_file['name'],
+            'mime_type': uploaded_file['mimeType'],
+            'web_view_link': uploaded_file.get('webViewLink'),
+            'status': 'uploaded'
+        }
+
+    except HttpError as e:
+        logger.error(f"Failed to upload Drive file: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_upload_file: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_update_file(
+    credentials: Credentials,
+    file_id: str,
+    content: Optional[str] = None,
+    name: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Update an existing file's content or metadata
+
+    Args:
+        credentials: OAuth2 credentials
+        file_id: Google Drive file ID
+        content: New file content (optional)
+        name: New file name (optional)
+
+    Returns:
+        Dictionary with updated file details
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Updating Drive file: {file_id}")
+
+        # Prepare update
+        file_metadata = {}
+        if name:
+            file_metadata['name'] = name
+
+        media = None
+        if content:
+            # Get current mime type
+            current_file = service.files().get(fileId=file_id, fields='mimeType').execute()
+            mime_type = current_file.get('mimeType', 'text/plain')
+
+            media = MediaIoBaseUpload(
+                io.BytesIO(content.encode('utf-8')),
+                mimetype=mime_type,
+                resumable=True
+            )
+
+        # Update file
+        updated_file = service.files().update(
+            fileId=file_id,
+            body=file_metadata if file_metadata else None,
+            media_body=media,
+            fields='id, name, mimeType, modifiedTime'
+        ).execute()
+
+        logger.info(f"File updated successfully: {file_id}")
+
+        return {
+            'id': updated_file['id'],
+            'name': updated_file['name'],
+            'mime_type': updated_file['mimeType'],
+            'modified_time': updated_file.get('modifiedTime'),
+            'status': 'updated'
+        }
+
+    except HttpError as e:
+        logger.error(f"Failed to update Drive file: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_update_file: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_delete_file(
+    credentials: Credentials,
+    file_id: str
+) -> Dict[str, Any]:
+    """
+    Move a file to trash (soft delete)
+
+    Args:
+        credentials: OAuth2 credentials
+        file_id: Google Drive file ID
+
+    Returns:
+        Dictionary with deletion status
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Deleting Drive file: {file_id}")
+
+        # Move to trash
+        service.files().delete(fileId=file_id).execute()
+
+        logger.info(f"File deleted successfully: {file_id}")
+
+        return {
+            'id': file_id,
+            'status': 'deleted'
+        }
+
+    except HttpError as e:
+        logger.error(f"Failed to delete Drive file: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_delete_file: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_share_file(
+    credentials: Credentials,
+    file_id: str,
+    email: Optional[str] = None,
+    role: str = "reader",
+    type: str = "user"
+) -> Dict[str, Any]:
+    """
+    Share a file with users or make it publicly accessible
+
+    Args:
+        credentials: OAuth2 credentials
+        file_id: Google Drive file ID
+        email: Email address to share with (omit for public sharing)
+        role: Permission role ('reader', 'writer', 'commenter')
+        type: Permission type ('user', 'group', 'domain', 'anyone')
+
+    Returns:
+        Dictionary with sharing details
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Sharing Drive file: {file_id} with {email or 'public'}")
+
+        # Prepare permission
+        permission = {
+            'type': type,
+            'role': role
+        }
+
+        if email and type in ['user', 'group']:
+            permission['emailAddress'] = email
+
+        # Create permission
+        created_permission = service.permissions().create(
+            fileId=file_id,
+            body=permission,
+            fields='id, type, role, emailAddress'
+        ).execute()
+
+        logger.info(f"File shared successfully: {file_id}")
+
+        return {
+            'file_id': file_id,
+            'permission_id': created_permission['id'],
+            'type': created_permission['type'],
+            'role': created_permission['role'],
+            'email': created_permission.get('emailAddress'),
+            'status': 'shared'
+        }
+
+    except HttpError as e:
+        logger.error(f"Failed to share Drive file: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_share_file: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_create_folder(
+    credentials: Credentials,
+    folder_name: str,
+    parent_folder_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Create a new folder in Google Drive
+
+    Args:
+        credentials: OAuth2 credentials
+        folder_name: Name of the folder
+        parent_folder_id: Optional parent folder ID
+
+    Returns:
+        Dictionary with created folder details
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Creating Drive folder: {folder_name}")
+
+        # Prepare folder metadata
+        folder_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder'
+        }
+
+        if parent_folder_id:
+            folder_metadata['parents'] = [parent_folder_id]
+
+        # Create folder
+        folder = service.files().create(
+            body=folder_metadata,
+            fields='id, name, webViewLink'
+        ).execute()
+
+        logger.info(f"Folder created successfully: {folder['id']}")
+
+        return {
+            'id': folder['id'],
+            'name': folder['name'],
+            'web_view_link': folder.get('webViewLink'),
+            'status': 'created'
+        }
+
+    except HttpError as e:
+        logger.error(f"Failed to create Drive folder: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_create_folder: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_move_file(
+    credentials: Credentials,
+    file_id: str,
+    new_parent_id: str
+) -> Dict[str, Any]:
+    """
+    Move a file to a different folder
+
+    Args:
+        credentials: OAuth2 credentials
+        file_id: Google Drive file ID
+        new_parent_id: ID of the destination folder
+
+    Returns:
+        Dictionary with move status
+
+    Raises:
+        HttpError: If API call fails
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        logger.info(f"Moving Drive file: {file_id} to {new_parent_id}")
+
+        # Get current parents
+        file = service.files().get(fileId=file_id, fields='parents').execute()
+        previous_parents = ",".join(file.get('parents', []))
+
+        # Move file
+        moved_file = service.files().update(
+            fileId=file_id,
+            addParents=new_parent_id,
+            removeParents=previous_parents,
+            fields='id, parents'
+        ).execute()
+
+        logger.info(f"File moved successfully: {file_id}")
+
+        return {
+            'id': moved_file['id'],
+            'parents': moved_file.get('parents', []),
+            'status': 'moved'
+        }
+
+    except HttpError as e:
+        logger.error(f"Failed to move Drive file: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_move_file: {e}")
+        raise
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def _get_export_mime_type(google_mime_type: str) -> str:
+    """
+    Get export MIME type for Google Workspace documents
+
+    Args:
+        google_mime_type: Google Workspace MIME type
+
+    Returns:
+        Export MIME type
+    """
+    export_map = {
+        'application/vnd.google-apps.document': 'text/plain',
+        'application/vnd.google-apps.spreadsheet': 'text/csv',
+        'application/vnd.google-apps.presentation': 'text/plain',
+    }
+    return export_map.get(google_mime_type, 'text/plain')
+
+
+# ============================================================================
+# TOOL REGISTRATION
+# ============================================================================
+
+def register_drive_tools(tool_registry):
+    """
+    Register all Drive tools in the tool registry
+
+    Args:
+        tool_registry: ToolRegistry instance
+    """
+    # drive_search_files
+    tool_registry.register_tool(
+        name="drive_search_files",
+        function=drive_search_files,
+        description="Search for files in Google Drive using Drive Query Language (DQL) or natural language.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {"type": "integer", "description": "Maximum number of files (default: 10)", "default": 10},
+                "order_by": {"type": "string", "description": "Sort order (e.g., 'modifiedTime desc')"}
+            },
+            "required": ["query"]
+        }
+    )
+
+    # drive_get_file
+    tool_registry.register_tool(
+        name="drive_get_file",
+        function=drive_get_file,
+        description="Get metadata and content of a specific file by ID.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "Google Drive file ID"},
+                "include_content": {"type": "boolean", "description": "Download file content", "default": False}
+            },
+            "required": ["file_id"]
+        }
+    )
+
+    # drive_upload_file
+    tool_registry.register_tool(
+        name="drive_upload_file",
+        function=drive_upload_file,
+        description="Upload a new file to Google Drive.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_name": {"type": "string", "description": "File name"},
+                "content": {"type": "string", "description": "File content"},
+                "mime_type": {"type": "string", "description": "MIME type"},
+                "parent_folder_id": {"type": "string", "description": "Parent folder ID (optional)"}
+            },
+            "required": ["file_name", "content", "mime_type"]
+        }
+    )
+
+    # Other tools...
+    tool_registry.register_tool(name="drive_update_file", function=drive_update_file, description="Update file", parameters={"type": "object", "properties": {"file_id": {"type": "string"}}, "required": ["file_id"]})
+    tool_registry.register_tool(name="drive_delete_file", function=drive_delete_file, description="Delete file", parameters={"type": "object", "properties": {"file_id": {"type": "string"}}, "required": ["file_id"]})
+    # drive_share_file
+    tool_registry.register_tool(
+        name="drive_share_file",
+        function=drive_share_file,
+        description="Share a Google Drive file with users or make it publicly accessible. Use type='anyone' for public sharing.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "description": "Google Drive file ID to share"
+                },
+                "email": {
+                    "type": "string",
+                    "description": "Email address to share with (omit for public sharing)"
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Permission role: 'reader' (view only), 'writer' (can edit), 'commenter' (can comment)",
+                    "enum": ["reader", "writer", "commenter"],
+                    "default": "reader"
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Permission type: 'user' (specific user), 'group', 'domain', 'anyone' (public)",
+                    "enum": ["user", "group", "domain", "anyone"],
+                    "default": "user"
+                }
+            },
+            "required": ["file_id"]
+        },
+        requires_auth=True,
+        auth_type="oauth"
+    )
+    tool_registry.register_tool(name="drive_create_folder", function=drive_create_folder, description="Create folder", parameters={"type": "object", "properties": {"folder_name": {"type": "string"}}, "required": ["folder_name"]})
+    tool_registry.register_tool(name="drive_move_file", function=drive_move_file, description="Move file", parameters={"type": "object", "properties": {"file_id": {"type": "string"}, "new_parent_id": {"type": "string"}}, "required": ["file_id", "new_parent_id"]})
+
+    logger.info("Drive tools registered successfully")

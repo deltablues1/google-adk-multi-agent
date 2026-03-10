@@ -1,0 +1,8 @@
+sku,name,description,category,kpd_code,unit,price,vat_rate,currency,stock_quantity,supplier,active
+USLUGA-001,"Elektroinstalacijski radovi","Elektroinstalacijski radovi - sat rada",Usluge,43.21.10,h,50.00,25,EUR,0,,true
+USLUGA-002,"IT konzalting","Savjetovanje u vezi s racunalima - sat rada",Usluge,62.02.10,h,75.00,25,EUR,0,,true
+USLUGA-003,"Web razvoj","Izrada web stranica i aplikacija - sat rada",Usluge,62.01.11,h,80.00,25,EUR,0,,true
+MATERIJAL-001,"Kabel NYM-J 3x2.5","Elektricni kabel NYM-J 3x2.5mm2 - metar",Materijal,27.32.13,m,2.50,25,EUR,100,"Dobavljac materijala d.o.o.",true
+MATERIJAL-002,"Prekidac jednostruki","Prekidac jednostruki bijeli",Materijal,27.33.13,kom,5.00,25,EUR,50,"Dobavljac materijala d.o.o.",true
+MATERIJAL-003,"LED panel 60x60","LED stropni panel 60x60cm 40W",Materijal,27.40.25,kom,35.00,25,EUR,20,,true
+PROIZVOD-001,"Smart Home kontroler","IoT kontroler za pametnu kucu",Proizvodi,26.20.11,kom,150.00,25,EUR,10,,true

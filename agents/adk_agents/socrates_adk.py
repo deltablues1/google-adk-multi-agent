@@ -1,0 +1,177 @@
+"""
+Socrates ADK Agent Wrapper
+
+Wrapper around the existing philosophy/Socrates agent for orchestrator integration.
+Maintains the original custom BaseAgent implementation while making it accessible
+via standard orchestrator routing.
+
+The Socrates agent uses:
+- Gemini 3.0 Pro Preview with "Thinking Mode" for deep reasoning
+- Philosophy RAG tool for knowledge base access
+- Socratic method: Responds with questions, not answers
+- Never leaves character as ancient Greek philosopher
+
+Usage:
+    from agents.adk_agents.socrates_adk import get_socrates_agent
+
+    # Get the existing Socrates agent
+    socrates = get_socrates_agent()
+
+    # Can be used as sub-agent in orchestrator
+    orchestrator = create_smart_orchestrator(
+        worker_agents=[socrates, ...]
+    )
+"""
+
+from typing import Optional
+import logging
+import sys
+import os
+
+# Add project root to path
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+    from dotenv import load_dotenv
+    load_dotenv()
+
+from google.adk.agents import LlmAgent
+
+logger = logging.getLogger(__name__)
+
+
+def create_socrates_agent(
+    model: str = "gemini-2.5-pro",  # Tier 2: Deep philosophical reasoning
+    credentials=None
+) -> LlmAgent:
+    """
+    Create or return the Socrates philosophy agent.
+
+    This agent specializes in:
+    - Socratic method: Teaching through questions, not answers
+    - Deep philosophical reasoning with Gemini 3.0 "Thinking Mode"
+    - Philosophy knowledge base (RAG) for historical context
+    - Never breaking character as ancient Greek philosopher
+    - Using counter-questions to challenge user assumptions
+    - Analogies and reductio ad absurdum techniques
+
+    IMPORTANT: This is a wrapper around the existing custom implementation
+    in agents/philosophy/philosophy_agents.py. It maintains the original
+    Socratic dialogue system.
+
+    Args:
+        model: Gemini model (default: "gemini-3-pro-preview" for Thinking Mode)
+        credentials: Optional OAuth2 credentials (not used by philosophy agent)
+
+    Returns:
+        LlmAgent instance configured for Socratic dialogue
+
+    Example:
+        >>> socrates = create_socrates_agent()
+        >>> # User: "Sokrat, što je istina?"
+        >>> # Socrates: "Zanimljivo pitanje! Ali reci mi prvo - kako znaš da je nešto istinito?"
+    """
+
+    try:
+        # Import the existing Socrates agent from philosophy module
+        from agents.philosophy.philosophy_agents import socrates_agent
+
+        logger.info("Loaded existing Socrates agent from philosophy module")
+        logger.info("Model: Gemini 3.0 Pro Preview (Thinking Mode enabled)")
+        logger.info("Method: Socratic dialogue (RAG knowledge base if available)")
+
+        return socrates_agent
+
+    except Exception as e:
+        logger.error(f"Failed to import Socrates agent: {e}")
+        logger.warning("Creating fallback Socrates agent without RAG")
+
+        # Fallback: Create a basic Socrates agent without RAG
+        from google.adk.agents import LlmAgent
+
+        fallback_agent = LlmAgent(
+            name="Socrates",
+            model="gemini-2.5-pro",  # Tier 2: Deep reasoning
+            tools=[],
+            instruction="""
+            Ti si Sokrat, antički grčki filozof. Tvoj cilj nije dati odgovor, već voditi učenika do spoznaje.
+
+            Pravila:
+            1. Nikada ne odgovaraj direktno na pitanje.
+            2. Uvijek odgovaraj protu-pitanjem koje izaziva pretpostavku korisnika.
+            3. Koristi analogije iz svakodnevnog života.
+            4. Ako korisnik tvrdi nešto nelogično, koristi 'reductio ad absurdum'.
+            5. Nikada ne izlazi iz lika. Ti si antički filozof.
+            6. Budi strpljiv, ali intelektualno rigorozan.
+
+            Primjeri:
+            - Korisnik: "Što je istina?"
+              Sokrat: "Zanimljivo pitanje! Ali reci mi prvo - kako znaš da je nešto istinito? Po čemu prepoznaješ istinu?"
+
+            - Korisnik: "Novac donosi sreću."
+              Sokrat: "Fascinantno! Znači li to da je najbogatiji čovjek ujedno i najsretniji? A što kažeš na siromašnog čovjeka koji se smije?"
+            """
+        )
+
+        logger.info("Created fallback Socrates agent (no RAG)")
+        return fallback_agent
+
+
+# Create singleton instance for easy import
+socrates_agent = None
+
+
+def get_socrates_agent(
+    model: str = "gemini-3-pro-preview",
+    credentials=None
+) -> LlmAgent:
+    """
+    Get or create singleton Socrates agent instance.
+
+    Args:
+        model: Gemini model
+        credentials: Optional OAuth2 credentials
+
+    Returns:
+        LlmAgent instance
+    """
+    global socrates_agent
+
+    if socrates_agent is None:
+        socrates_agent = create_socrates_agent(
+            model=model,
+            credentials=credentials
+        )
+
+    return socrates_agent
+
+
+if __name__ == "__main__":
+    # Test agent creation
+    import asyncio
+
+    async def test():
+        agent = create_socrates_agent()
+        print(f"[OK] Socrates agent loaded: {agent.name}")
+        print(f"   Model: {agent.model if hasattr(agent, 'model') else 'Custom Model'}")
+        print(f"   Description: Socratic dialogue specialist")
+        print(f"   Tools: {len(agent.tools) if hasattr(agent, 'tools') else 'Unknown'}")
+
+        print(f"\n[CAPABILITIES] Socratic Method:")
+        print("   - Teaching through questions, not answers")
+        print("   - Deep philosophical reasoning")
+        print("   - Philosophy knowledge base (RAG)")
+        print("   - Counter-questions to challenge assumptions")
+        print("   - Analogies and reductio ad absurdum")
+
+        print(f"\n[USAGE] Keyword Triggers:")
+        print("   - 'Sokrat' / 'Socrates'")
+        print("   - 'filozofija' / 'philosophy'")
+        print("   - Direct philosophical questions")
+
+        print(f"\n[EXAMPLE DIALOGUE]:")
+        print("   User: Sokrat, što je istina?")
+        print("   Socrates: Zanimljivo pitanje! Ali reci mi prvo - kako znaš da je nešto istinito?")
+        print("   User: Pa... to je očito.")
+        print("   Socrates: Očito? Znači li to da je sve što ti je očito istinito? A što ako se prevaraš?")
+
+    asyncio.run(test())

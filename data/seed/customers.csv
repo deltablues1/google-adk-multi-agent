@@ -1,0 +1,6 @@
+name,oib,vat_id,type,category,email,phone,address,city,postal_code,country,iban,contact_person,payment_terms_days,notes
+"Primjer d.o.o.",12345678901,HR12345678901,customer,B2B,info@primjer.hr,+385 1 234 5678,"Ilica 1",Zagreb,10000,HR,HR1234567890123456789,Marko Markovic,30,"Primjer klijenta - obrisi ili zamijeni"
+"Fizicka osoba",,,customer,B2C,fizicka@email.hr,+385 91 000 0000,"Vukovarska 10",Split,21000,HR,,,,Primjer B2C kupca
+"Drzavna ustanova",98765432109,HR98765432109,customer,B2G,nabava@ustanova.hr,+385 1 999 8888,"Trg bana Jelacica 1",Zagreb,10000,HR,,Ana Anic,60,"Primjer B2G kupca"
+"EU Partner GmbH",,DE123456789,customer,EU,partner@firma.de,+49 30 12345678,"Berliner Str. 1",Berlin,10115,DE,,Hans Mueller,45,"EU klijent - reverse charge"
+"Dobavljac materijala d.o.o.",11223344556,HR11223344556,vendor,B2B,nabava@dobavljac.hr,+385 1 111 2222,"Radnicka 50",Zagreb,10000,HR,HR9876543210987654321,Pero Peric,15,"Dobavljac - primjer"

@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: adk-postgres
+    environment:
+      POSTGRES_DB: adk_sessions
+      POSTGRES_USER: adk
+      POSTGRES_PASSWORD: adk_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adk"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ADK Application
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: adk-app
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - DATABASE_URL=postgresql://adk:adk_password@postgres:5432/adk_sessions
+      - SESSION_STORAGE=postgresql
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: python main.py
+
+volumes:
+  postgres_data:

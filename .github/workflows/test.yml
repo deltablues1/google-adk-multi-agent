@@ -1,0 +1,64 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11']
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+
+    - name: Lint with flake8
+      run: |
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+    - name: Format check with black
+      run: black --check .
+
+    - name: Run unit tests
+      run: |
+        echo "Running unit tests..."
+        pytest tests/unit/ -v --tb=short
+
+    - name: Run integration tests
+      run: |
+        echo "Running integration tests..."
+        pytest tests/integration/ -v --tb=short
+
+    - name: Run E2E tests
+      run: |
+        echo "Running E2E tests..."
+        pytest tests/e2e/ -v --tb=short
+
+    - name: Generate coverage report
+      run: |
+        echo "Generating coverage report..."
+        pytest tests/ --cov=agents --cov=auth --cov=config --cov=sessions --cov=monitoring --cov=tools --cov-report=xml --cov-report=term-missing --cov-report=html
+      continue-on-error: true
+
+    - name: Upload coverage to artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-report
+        path: htmlcov/
+      if: always()

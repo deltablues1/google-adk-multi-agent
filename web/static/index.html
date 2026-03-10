@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADK Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css?v=6">
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
+</head>
+<body x-data="dashboard()" x-init="init()">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>ADK Dashboard</h1>
+            <div class="subtitle">Google Workspace Multi-Agent</div>
+            <div class="status-badge"
+                 :class="systemStatus.status === 'running' ? 'online' : 'offline'"
+                 x-text="systemStatus.status || 'connecting...'">
+            </div>
+        </div>
+
+        <!-- Sessions -->
+        <div class="sidebar-section">
+            <h3>Sessions (<span x-text="sessions.length"></span>)</h3>
+            <ul>
+                <template x-for="s in sessions" :key="s.session_id">
+                    <li @click="switchSession(s)"
+                        :class="{ active: s.session_id === currentSessionId }"
+                        :title="s.session_id">
+                        <span>
+                            <span x-show="s.active" style="color:var(--success);font-size:8px;">&#9679; </span>
+                            <span x-text="formatSessionName(s)"></span>
+                        </span>
+                        <small x-text="s.message_count + ' msg'"></small>
+                    </li>
+                </template>
+            </ul>
+            <template x-if="sessions.length === 0">
+                <p style="font-size:12px;color:var(--text-muted);padding:4px 8px;">No sessions yet</p>
+            </template>
+            <button class="btn-new-session" @click="newSession()">+ New Session</button>
+        </div>
+
+        <!-- Agents -->
+        <div class="sidebar-section" style="flex:1;overflow-y:auto;">
+            <h3>Agents (<span x-text="agents.length"></span>)</h3>
+            <ul>
+                <template x-for="a in agents" :key="a.name">
+                    <li class="agent-item">
+                        <span class="agent-name" x-text="a.name"></span>
+                        <span class="agent-model" x-text="a.model"></span>
+                    </li>
+                </template>
+            </ul>
+        </div>
+    </aside>
+
+    <!-- CHAT PANEL -->
+    <main class="chat-panel">
+        <div class="chat-header">
+            <h2>
+                <span x-text="currentSessionId ? currentSessionId.split('-').slice(0,3).join('-') : 'No session'"></span>
+            </h2>
+            <span class="mode-badge" x-text="systemStatus.active_mode || 'LEGACY'"></span>
+        </div>
+
+        <div class="messages" x-ref="messagesContainer"
+             @dragover.prevent="dragOver = true"
+             @dragleave.prevent="dragOver = false"
+             @drop.prevent="handleDrop($event)"
+             :class="{ 'drag-over': dragOver }">
+            <!-- Empty state -->
+            <template x-if="messages.length === 0 && !streaming">
+                <div class="empty-state">
+                    <div class="icon">&#9672;</div>
+                    <p>Send a message to start</p>
+                    <p style="font-size:12px;margin-top:4px;">You can drag & drop images here for OCR</p>
+                </div>
+            </template>
+
+            <!-- Messages -->
+            <template x-for="(msg, idx) in messages" :key="idx">
+                <div class="message" :class="msg.role">
+                    <div class="message-role" x-text="msg.role"></div>
+                    <!-- Attached image (user uploads) -->
+                    <template x-if="msg.attachments && msg.attachments.length > 0">
+                        <div class="message-attachments">
+                            <template x-for="att in msg.attachments" :key="att.file_id">
+                                <div class="attachment-preview">
+                                    <img :src="att.url" :alt="att.filename"
+                                         @click="openImageModal(att.url)">
+                                    <span class="att-name" x-text="att.filename"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
+                    <div class="message-content" x-html="formatMessage(msg.content)"></div>
+                </div>
+            </template>
+
+            <!-- Streaming message -->
+            <template x-if="streaming && streamBuffer">
+                <div class="message assistant">
+                    <div class="message-role">assistant <span class="streaming-indicator">streaming...</span></div>
+                    <div class="message-content" x-html="formatMessage(streamBuffer)"></div>
+                </div>
+            </template>
+
+            <!-- Streaming indicator (no content yet) -->
+            <template x-if="streaming && !streamBuffer">
+                <div class="message assistant">
+                    <div class="message-role">assistant</div>
+                    <div class="streaming-indicator">Thinking...</div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Upload preview bar -->
+        <div class="upload-preview-bar" x-show="pendingFiles.length > 0">
+            <template x-for="(pf, idx) in pendingFiles" :key="idx">
+                <div class="upload-thumb">
+                    <img :src="pf.previewUrl" :alt="pf.file.name" x-show="pf.previewUrl">
+                    <span x-show="!pf.previewUrl" class="file-icon">PDF</span>
+                    <button class="remove-file" @click="removePendingFile(idx)" title="Remove">&times;</button>
+                    <div class="upload-progress" x-show="pf.uploading">
+                        <div class="upload-progress-bar"></div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Voice listening indicator -->
+        <div class="voice-status" x-show="voiceListening" x-cloak>
+            <span class="voice-pulse"></span>
+            <span>Listening...</span>
+        </div>
+
+        <form class="chat-input" @submit.prevent="sendMessage()">
+            <label class="attach-btn" title="Attach image or PDF">
+                <input type="file" accept="image/*,.pdf" multiple
+                       @change="handleFileSelect($event)" style="display:none;">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                </svg>
+            </label>
+            <button type="button" class="voice-btn"
+                    @click="toggleListening()"
+                    :class="{ listening: voiceListening, unsupported: !voiceSupported }"
+                    :disabled="!voiceSupported || streaming"
+                    :title="voiceSupported ? (voiceListening ? 'Stop listening' : 'Voice input') : 'Browser ne podrzava glasovni unos'">
+                <span class="voice-btn-icon" x-text="voiceListening ? '&#9632;' : '&#127908;'"></span>
+                <span class="voice-btn-label" x-text="voiceListening ? 'STOP' : 'MIC'"></span>
+            </button>
+            <input type="text"
+                   x-model="inputMessage"
+                   placeholder="Type your message... (or drop images here)"
+                   :disabled="streaming"
+                   x-ref="chatInput">
+            <button type="button" class="tts-toggle"
+                    @click="voiceEnabled = !voiceEnabled; if(!voiceEnabled) stopSpeaking()"
+                    :class="{ active: voiceEnabled }"
+                    :disabled="!ttsSupported"
+                    :title="voiceEnabled ? 'TTS uključen - klikni za isključiti' : 'TTS isključen - klikni za uključiti'">
+                <span class="tts-icon" x-text="voiceEnabled ? '&#128266;' : '&#128264;'"></span>
+                <span class="tts-label" x-text="voiceEnabled ? 'TTS ON' : 'TTS'"></span>
+            </button>
+            <button type="submit" :disabled="streaming || (!inputMessage.trim() && pendingFiles.length === 0)">
+                <span x-show="!streaming">Send</span>
+                <span x-show="streaming">...</span>
+            </button>
+        </form>
+    </main>
+
+    <!-- TRACE PANEL -->
+    <aside class="trace-panel">
+        <!-- Agent Trace -->
+        <div class="trace-section" style="flex:1;overflow-y:auto;">
+            <h3>Agent Trace</h3>
+            <div class="trace-list">
+                <template x-if="traceEvents.length === 0">
+                    <p class="trace-empty">No tool calls yet</p>
+                </template>
+                <template x-for="(t, idx) in traceEvents" :key="idx">
+                    <div class="trace-event" :class="t.type">
+                        <div class="trace-header">
+                            <span class="trace-badge"
+                                  :class="t.type === 'tool_call' ? 'call' : 'resp'"
+                                  x-text="t.type === 'tool_call' ? 'CALL' : 'RESP'"></span>
+                            <span class="trace-name" x-text="t.name"></span>
+                            <span class="trace-author" x-text="t.author"></span>
+                        </div>
+                        <div class="trace-detail"
+                             x-show="t.type === 'tool_call' && t.args"
+                             x-text="t.args"></div>
+                        <div class="trace-detail"
+                             x-show="t.type === 'tool_response' && t.result"
+                             x-text="t.result"></div>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        <!-- Rate Limits -->
+        <div class="trace-section">
+            <h3>Rate Limits</h3>
+            <div class="rate-summary">
+                <span>Requests: <strong x-text="systemStatus.rate_limiter?.total_requests || 0"></strong></span>
+                <span>Blocked: <strong x-text="systemStatus.rate_limiter?.blocked_requests || 0"
+                      :style="(systemStatus.rate_limiter?.blocked_requests || 0) > 0 ? 'color:var(--danger)' : ''"></strong></span>
+            </div>
+            <template x-for="(info, svc) in (systemStatus.services || {})" :key="svc">
+                <div class="rate-service">
+                    <span class="svc-name" x-text="svc"></span>
+                    <div class="utilization-bar">
+                        <div class="utilization-fill"
+                             :style="'width:' + (getUtilization(info) * 100) + '%'"
+                             :class="{
+                                 warning: getUtilization(info) > 0.7,
+                                 danger: getUtilization(info) > 0.9
+                             }">
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+    </aside>
+
+    <!-- Image modal (lightbox) -->
+    <div class="image-modal" x-show="imageModal" @click.self="imageModal = null" x-cloak>
+        <img :src="imageModal" x-show="imageModal">
+        <button class="modal-close" @click="imageModal = null">&times;</button>
+    </div>
+
+    <script src="/static/app.js?v=6"></script>
+</body>
+</html>

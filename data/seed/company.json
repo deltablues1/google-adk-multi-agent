@@ -1,0 +1,55 @@
+{
+    "_comment": "Popuni podatke o obrtu/firmi. Pokreni: python scripts/seed_data.py",
+
+    "name": "Lux tech d.o.o.",
+    "oib": "47034854402",
+    "address": "Leskovački brijeg 2",
+    "city": "Zagreb",
+    "postal_code": "10257",
+    "country_code": "HR",
+    "email": "tomislav.luxtech@gmail.com",
+    "phone": "+385 91 457 5757",
+    "iban": "HR0524020061101091655",
+    "bank_name": "Erste & Steiermarkische Bank",
+
+    "type": "firma",
+    "owner_name": "Tomislav Golić",
+    "owner_oib": "88380557076",
+
+    "registered_nkd": [
+        "43.21"
+    ],
+
+    "business_premises": [
+        {
+            "code": "1",
+            "name": "Sjediste",
+            "address": "Leskovački brijeg 2",
+            "city": "Zagreb",
+            "postal_code": "10257",
+            "is_active": true
+        }
+    ],
+
+    "cash_registers": [
+        {
+            "code": "1",
+            "business_premise_code": "1",
+            "description": "Naplatni uredjaj 1",
+            "is_active": true
+        }
+    ],
+
+    "certificate_path": "",
+    "certificate_password_env": "FINA_CERT_PASSWORD",
+    "environment": "sandbox",
+    "default_vat_rate": "25",
+
+    "fiscal_settings": {
+        "b2c_enabled": true,
+        "b2b_enabled": true,
+        "b2g_enabled": false,
+        "eu_enabled": false,
+        "int_enabled": false
+    }
+}

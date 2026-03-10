@@ -1,0 +1,116 @@
+{
+    "displayName": "ADK Agent System - Full Monitoring",
+    "gridLayout": {
+        "columns": "2",
+        "widgets": [
+            {
+                "title": "Agent Success Rate (Custom)",
+                "xyChart": {
+                    "dataSets": [
+                        {
+                            "timeSeriesQuery": {
+                                "timeSeriesFilter": {
+                                    "filter": "metric.type=\"logging.googleapis.com/user/adk_agent_success_count\" resource.type=\"global\"",
+                                    "aggregation": {
+                                        "alignmentPeriod": "60s",
+                                        "perSeriesAligner": "ALIGN_RATE",
+                                        "crossSeriesReducer": "REDUCE_SUM",
+                                        "groupByFields": [
+                                            "metric.label.agent_name"
+                                        ]
+                                    }
+                                },
+                                "unitOverride": "1"
+                            },
+                            "plotType": "LINE",
+                            "minAlignmentPeriod": "60s"
+                        }
+                    ],
+                    "timeshiftDuration": "0s",
+                    "yAxis": {
+                        "label": "y1Axis",
+                        "scale": "LINEAR"
+                    }
+                }
+            },
+            {
+                "title": "Agent Error Rate (Custom)",
+                "xyChart": {
+                    "dataSets": [
+                        {
+                            "timeSeriesQuery": {
+                                "timeSeriesFilter": {
+                                    "filter": "metric.type=\"logging.googleapis.com/user/adk_agent_error_count\" resource.type=\"global\"",
+                                    "aggregation": {
+                                        "alignmentPeriod": "60s",
+                                        "perSeriesAligner": "ALIGN_RATE",
+                                        "crossSeriesReducer": "REDUCE_SUM",
+                                        "groupByFields": [
+                                            "metric.label.agent_name"
+                                        ]
+                                    }
+                                },
+                                "unitOverride": "1"
+                            },
+                            "plotType": "LINE",
+                            "minAlignmentPeriod": "60s"
+                        }
+                    ],
+                    "timeshiftDuration": "0s",
+                    "yAxis": {
+                        "label": "y1Axis",
+                        "scale": "LINEAR"
+                    }
+                }
+            },
+            {
+                "title": "Tool Executions (Custom)",
+                "xyChart": {
+                    "dataSets": [
+                        {
+                            "timeSeriesQuery": {
+                                "timeSeriesFilter": {
+                                    "filter": "metric.type=\"logging.googleapis.com/user/adk_tool_execution_count\" resource.type=\"global\"",
+                                    "aggregation": {
+                                        "alignmentPeriod": "60s",
+                                        "perSeriesAligner": "ALIGN_RATE",
+                                        "crossSeriesReducer": "REDUCE_SUM",
+                                        "groupByFields": [
+                                            "metric.label.tool_name"
+                                        ]
+                                    }
+                                },
+                                "unitOverride": "1"
+                            },
+                            "plotType": "STACKED_AREA",
+                            "minAlignmentPeriod": "60s"
+                        }
+                    ],
+                    "timeshiftDuration": "0s",
+                    "yAxis": {
+                        "label": "y1Axis",
+                        "scale": "LINEAR"
+                    }
+                }
+            },
+            {
+                "title": "Vertex AI Prediction Requests (Platform)",
+                "xyChart": {
+                    "dataSets": [
+                        {
+                            "timeSeriesQuery": {
+                                "timeSeriesFilter": {
+                                    "filter": "metric.type=\"aiplatform.googleapis.com/prediction/online/prediction_count\"",
+                                    "aggregation": {
+                                        "alignmentPeriod": "60s",
+                                        "perSeriesAligner": "ALIGN_RATE"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+}

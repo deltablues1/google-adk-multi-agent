@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Račun {{invoice_number}}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            font-size: 10pt;
+            line-height: 1.4;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #2c3e50;
+            padding-bottom: 15px;
+        }
+
+        .company-info {
+            flex: 1;
+        }
+
+        .company-name {
+            font-size: 18pt;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+
+        .company-details {
+            font-size: 9pt;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .invoice-title {
+            text-align: right;
+            flex: 1;
+        }
+
+        .invoice-title h1 {
+            font-size: 24pt;
+            margin: 0;
+            color: #2c3e50;
+        }
+
+        .invoice-meta {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 30px;
+        }
+
+        .invoice-details, .customer-details {
+            flex: 1;
+        }
+
+        .section-title {
+            font-size: 11pt;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+
+        .detail-row {
+            display: flex;
+            margin-bottom: 5px;
+        }
+
+        .detail-label {
+            font-weight: bold;
+            width: 120px;
+            color: #555;
+        }
+
+        .detail-value {
+            flex: 1;
+        }
+
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+
+        .items-table thead {
+            background-color: #2c3e50;
+            color: white;
+        }
+
+        .items-table th {
+            padding: 10px;
+            text-align: left;
+            font-weight: bold;
+            font-size: 9pt;
+        }
+
+        .items-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #ddd;
+            font-size: 9pt;
+        }
+
+        .items-table tr:last-child td {
+            border-bottom: 2px solid #2c3e50;
+        }
+
+        .text-right {
+            text-align: right;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        .totals-section {
+            margin-top: 20px;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .totals-table {
+            width: 300px;
+        }
+
+        .totals-table tr {
+            border-bottom: 1px solid #ddd;
+        }
+
+        .totals-table td {
+            padding: 8px 10px;
+        }
+
+        .totals-table .label {
+            font-weight: bold;
+            color: #555;
+        }
+
+        .totals-table .value {
+            text-align: right;
+            font-weight: bold;
+        }
+
+        .totals-table .total-row {
+            background-color: #2c3e50;
+            color: white;
+            font-size: 12pt;
+        }
+
+        .totals-table .total-row td {
+            padding: 12px 10px;
+        }
+
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .qr-code {
+            text-align: center;
+        }
+
+        .qr-code img {
+            width: 120px;
+            height: 120px;
+        }
+
+        .fiscal-info {
+            flex: 1;
+            font-size: 8pt;
+            color: #666;
+        }
+
+        .fiscal-info .fiscal-label {
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 3px;
+        }
+
+        .fiscal-info .fiscal-value {
+            font-family: 'Courier New', monospace;
+            background-color: #f5f5f5;
+            padding: 5px;
+            margin-bottom: 10px;
+            border-left: 3px solid #2c3e50;
+            word-break: break-all;
+        }
+
+        .payment-info {
+            margin-top: 30px;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-left: 4px solid #3498db;
+        }
+
+        .payment-info .title {
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .note {
+            margin-top: 20px;
+            font-size: 8pt;
+            color: #999;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="company-info">
+            <div class="company-name">{{supplier_name}}</div>
+            <div class="company-details">
+                {{supplier_address}}<br>
+                {{supplier_city}}, {{supplier_postal_code}}<br>
+                <strong>OIB:</strong> {{supplier_oib}}<br>
+                {% if supplier_phone %}<strong>Tel:</strong> {{supplier_phone}}<br>{% endif %}
+                {% if supplier_email %}<strong>Email:</strong> {{supplier_email}}{% endif %}
+            </div>
+        </div>
+        <div class="invoice-title">
+            <h1>RAČUN</h1>
+        </div>
+    </div>
+
+    <!-- Invoice Meta -->
+    <div class="invoice-meta">
+        <div class="invoice-details">
+            <div class="section-title">Podaci o računu</div>
+            <div class="detail-row">
+                <span class="detail-label">Broj računa:</span>
+                <span class="detail-value">{{invoice_number}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Datum izdavanja:</span>
+                <span class="detail-value">{{issue_date}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Vrijeme:</span>
+                <span class="detail-value">{{issue_time}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Valuta plaćanja:</span>
+                <span class="detail-value">{{due_date}}</span>
+            </div>
+            <div class="detail-row">
+                <span class="detail-label">Način plaćanja:</span>
+                <span class="detail-value">{{payment_means}}</span>
+            </div>
+        </div>
+
+        <div class="customer-details">
+            <div class="section-title">Kupac</div>
+            <div class="detail-row">
+                <span class="detail-label">Naziv:</span>
+                <span class="detail-value">{{customer_name}}</span>
+            </div>
+            {% if customer_address %}
+            <div class="detail-row">
+                <span class="detail-label">Adresa:</span>
+                <span class="detail-value">{{customer_address}}</span>
+            </div>
+            {% endif %}
+            {% if customer_city %}
+            <div class="detail-row">
+                <span class="detail-label">Grad:</span>
+                <span class="detail-value">{{customer_city}}, {{customer_postal_code}}</span>
+            </div>
+            {% endif %}
+            {% if customer_oib %}
+            <div class="detail-row">
+                <span class="detail-label">OIB:</span>
+                <span class="detail-value">{{customer_oib}}</span>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Items Table -->
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th style="width: 5%;">R.br.</th>
+                <th style="width: 45%;">Opis</th>
+                <th style="width: 10%;" class="text-center">Količina</th>
+                <th style="width: 10%;" class="text-center">J.M.</th>
+                <th style="width: 12%;" class="text-right">Cijena</th>
+                <th style="width: 8%;" class="text-center">PDV %</th>
+                <th style="width: 10%;" class="text-right">Ukupno</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td class="text-center">{{item.item_number}}</td>
+                <td>{{item.description}}</td>
+                <td class="text-center">{{item.quantity}}</td>
+                <td class="text-center">{{item.unit_code}}</td>
+                <td class="text-right">{{item.unit_price}} EUR</td>
+                <td class="text-center">{{item.vat_rate}}%</td>
+                <td class="text-right">{{item.line_total}} EUR</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Totals Section -->
+    <div class="totals-section">
+        <table class="totals-table">
+            <tr>
+                <td class="label">Ukupno bez PDV-a:</td>
+                <td class="value">{{total_net}} EUR</td>
+            </tr>
+            {% for vat in vat_breakdown %}
+            <tr>
+                <td class="label">PDV {{vat.vat_rate}}% (na {{vat.taxable_amount}} EUR):</td>
+                <td class="value">{{vat.tax_amount}} EUR</td>
+            </tr>
+            {% endfor %}
+            <tr class="total-row">
+                <td class="label">UKUPNO ZA PLATITI:</td>
+                <td class="value">{{total_gross}} EUR</td>
+            </tr>
+        </table>
+    </div>
+
+    <!-- Payment Info -->
+    {% if payment_reference %}
+    <div class="payment-info">
+        <div class="title">Upute za plaćanje</div>
+        <div class="detail-row">
+            <span class="detail-label">IBAN:</span>
+            <span class="detail-value">{{supplier_iban}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Model:</span>
+            <span class="detail-value">{{payment_reference_model}}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Poziv na broj:</span>
+            <span class="detail-value">{{payment_reference}}</span>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Footer with Fiscal Info -->
+    <div class="footer">
+        <div class="fiscal-info">
+            <div class="fiscal-label">Jedinstveni Identifikator Računa (JIR):</div>
+            <div class="fiscal-value">{{jir}}</div>
+
+            <div class="fiscal-label">Zaštitni Kod Izdavatelja (ZKI):</div>
+            <div class="fiscal-value">{{zki}}</div>
+
+            <div style="margin-top: 10px; font-size: 7pt;">
+                Račun je fiskaliziran sukladno Zakonu o fiskalizaciji u prometu gotovinom.<br>
+                Operater: {{operator_oib}} | Poslovni prostor: {{business_unit}} | Naplatni uređaj: {{device_number}}
+            </div>
+        </div>
+
+        <div class="qr-code">
+            <img src="data:image/png;base64,{{qr_code_base64}}" alt="QR Code">
+            <div style="font-size: 7pt; color: #999; margin-top: 5px;">Skeniraj za provjeru</div>
+        </div>
+    </div>
+
+    <!-- Note -->
+    <div class="note">
+        Ovaj dokument je generiran elektronički i važeći je bez pečata i potpisa.
+    </div>
+</body>
+</html>

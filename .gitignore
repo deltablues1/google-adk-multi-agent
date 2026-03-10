@@ -1,0 +1,153 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# ============================================================================
+# SECURITY: Certificates & Keys (NEVER commit)
+# ============================================================================
+*.p12
+*.pfx
+*.pem
+*.cer
+*.crt
+*.key
+client_cert.*
+client_key.*
+*_ca_bundle.*
+
+# ============================================================================
+# SECURITY: Google Credentials (NEVER commit)
+# ============================================================================
+*.json
+!package.json
+!dashboards/*.json
+!data/**/*.json
+!schemas/**/*.json
+
+# Specific credential files (double safety)
+oauth_client_credentials.json
+service_account_key.json
+credentials.json
+service-account.json
+
+# OAuth tokens
+tokens.json
+.google_workspace_adk/
+
+# ============================================================================
+# Logs & Test Output
+# ============================================================================
+*.log
+logs/
+.cache/
+
+# Test outputs
+*.txt
+!requirements.txt
+!requirements-dev.txt
+tests/test_results*.json
+tests/pts_results/
+
+# ============================================================================
+# Generated Output
+# ============================================================================
+output/invoices/*.pdf
+
+# ============================================================================
+# Reference Data (large binaries, not code)
+# ============================================================================
+*.xlsx
+*.pdf
+
+# ============================================================================
+# Testing
+# ============================================================================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Database
+*.db
+*.sqlite3
+
+# Node modules (for MCP servers)
+node_modules/
+
+# Session data (runtime data, not code)
+*.session
+sessions/*.session
+sessions/data/
+
+# ============================================================================
+# Temporary & Garbage Files
+# ============================================================================
+*.tmp
+*.temp
+.tmp/
+tmpclaude-*/
+nul
+=60.0
+*.backup
+
+# ============================================================================
+# Runtime & Uploads
+# ============================================================================
+uploads/
+
+# ============================================================================
+# Claude Code
+# ============================================================================
+.claude/
+
+# Docker
+.dockerignore
+
+# Cloud deployment
+.gcloudignore
+
+# OS
+Thumbs.db
+
+# ============================================================================
+# Stale Directories
+# ============================================================================
+deploy_clean/

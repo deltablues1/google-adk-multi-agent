@@ -1,0 +1,545 @@
+"""
+Telegram Interface for Google Workspace ADK System
+
+Provides Telegram bot integration with support for both:
+- Polling mode (for local development)
+- Webhook mode (for Cloud Run deployment)
+"""
+
+import os
+import logging
+import asyncio
+import html
+from typing import Optional, Set
+from functools import wraps
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from telegram import Update, BotCommand
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
+from telegram.constants import ParseMode, ChatAction
+
+from .base_interface import BaseInterface
+
+logger = logging.getLogger(__name__)
+
+# Configuration from environment
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
+
+# Telegram message limit
+MAX_MESSAGE_LENGTH = 4096
+
+
+def authorized_only(func):
+    """Decorator to restrict access to authorized chat IDs only."""
+    @wraps(func)
+    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chat_id = str(update.effective_chat.id)
+
+        # Get list of authorized chat IDs
+        authorized_ids = self._get_authorized_chat_ids()
+
+        if chat_id not in authorized_ids:
+            logger.warning(f"Unauthorized access attempt from chat_id: {chat_id}")
+            await update.message.reply_text(
+                "Unauthorized. This bot is private.\n"
+                f"Your chat ID: `{chat_id}`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        return await func(self, update, context)
+    return wrapper
+
+
+class TelegramInterface(BaseInterface):
+    """
+    Telegram bot interface for the Google Workspace ADK System.
+
+    Features:
+    - Same agent system as CLI (main.py)
+    - Persistent sessions per chat
+    - Both polling and webhook support
+    - Markdown formatting
+    - Long message handling
+    """
+
+    def __init__(self):
+        """Initialize Telegram interface."""
+        super().__init__(session_prefix="telegram")
+
+        self.application: Optional[Application] = None
+        self.bot_token = TELEGRAM_BOT_TOKEN
+        self.webhook_url = TELEGRAM_WEBHOOK_URL
+
+        # Session tracking per chat
+        self.chat_sessions: dict = {}
+
+        # Processing lock to prevent concurrent processing per chat
+        self.processing_locks: dict = {}
+
+        if not self.bot_token:
+            raise ValueError("TELEGRAM_BOT_TOKEN not set in environment")
+
+        logger.info("TelegramInterface initialized")
+
+    def _get_authorized_chat_ids(self) -> Set[str]:
+        """
+        Get set of authorized chat IDs.
+
+        Returns:
+            Set of authorized chat ID strings
+        """
+        authorized = set()
+
+        # Primary chat ID
+        if TELEGRAM_CHAT_ID:
+            authorized.add(TELEGRAM_CHAT_ID)
+
+        # Support for multiple chat IDs (comma-separated)
+        additional = os.getenv("TELEGRAM_AUTHORIZED_CHAT_IDS", "")
+        if additional:
+            for chat_id in additional.split(","):
+                chat_id = chat_id.strip()
+                if chat_id:
+                    authorized.add(chat_id)
+
+        return authorized
+
+    def _get_session_for_chat(self, chat_id: str) -> str:
+        """
+        Get or create session ID for a chat.
+
+        Args:
+            chat_id: Telegram chat ID
+
+        Returns:
+            Session ID string
+        """
+        if chat_id not in self.chat_sessions:
+            self.chat_sessions[chat_id] = self.generate_session_id(chat_id)
+            logger.info(f"Created new session for chat {chat_id}: {self.chat_sessions[chat_id]}")
+
+        return self.chat_sessions[chat_id]
+
+    async def _get_processing_lock(self, chat_id: str) -> asyncio.Lock:
+        """Get or create processing lock for a chat."""
+        if chat_id not in self.processing_locks:
+            self.processing_locks[chat_id] = asyncio.Lock()
+        return self.processing_locks[chat_id]
+
+    def format_response(self, response: str) -> str:
+        """
+        Format response for Telegram.
+
+        Handles:
+        - Escaping HTML special characters
+        - Converting markdown to Telegram-compatible format
+
+        Args:
+            response: Raw response from agent
+
+        Returns:
+            Telegram-formatted response
+        """
+        # For now, return as-is (Telegram supports basic markdown)
+        # If using HTML parse mode, escape special chars
+        return response
+
+    def _split_message(self, text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list:
+        """
+        Split long message into chunks.
+
+        Args:
+            text: Message text
+            max_length: Maximum length per chunk
+
+        Returns:
+            List of message chunks
+        """
+        if len(text) <= max_length:
+            return [text]
+
+        chunks = []
+        current_chunk = ""
+
+        # Try to split on newlines first
+        lines = text.split("\n")
+
+        for line in lines:
+            if len(current_chunk) + len(line) + 1 <= max_length:
+                current_chunk += line + "\n"
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = ""
+
+                # If single line is too long, split it
+                if len(line) > max_length:
+                    while len(line) > max_length:
+                        chunks.append(line[:max_length])
+                        line = line[max_length:]
+                    current_chunk = line + "\n"
+                else:
+                    current_chunk = line + "\n"
+
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+
+        return chunks
+
+    # === Command Handlers ===
+
+    @authorized_only
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /start command."""
+        chat_id = str(update.effective_chat.id)
+        user = update.effective_user
+
+        # Create session for this chat
+        session_id = self._get_session_for_chat(chat_id)
+
+        welcome_message = f"""
+*Google Workspace ADK Agent System*
+
+Dobrodošao, {user.first_name}!
+
+Ja sam AI asistent koji upravlja tvojim Google Workspace alatima.
+
+*Dostupne komande:*
+/start - Prikaži ovu poruku
+/status - Status sustava
+/agents - Lista dostupnih agenata
+/classroom - Uđi u Philosophy Classroom
+/leave - Izađi iz Philosophy Classroom
+/reset - Resetiraj sesiju
+/help - Pomoć
+
+*Primjeri upita:*
+- "Pošalji email Marku s temom sastanak"
+- "Napravi dokument s izvještajem prodaje"
+- "Koji su moji događaji za sutra?"
+- "Pretraži web o AI trendovima"
+
+Session ID: `{session_id}`
+"""
+        await update.message.reply_text(
+            welcome_message,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    @authorized_only
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /status command."""
+        status = self.get_status()
+
+        status_text = f"""
+*System Status*
+
+Status: `{status.get('status', 'unknown')}`
+Interface: `{status.get('interface', 'telegram')}`
+Active Mode: `{status.get('active_mode', 'LEGACY')}`
+Session: `{status.get('session_id', 'N/A')}`
+
+Total Agents: {status.get('total_agents', 0)}
+Worker Agents: {status.get('worker_agents', 0)}
+ADK Migration: {status.get('adk_migration', 'N/A')}
+"""
+        await update.message.reply_text(
+            status_text,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    @authorized_only
+    async def cmd_agents(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /agents command."""
+        agents_info = self.get_agents_info()
+
+        # Split if too long
+        chunks = self._split_message(agents_info)
+
+        for chunk in chunks:
+            await update.message.reply_text(chunk)
+
+    @authorized_only
+    async def cmd_classroom(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /classroom command - enter Philosophy Classroom."""
+        if self.system:
+            self.system.active_mode = "CLASSROOM"
+            await update.message.reply_text(
+                "*Entering Philosophy Classroom...*\n\n"
+                "Socrates awaits. Ask your philosophical questions.\n"
+                "Type /leave to exit the classroom.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text("System not initialized. Send a message first.")
+
+    @authorized_only
+    async def cmd_leave(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /leave command - exit Philosophy Classroom."""
+        if self.system:
+            self.system.active_mode = "LEGACY"
+            await update.message.reply_text(
+                "*Exiting Philosophy Classroom*\n\n"
+                "Back to normal mode. How can I help you?",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text("System not initialized.")
+
+    @authorized_only
+    async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /reset command - reset session."""
+        chat_id = str(update.effective_chat.id)
+
+        # Create new session
+        if chat_id in self.chat_sessions:
+            del self.chat_sessions[chat_id]
+
+        new_session = self._get_session_for_chat(chat_id)
+
+        # Reset mode
+        if self.system:
+            self.system.active_mode = "LEGACY"
+
+        await update.message.reply_text(
+            f"*Session Reset*\n\nNew session: `{new_session}`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    @authorized_only
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command."""
+        help_text = """
+*Google Workspace ADK - Pomoć*
+
+Ovaj bot ti omogućuje upravljanje Google Workspace alatima kroz prirodni jezik.
+
+*Što mogu raditi:*
+- Gmail: slanje, čitanje, pretraživanje emailova
+- Calendar: kreiranje događaja, pregled rasporeda
+- Drive: upravljanje datotekama, pretraživanje
+- Docs: kreiranje i uređivanje dokumenata
+- Sheets: rad s tablicama
+- Contacts: pretraživanje kontakata
+- Tasks: upravljanje zadacima
+- Web Search: pretraživanje interneta
+- YouTube: pretraživanje videa
+
+*Philosophy Classroom:*
+Poseban mod za filozofske diskusije sa Sokratom.
+Koristi /classroom za ulazak.
+
+*Savjeti:*
+- Budi specifičan u zahtjevima
+- Možeš kombinirati više akcija u jednom upitu
+- Sustav pamti kontekst razgovora
+
+*Primjeri:*
+"Pošalji email na marko@firma.hr s naslovom Sastanak"
+"Napravi događaj sutra u 15h naziva Tim meeting"
+"Pronađi sve PDF-ove na Drive-u"
+"""
+        await update.message.reply_text(
+            help_text,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+    # === Message Handler ===
+
+    @authorized_only
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle regular text messages."""
+        chat_id = str(update.effective_chat.id)
+        user_id = str(update.effective_user.id)
+        message_text = update.message.text
+
+        # Get processing lock for this chat
+        lock = await self._get_processing_lock(chat_id)
+
+        async with lock:
+            try:
+                # Show typing indicator
+                await context.bot.send_chat_action(
+                    chat_id=chat_id,
+                    action=ChatAction.TYPING
+                )
+
+                # Get session
+                session_id = self._get_session_for_chat(chat_id)
+
+                logger.info(f"Processing message from {chat_id}: {message_text[:50]}...")
+
+                # Process through agent system
+                response = await self.process_message(
+                    user_id=user_id,
+                    message=message_text,
+                    session_id=session_id
+                )
+
+                # Format and send response
+                formatted = self.format_response(response)
+                chunks = self._split_message(formatted)
+
+                for i, chunk in enumerate(chunks):
+                    # Show typing for subsequent chunks
+                    if i > 0:
+                        await context.bot.send_chat_action(
+                            chat_id=chat_id,
+                            action=ChatAction.TYPING
+                        )
+                        await asyncio.sleep(0.5)
+
+                    await update.message.reply_text(chunk)
+
+                logger.info(f"Response sent to {chat_id}")
+
+            except Exception as e:
+                logger.error(f"Error handling message: {e}")
+                await update.message.reply_text(
+                    f"Greška pri obradi zahtjeva: {str(e)}"
+                )
+
+    # === Application Setup ===
+
+    def _setup_handlers(self):
+        """Setup command and message handlers."""
+        if self.application is None:
+            return
+
+        # Commands
+        self.application.add_handler(CommandHandler("start", self.cmd_start))
+        self.application.add_handler(CommandHandler("status", self.cmd_status))
+        self.application.add_handler(CommandHandler("agents", self.cmd_agents))
+        self.application.add_handler(CommandHandler("classroom", self.cmd_classroom))
+        self.application.add_handler(CommandHandler("leave", self.cmd_leave))
+        self.application.add_handler(CommandHandler("reset", self.cmd_reset))
+        self.application.add_handler(CommandHandler("help", self.cmd_help))
+
+        # Regular messages
+        self.application.add_handler(
+            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
+        )
+
+        logger.info("Handlers registered")
+
+    async def _setup_bot_commands(self):
+        """Setup bot command menu in Telegram."""
+        commands = [
+            BotCommand("start", "Pokreni bot"),
+            BotCommand("status", "Status sustava"),
+            BotCommand("agents", "Lista agenata"),
+            BotCommand("classroom", "Philosophy Classroom"),
+            BotCommand("leave", "Izađi iz Classroom-a"),
+            BotCommand("reset", "Resetiraj sesiju"),
+            BotCommand("help", "Pomoć"),
+        ]
+
+        await self.application.bot.set_my_commands(commands)
+        logger.info("Bot commands menu set")
+
+    # === Start/Stop Methods ===
+
+    async def start(self) -> None:
+        """
+        Start the Telegram interface.
+
+        Uses webhook if TELEGRAM_WEBHOOK_URL is set, otherwise polling.
+        """
+        logger.info("Starting Telegram interface...")
+
+        # Initialize agent system
+        self.initialize_system()
+
+        # Build application
+        self.application = ApplicationBuilder().token(self.bot_token).build()
+
+        # Setup handlers
+        self._setup_handlers()
+
+        # Initialize and setup bot commands
+        await self.application.initialize()
+        await self._setup_bot_commands()
+
+        if self.webhook_url:
+            await self._start_webhook()
+        else:
+            await self._start_polling()
+
+    async def _start_polling(self):
+        """Start bot in polling mode (for local development)."""
+        logger.info("Starting Telegram bot in POLLING mode...")
+        logger.info(f"Authorized chat IDs: {self._get_authorized_chat_ids()}")
+
+        # Start polling
+        await self.application.start()
+        await self.application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+
+        logger.info("Telegram bot is running (polling mode)")
+        logger.info("Press Ctrl+C to stop")
+
+        # Keep running until interrupted
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+
+    async def _start_webhook(self):
+        """Start bot in webhook mode (for Cloud Run)."""
+        logger.info(f"Starting Telegram bot in WEBHOOK mode: {self.webhook_url}")
+
+        # Set webhook
+        await self.application.bot.set_webhook(
+            url=self.webhook_url,
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+
+        logger.info("Webhook set successfully")
+
+        # Note: In webhook mode, the actual HTTP server needs to be set up
+        # externally (e.g., FastAPI, Flask) and call application.process_update()
+
+    async def stop(self) -> None:
+        """Stop the Telegram interface."""
+        logger.info("Stopping Telegram interface...")
+
+        if self.application:
+            await self.application.updater.stop()
+            await self.application.stop()
+            await self.application.shutdown()
+
+        logger.info("Telegram interface stopped")
+
+    # === Webhook Handler (for Cloud Run) ===
+
+    async def process_webhook_update(self, update_data: dict) -> None:
+        """
+        Process incoming webhook update.
+
+        This method should be called by the HTTP server when receiving
+        updates from Telegram.
+
+        Args:
+            update_data: Raw update data from Telegram webhook
+        """
+        if self.application is None:
+            raise RuntimeError("Application not initialized")
+
+        update = Update.de_json(update_data, self.application.bot)
+        await self.application.process_update(update)
