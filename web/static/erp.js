@@ -391,6 +391,11 @@ function erpApp() {
           headers,
           body: JSON.stringify({ message: msg, user_id: 'erp-user' }),
         });
+        if (!resp.ok || !resp.body) {
+          this.aiResponse = `Greška: HTTP ${resp.status}`;
+          this.aiStreaming = false;
+          return;
+        }
         const reader = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';

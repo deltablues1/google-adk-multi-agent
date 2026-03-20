@@ -299,6 +299,11 @@ def create_app(interface) -> FastAPI:
     # ERP Routes
     # =======================================================================
 
+    _MAX_LIMIT = 500  # Hard cap for all list endpoints
+
+    def _clamp_limit(limit: int, default: int = 50) -> int:
+        return max(1, min(limit, _MAX_LIMIT))
+
     # Helper: build a system-level context for dev/demo (no real auth yet)
     def _get_dev_ctx(company_id: str = "default-company"):
         import uuid as _uuid
@@ -335,7 +340,7 @@ def create_app(interface) -> FastAPI:
             filters["search"] = search
         if party_type:
             filters["party_type"] = party_type
-        return await get_customer_service().list_customers(ctx, filters, limit, offset)
+        return await get_customer_service().list_customers(ctx, filters, _clamp_limit(limit), offset)
 
     @app.get("/api/erp/customers/{customer_id}")
     async def erp_get_customer(customer_id: str):
@@ -380,7 +385,7 @@ def create_app(interface) -> FastAPI:
             filters["search"] = search
         if low_stock_only:
             filters["low_stock_only"] = True
-        return await get_product_service().list_products(ctx, filters, limit, offset)
+        return await get_product_service().list_products(ctx, filters, _clamp_limit(limit), offset)
 
     @app.get("/api/erp/products/{product_id}")
     async def erp_get_product(product_id: str):
@@ -412,7 +417,7 @@ def create_app(interface) -> FastAPI:
     async def erp_get_stock_movements(product_id: str, limit: int = 100):
         from services.erp.product_service import get_product_service
         ctx = _get_dev_ctx()
-        return await get_product_service().get_stock_movements(product_id, ctx, limit)
+        return await get_product_service().get_stock_movements(product_id, ctx, _clamp_limit(limit))
 
     # ── Outgoing Invoices ────────────────────────────────────────────────────
     @app.get("/api/erp/invoices")
@@ -433,7 +438,7 @@ def create_app(interface) -> FastAPI:
             filters["date_from"] = date_from
         if date_to:
             filters["date_to"] = date_to
-        return await get_invoice_service().list_invoices(ctx, filters=filters, limit=limit, offset=offset)
+        return await get_invoice_service().list_invoices(ctx, filters=filters, limit=_clamp_limit(limit), offset=offset)
 
     @app.get("/api/erp/invoices/{invoice_type}/{invoice_id}")
     async def erp_get_invoice(invoice_type: str, invoice_id: str, display_id: str = ""):
@@ -494,7 +499,7 @@ def create_app(interface) -> FastAPI:
             filters["payment_status"] = payment_status
         if vendor_id:
             filters["vendor_id"] = vendor_id
-        return await get_vendor_invoice_service().list_vendor_invoices(ctx, filters, limit, offset)
+        return await get_vendor_invoice_service().list_vendor_invoices(ctx, filters, _clamp_limit(limit), offset)
 
     @app.get("/api/erp/vendor-invoices/{vendor_invoice_id}")
     async def erp_get_vendor_invoice(vendor_invoice_id: str):
@@ -560,7 +565,7 @@ def create_app(interface) -> FastAPI:
             filters["type"] = type
         if party_id:
             filters["party_id"] = party_id
-        return await get_payment_service().list_payments(ctx, filters, limit, offset)
+        return await get_payment_service().list_payments(ctx, filters, _clamp_limit(limit), offset)
 
     @app.get("/api/erp/payments/{payment_id}")
     async def erp_get_payment(payment_id: str):
@@ -655,7 +660,7 @@ def create_app(interface) -> FastAPI:
             .where("company_id", "==", ctx.company_id)
             .where("target_service", "==", "erp")
             .order_by("timestamp", direction="DESCENDING")
-            .limit(limit)
+            .limit(_clamp_limit(limit))
         )
         events = []
         async for snap in query.stream():

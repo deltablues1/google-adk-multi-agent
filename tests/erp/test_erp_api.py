@@ -118,6 +118,44 @@ def build_test_app(company_id: str) -> FastAPI:
         from services.erp.vendor_invoice_service import get_vendor_invoice_service
         return await get_vendor_invoice_service().create_vendor_invoice(req.dict(), _ctx())
 
+    @app.get("/api/erp/vendor-invoices")
+    async def erp_list_vendor_invoices(document_status: str = "", payment_status: str = "",
+                                       vendor_id: str = "", limit: int = 50, offset: int = 0):
+        from services.erp.vendor_invoice_service import get_vendor_invoice_service
+        filters = {}
+        if document_status: filters["document_status"] = document_status
+        if payment_status: filters["payment_status"] = payment_status
+        if vendor_id: filters["vendor_id"] = vendor_id
+        return await get_vendor_invoice_service().list_vendor_invoices(_ctx(), filters, min(limit, 500), offset)
+
+    @app.get("/api/erp/products/{product_id}/movements")
+    async def erp_get_stock_movements(product_id: str, limit: int = 100):
+        from services.erp.product_service import get_product_service
+        return await get_product_service().get_stock_movements(product_id, _ctx(), min(limit, 500))
+
+    @app.get("/api/erp/activity")
+    async def erp_activity_feed(limit: int = 50):
+        from services.erp.base_erp_service import get_firestore_db
+        ctx = _ctx()
+        db = get_firestore_db()
+        query = (
+            db.collection("audit_log")
+            .where("company_id", "==", ctx.company_id)
+            .where("target_service", "==", "erp")
+            .order_by("timestamp", direction="DESCENDING")
+            .limit(min(limit, 500))
+        )
+        events = []
+        async for snap in query.stream():
+            doc = snap.to_dict() or {}
+            events.append({
+                "id": snap.id, "timestamp": doc.get("timestamp"),
+                "action": doc.get("action_type"), "description": doc.get("action_description"),
+                "entity_type": doc.get("entity_type"), "display_id": doc.get("display_id"),
+                "user_id": doc.get("user_id"),
+            })
+        return events
+
     return app
 
 
@@ -251,3 +289,41 @@ class TestAllocations:
             resp = await client.get("/api/erp/invoices/b2c/nonexistent-id/allocations")
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
+
+
+class TestHardeningEdgeCases:
+    """Edge case tests for empty states and invalid inputs."""
+
+    @pytest.mark.asyncio
+    async def test_activity_feed_empty_returns_list(self, app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/activity?limit=5")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    @pytest.mark.asyncio
+    async def test_product_movements_nonexistent_returns_404(self, app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/products/nonexistent-id-xyz/movements")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_customer_list_empty_returns_list(self, app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/customers?search=NONEXISTENT_CUSTOMER_999")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    @pytest.mark.asyncio
+    async def test_vendor_invoices_empty_returns_list(self, app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/vendor-invoices?document_status=cancelled")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    @pytest.mark.asyncio
+    async def test_limit_clamped_to_max(self, app):
+        """Verify that limit=9999 doesn't crash — clamped by _clamp_limit."""
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/customers?limit=9999")
+        assert resp.status_code == 200
