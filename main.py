@@ -133,11 +133,16 @@ class WorkspaceADKSystem:
         logger.info("=== Google Workspace ADK Multi-Agent System ===")
         logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
 
-    def initialize_agents(self) -> None:
+    def initialize_agents(self, start_scheduler: bool = False) -> None:
         """
         Inicijalizira sve agente iz registra
 
         Koristi Modular Registry Pattern za dinamičko učitavanje
+
+        Args:
+            start_scheduler: Ako True, pokreće APScheduler. Default False.
+                             CLI poziva s True; web/telegram/testi ostaju na False.
+                             Scheduler je dostupan kao zaseban proces (run_scheduler.py).
         """
         logger.info("Initializing agents from registry...")
 
@@ -207,14 +212,17 @@ class WorkspaceADKSystem:
         )
         logger.info(f"[OK] RunnerHelper initialized with session '{self.session_id}'")
 
-        # Initialize Scheduler for recurring tasks
-        logger.info("Initializing Scheduler for recurring tasks...")
-        self.scheduler = SchedulerInterface()
-        self.scheduler.system = self  # Share the same system instance
-        self.scheduler._load_saved_jobs()
-        self.scheduler.scheduler.start()
-        set_scheduler_instance(self.scheduler)
-        logger.info(f"[OK] Scheduler initialized with {len(self.scheduler.config.jobs)} saved jobs")
+        # Initialize Scheduler for recurring tasks (only when explicitly requested)
+        if start_scheduler:
+            logger.info("Initializing Scheduler for recurring tasks...")
+            self.scheduler = SchedulerInterface()
+            self.scheduler.system = self  # Share the same system instance
+            self.scheduler._load_saved_jobs()
+            self.scheduler.scheduler.start()
+            set_scheduler_instance(self.scheduler)
+            logger.info(f"[OK] Scheduler initialized with {len(self.scheduler.config.jobs)} saved jobs")
+        else:
+            logger.info("Scheduler startup skipped (start_scheduler=False). Use run_scheduler.py for background jobs.")
 
     def verify_authentication(self) -> bool:
         """
@@ -403,8 +411,8 @@ class WorkspaceADKSystem:
         Pokreće sustav u interaktivnom ili batch modu
         """
         try:
-            # Inicijaliziraj agente
-            self.initialize_agents()
+            # Inicijaliziraj agente (CLI pokreće scheduler)
+            self.initialize_agents(start_scheduler=True)
 
             # Provjeri autentifikaciju
             if not self.verify_authentication():

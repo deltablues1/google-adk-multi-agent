@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 
+# Set interface context so HITL logic knows not to use blocking terminal input
+os.environ.setdefault('HITL_INTERFACE', 'scheduler')
+
 from interfaces.scheduler_interface import SchedulerInterface
 from config.scheduler_config import ScheduledJob, JobTrigger
 from main import sanitize_emojis

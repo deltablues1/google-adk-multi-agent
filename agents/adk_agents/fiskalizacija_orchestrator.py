@@ -358,8 +358,71 @@ class FiskalizacijaOrchestrator:
                         result.total_time_ms = int((time.time() - start_time) * 1000)
                         return result
 
-                    # Prompt user
-                    user_input = input("\nŽelite li poslati račun na fiskalizaciju? (y/n): ")
+                    # Prompt user — terminal ili web approval flow
+                    hitl_interface = os.environ.get('HITL_INTERFACE', 'terminal')
+
+                    if hitl_interface == 'terminal':
+                        user_input = input("\nŽelite li poslati račun na fiskalizaciju? (y/n): ")
+                    elif hitl_interface == 'web':
+                        # Web approval: write pending request to Firestore, poll for decision
+                        from services.hitl_firestore_service import (
+                            HITLFirestoreService, generate_confirmation_id
+                        )
+                        session_id = os.environ.get('CURRENT_SESSION_ID', 'unknown')
+                        user_id = os.environ.get('CURRENT_USER_ID', 'web-user')
+                        conf_id = generate_confirmation_id(session_id)
+
+                        # Build a compact invoice summary for the dashboard card
+                        invoice_summary = {
+                            k: confirmation_result.get(k)
+                            for k in (
+                                'invoice_number', 'supplier_name', 'customer_name',
+                                'total_amount', 'invoice_type', 'invoice_date'
+                            )
+                            if confirmation_result.get(k) is not None
+                        }
+
+                        hitl_svc = HITLFirestoreService()
+                        await hitl_svc.create_pending(
+                            confirmation_id=conf_id,
+                            session_id=session_id,
+                            user_id=user_id,
+                            display_text=confirmation_result.get('display_text', ''),
+                            invoice_summary=invoice_summary,
+                            has_warnings=bool(confirmation_result.get('warnings')),
+                        )
+                        logger.info(
+                            f"HITL: pending approval created '{conf_id}' — "
+                            "waiting for web decision (max 5 min)"
+                        )
+
+                        decision = await hitl_svc.wait_for_decision(conf_id, timeout_seconds=300)
+
+                        if decision['status'] == 'approved':
+                            user_input = 'y'
+                        elif decision['status'] == 'rejected':
+                            user_input = 'n'
+                        else:  # timeout
+                            result.status = OrchestratorStatus.VALIDATION_FAILED
+                            result.error_message = (
+                                f"HITL approval timed out after 5 minutes. "
+                                "Confirmation ID: " + conf_id
+                            )
+                            result.total_time_ms = int((time.time() - start_time) * 1000)
+                            return result
+                    else:
+                        # scheduler or unknown — cannot block, fail with clear message
+                        logger.warning(
+                            f"HITL: interface '{hitl_interface}' ne podržava interaktivno odobrenje. "
+                            "Postavite AUTO_APPROVE_HITL=true za scheduler kontekst."
+                        )
+                        result.status = OrchestratorStatus.VALIDATION_FAILED
+                        result.error_message = (
+                            f"HITL approval nije dostupan u '{hitl_interface}' modu. "
+                            "Koristite AUTO_APPROVE_HITL=true za automatsko odobrenje."
+                        )
+                        result.total_time_ms = int((time.time() - start_time) * 1000)
+                        return result
 
                     if user_input.lower() not in ['y', 'yes', 'da']:
                         result.status = OrchestratorStatus.VALIDATION_FAILED

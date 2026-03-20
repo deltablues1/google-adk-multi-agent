@@ -10,6 +10,7 @@ Provides FastAPI-based web UI and REST API with:
 
 import logging
 import asyncio
+import os
 import time
 from typing import Optional, Dict, List, Any, AsyncGenerator
 
@@ -69,6 +70,11 @@ class WebInterface(BaseInterface):
         # Firestore persistence (lazy-initialized)
         self._persistence = None
 
+        # Shared ADK session service (lazy-initialized).
+        # One instance shared across all RunnerHelper recreations so that
+        # switching sessions doesn't lose ADK conversation context.
+        self._adk_session_service = None
+
         logger.info("WebInterface initialized")
 
     def _get_persistence(self):
@@ -77,6 +83,27 @@ class WebInterface(BaseInterface):
             from services.firestore_persistence import FirestorePersistenceService
             self._persistence = FirestorePersistenceService()
         return self._persistence
+
+    def _get_adk_session_service(self):
+        """
+        Lazy-init shared ADK session service.
+
+        Returns FirestoreADKSessionService when USE_PERSISTENT_ADK_SESSIONS=true,
+        otherwise InMemorySessionService. The same instance is reused for all
+        RunnerHelper creations so session state is preserved across session switches.
+        """
+        if self._adk_session_service is None:
+            import os
+            use_persistent = os.environ.get("USE_PERSISTENT_ADK_SESSIONS", "false").lower() == "true"
+            if use_persistent:
+                from services.adk_session_service import FirestoreADKSessionService
+                self._adk_session_service = FirestoreADKSessionService()
+                logger.info("WebInterface: using FirestoreADKSessionService (shared)")
+            else:
+                from google.adk.sessions import InMemorySessionService
+                self._adk_session_service = InMemorySessionService()
+                logger.info("WebInterface: using InMemorySessionService (shared)")
+        return self._adk_session_service
 
     async def _get_lock(self, session_id: str) -> asyncio.Lock:
         """Get or create processing lock for a session."""
@@ -241,7 +268,12 @@ class WebInterface(BaseInterface):
             self.system.session_id = session_id
             self.system.user_id = user_id
 
+            # Inject session context for HITL web approval flow
+            os.environ['CURRENT_SESSION_ID'] = session_id
+            os.environ['CURRENT_USER_ID'] = user_id
+
             # Recreate RunnerHelper if session changed (same as BaseInterface lines 107-119)
+            # Pass the shared session_service so ADK context is preserved across switches.
             if self.system.orchestrator_helper:
                 if self.system.orchestrator_helper.session_id != session_id:
                     from agents.adk_agents.runner_utils import RunnerHelper
@@ -249,7 +281,8 @@ class WebInterface(BaseInterface):
                         agent=self.system.orchestrator,
                         session_id=session_id,
                         user_id=user_id,
-                        app_name="agents"
+                        app_name="agents",
+                        session_service=self._get_adk_session_service(),
                     )
 
             # Record user message

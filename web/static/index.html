@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ADK Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css?v=6">
+    <link rel="stylesheet" href="/static/style.css?v=7">
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js"></script>
 </head>
 <body x-data="dashboard()" x-init="init()">
@@ -64,6 +64,23 @@
             </h2>
             <span class="mode-badge" x-text="systemStatus.active_mode || 'LEGACY'"></span>
         </div>
+
+        <!-- HITL pending approvals banner -->
+        <template x-if="pendingApprovals.length > 0">
+            <div class="hitl-banner">
+                <span class="hitl-icon">&#9888;</span>
+                <span>
+                    <strong x-text="pendingApprovals.length"></strong>
+                    pending approval<span x-show="pendingApprovals.length > 1">s</span>
+                    waiting for your review
+                </span>
+                <template x-for="a in pendingApprovals" :key="a.confirmation_id">
+                    <button class="hitl-review-btn" @click="openHITLModal(a)">
+                        Review: <span x-text="a.invoice_summary?.invoice_number || a.confirmation_id"></span>
+                    </button>
+                </template>
+            </div>
+        </template>
 
         <div class="messages" x-ref="messagesContainer"
              @dragover.prevent="dragOver = true"
@@ -232,6 +249,94 @@
         <button class="modal-close" @click="imageModal = null">&times;</button>
     </div>
 
-    <script src="/static/app.js?v=6"></script>
+    <!-- HITL approval modal -->
+    <div class="image-modal" x-show="hitlModal" @click.self="closeHITLModal()" x-cloak
+         style="align-items:center;justify-content:center;">
+        <div style="background:var(--bg-primary,#1a1a2e);border:1px solid var(--warning,#f0a500);
+                    border-radius:8px;padding:24px;max-width:600px;width:95%;max-height:85vh;
+                    overflow-y:auto;box-shadow:0 0 40px rgba(240,165,0,0.2);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h3 style="margin:0;color:var(--warning,#f0a500);">&#9888; HITL Approval Required</h3>
+                <button @click="closeHITLModal()" style="background:transparent;border:none;font-size:20px;
+                        cursor:pointer;color:var(--text-muted,#888);">&times;</button>
+            </div>
+            <div style="font-size:12px;color:var(--text-muted,#888);margin-bottom:12px;"
+                 x-text="'ID: ' + (hitlModal?.confirmation_id || '') + ' · Session: ' + (hitlModal?.session_id || '')">
+            </div>
+            <!-- Invoice summary card -->
+            <template x-if="hitlModal?.invoice_summary">
+                <div style="background:var(--bg-secondary,#16213e);border-radius:6px;padding:12px;
+                            margin-bottom:12px;font-size:13px;">
+                    <template x-for="[k, v] in Object.entries(hitlModal.invoice_summary || {})" :key="k">
+                        <div style="display:flex;justify-content:space-between;padding:2px 0;">
+                            <span style="color:var(--text-muted,#888);" x-text="k"></span>
+                            <span x-text="v"></span>
+                        </div>
+                    </template>
+                </div>
+            </template>
+            <!-- Full display text (pre-formatted) -->
+            <pre style="background:var(--bg-secondary,#16213e);border-radius:6px;padding:12px;
+                        font-size:11px;white-space:pre-wrap;word-break:break-word;
+                        max-height:300px;overflow-y:auto;margin-bottom:16px;"
+                 x-text="hitlModal?.display_text || 'No details available'"></pre>
+            <!-- Warnings badge -->
+            <template x-if="hitlModal?.has_warnings">
+                <div style="background:rgba(240,165,0,0.15);border:1px solid var(--warning,#f0a500);
+                            border-radius:4px;padding:8px;font-size:12px;margin-bottom:12px;">
+                    &#9888; This invoice has warnings. Review carefully before approving.
+                </div>
+            </template>
+            <!-- Rejection reason input -->
+            <input type="text" x-model="hitlRejectReason"
+                   placeholder="Rejection reason (optional)..."
+                   style="width:100%;padding:8px;margin-bottom:12px;
+                          background:var(--bg-secondary,#16213e);
+                          border:1px solid var(--border,#333);border-radius:4px;
+                          color:inherit;box-sizing:border-box;font-size:13px;">
+            <!-- Action buttons -->
+            <div style="display:flex;gap:8px;">
+                <button @click="approveHITL(hitlModal.confirmation_id)"
+                        style="flex:1;padding:10px;background:var(--success,#4caf50);
+                               border:none;border-radius:4px;cursor:pointer;
+                               font-size:14px;font-weight:600;">
+                    &#10003; Approve &amp; Send
+                </button>
+                <button @click="rejectHITL(hitlModal.confirmation_id)"
+                        style="flex:1;padding:10px;background:var(--danger,#e53e3e);
+                               border:none;border-radius:4px;cursor:pointer;
+                               font-size:14px;font-weight:600;">
+                    &#10007; Reject
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Token prompt (shown on 401) -->
+    <div class="image-modal" x-show="showTokenPrompt" x-cloak
+         style="align-items:center;justify-content:center;">
+        <div style="background:var(--bg-primary,#1a1a2e);border:1px solid var(--border,#333);
+                    border-radius:8px;padding:24px;max-width:400px;width:90%;">
+            <h3 style="margin:0 0 12px;">API Token Required</h3>
+            <p style="font-size:13px;color:var(--text-muted,#888);margin:0 0 16px;">
+                Enter your API token to continue. The token is stored in your browser's localStorage.
+            </p>
+            <input id="tokenInput" type="password"
+                   placeholder="Bearer token..."
+                   style="width:100%;padding:8px;margin-bottom:12px;background:var(--bg-secondary,#16213e);
+                          border:1px solid var(--border,#333);border-radius:4px;color:inherit;box-sizing:border-box;"
+                   @keydown.enter="saveToken()">
+            <div style="display:flex;gap:8px;">
+                <button @click="saveToken()"
+                        style="flex:1;padding:8px;background:var(--accent,#4a9eff);
+                               border:none;border-radius:4px;cursor:pointer;">Save Token</button>
+                <button @click="showTokenPrompt = false"
+                        style="padding:8px 16px;background:transparent;border:1px solid var(--border,#333);
+                               border-radius:4px;cursor:pointer;">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=8"></script>
 </body>
 </html>

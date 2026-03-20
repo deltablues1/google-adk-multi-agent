@@ -4,6 +4,34 @@
  * Supports image/file uploads and inline image rendering.
  */
 
+// --- API Token helpers ---
+// Token is read from localStorage and sent as Authorization: Bearer <token>.
+// If API_TOKEN is not set on the server, all requests pass through without auth.
+
+function getApiToken() {
+    return localStorage.getItem('api_token') || '';
+}
+
+function setApiToken(token) {
+    if (token) {
+        localStorage.setItem('api_token', token);
+    } else {
+        localStorage.removeItem('api_token');
+    }
+}
+
+/**
+ * Wrapper around fetch() that injects the Authorization header when a token is stored.
+ * Does NOT force Content-Type — callers set it explicitly where needed.
+ * FormData uploads remain unaffected (browser sets multipart/form-data automatically).
+ */
+function apiFetch(url, options = {}) {
+    const token = getApiToken();
+    const headers = { ...options.headers };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+    return fetch(url, { ...options, headers });
+}
+
 function dashboard() {
     return {
         // Chat state
@@ -39,6 +67,35 @@ function dashboard() {
 
         // Polling
         _statusInterval: null,
+        _hitlInterval: null,
+
+        // HITL (Human-in-the-Loop) state
+        pendingApprovals: [],
+        hitlModal: null,       // confirmation object being reviewed
+        hitlRejectReason: '',
+
+        // Token auth state
+        showTokenPrompt: false,
+
+        handleUnauthorized() {
+            // Called when any API request returns 401
+            this.showTokenPrompt = true;
+        },
+
+        saveToken() {
+            const input = document.getElementById('tokenInput');
+            if (input && input.value.trim()) {
+                setApiToken(input.value.trim());
+                this.showTokenPrompt = false;
+                // Reload data with new token
+                this.init();
+            }
+        },
+
+        clearToken() {
+            setApiToken('');
+            this.showTokenPrompt = false;
+        },
 
         async init() {
             // Load initial data in parallel
@@ -56,6 +113,9 @@ function dashboard() {
             // Poll status every 15 seconds
             this._statusInterval = setInterval(() => this.loadStatus(), 15000);
 
+            // Poll for pending HITL approvals every 5 seconds
+            this._hitlInterval = setInterval(() => this.loadPendingHITL(), 5000);
+
             // Initialize voice
             this.initVoice();
 
@@ -69,7 +129,8 @@ function dashboard() {
 
         async loadAgents() {
             try {
-                const res = await fetch('/api/agents');
+                const res = await apiFetch('/api/agents');
+                if (res.status === 401) { this.handleUnauthorized(); return; }
                 if (res.ok) this.agents = await res.json();
             } catch (e) {
                 console.error('Failed to load agents:', e);
@@ -78,7 +139,8 @@ function dashboard() {
 
         async loadSessions() {
             try {
-                const res = await fetch('/api/sessions');
+                const res = await apiFetch('/api/sessions');
+                if (res.status === 401) { this.handleUnauthorized(); return; }
                 if (res.ok) this.sessions = await res.json();
             } catch (e) {
                 console.error('Failed to load sessions:', e);
@@ -87,7 +149,8 @@ function dashboard() {
 
         async loadStatus() {
             try {
-                const res = await fetch('/api/status');
+                const res = await apiFetch('/api/status');
+                if (res.status === 401) { this.handleUnauthorized(); return; }
                 if (res.ok) this.systemStatus = await res.json();
             } catch (e) {
                 console.error('Failed to load status:', e);
@@ -97,8 +160,8 @@ function dashboard() {
         async loadHistory(sessionId) {
             try {
                 const [histRes, traceRes] = await Promise.all([
-                    fetch(`/api/sessions/${sessionId}/history`),
-                    fetch(`/api/trace/${sessionId}`)
+                    apiFetch(`/api/sessions/${sessionId}/history`),
+                    apiFetch(`/api/trace/${sessionId}`)
                 ]);
                 if (histRes.ok) this.messages = await histRes.json();
                 if (traceRes.ok) this.traceEvents = await traceRes.json();
@@ -112,7 +175,7 @@ function dashboard() {
 
         async switchSession(session) {
             this.currentSessionId = session.session_id;
-            await fetch(`/api/sessions/${session.session_id}/switch?user_id=${this.userId}`, {
+            await apiFetch(`/api/sessions/${session.session_id}/switch?user_id=${this.userId}`, {
                 method: 'POST'
             });
             await this.loadHistory(session.session_id);
@@ -121,7 +184,7 @@ function dashboard() {
 
         async newSession() {
             try {
-                const res = await fetch(`/api/sessions/new?user_id=${this.userId}`, {
+                const res = await apiFetch(`/api/sessions/new?user_id=${this.userId}`, {
                     method: 'POST'
                 });
                 if (res.ok) {
@@ -199,7 +262,9 @@ function dashboard() {
                     formData.append('user_id', this.userId);
                     formData.append('session_id', this.currentSessionId || '');
 
-                    const res = await fetch('/api/upload', {
+                    // apiFetch: adds Authorization header but NOT Content-Type
+                    // (browser sets multipart/form-data with boundary automatically for FormData)
+                    const res = await apiFetch('/api/upload', {
                         method: 'POST',
                         body: formData
                     });
@@ -294,7 +359,7 @@ function dashboard() {
                         }));
                 }
 
-                const response = await fetch('/api/chat/stream', {
+                const response = await apiFetch('/api/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(requestBody)
@@ -714,6 +779,55 @@ function dashboard() {
                     container.scrollTop = container.scrollHeight;
                 }
             });
-        }
+        },
+
+        // === HITL Approval ===
+
+        async loadPendingHITL() {
+            try {
+                const res = await apiFetch('/api/hitl/pending');
+                if (res.ok) this.pendingApprovals = await res.json();
+            } catch (e) {
+                // Silent — HITL polling is non-critical
+            }
+        },
+
+        openHITLModal(confirmation) {
+            this.hitlModal = confirmation;
+            this.hitlRejectReason = '';
+        },
+
+        closeHITLModal() {
+            this.hitlModal = null;
+            this.hitlRejectReason = '';
+        },
+
+        async approveHITL(confirmationId) {
+            try {
+                const res = await apiFetch(`/api/hitl/${confirmationId}/approve`, { method: 'POST' });
+                if (res.ok) {
+                    this.pendingApprovals = this.pendingApprovals.filter(a => a.confirmation_id !== confirmationId);
+                    this.closeHITLModal();
+                }
+            } catch (e) {
+                console.error('HITL approve failed:', e);
+            }
+        },
+
+        async rejectHITL(confirmationId) {
+            try {
+                const reason = this.hitlRejectReason || 'User rejected';
+                const res = await apiFetch(
+                    `/api/hitl/${confirmationId}/reject?reason=${encodeURIComponent(reason)}`,
+                    { method: 'POST' }
+                );
+                if (res.ok) {
+                    this.pendingApprovals = this.pendingApprovals.filter(a => a.confirmation_id !== confirmationId);
+                    this.closeHITLModal();
+                }
+            } catch (e) {
+                console.error('HITL reject failed:', e);
+            }
+        },
     };
 }

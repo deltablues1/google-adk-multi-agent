@@ -3439,7 +3439,14 @@ async def execute_fiscalization(
         # Get certificate configuration
         project_root = Path(__file__).parent.parent.parent
         cert_path = str(project_root / os.environ.get('FINA_CERT_PATH', '47034854402.F1.1.p12'))
-        cert_password = os.environ.get('FINA_CERT_PASSWORD', 'NinuPiL1903')
+        cert_password = os.environ.get('FINA_CERT_PASSWORD')
+        if not cert_password:
+            return {
+                "success": False,
+                "status": "config_error",
+                "error_message": "FINA_CERT_PASSWORD environment variable is required but not set.",
+                "jir": None,
+            }
         use_sandbox = os.environ.get('FINA_SANDBOX', 'true').lower() == 'true'
 
         logger.info(f"Certificate: {cert_path}")

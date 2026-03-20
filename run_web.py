@@ -7,6 +7,7 @@ Usage:
     python run_web.py --host 0.0.0.0     # Bind to all interfaces (for Docker/Cloud Run)
 """
 
+import os
 import sys
 import logging
 import argparse
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# Set interface context so HITL logic knows not to use blocking terminal input
+os.environ.setdefault('HITL_INTERFACE', 'web')
 
 
 def main():

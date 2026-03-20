@@ -714,6 +714,33 @@ body {
 }
 .modal-close:hover { background: rgba(255,255,255,0.3); }
 
+/* === HITL BANNER === */
+.hitl-banner {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 16px;
+    background: rgba(255, 167, 38, 0.12);
+    border-bottom: 1px solid var(--warning);
+    font-size: 13px;
+    color: var(--warning);
+    flex-shrink: 0;
+}
+.hitl-icon { font-size: 16px; }
+.hitl-review-btn {
+    padding: 4px 12px;
+    background: var(--warning);
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.hitl-review-btn:hover { opacity: 0.85; }
+
 [x-cloak] { display: none !important; }
 
 /* === RESPONSIVE === */

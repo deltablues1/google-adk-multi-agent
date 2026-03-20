@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ERP — LUX TECH</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    /* ── ERP-specific overrides ─────────────────────────── */
+    /* Reset body grid from style.css (chat layout) */
+    body { display: block; height: 100vh; overflow: hidden; }
+    .erp-layout { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* Top navbar */
+    .erp-nav {
+      display: flex; align-items: center; gap: 0;
+      background: var(--bg-secondary); border-bottom: 1px solid var(--border-color);
+      padding: 0 1rem; height: 52px; flex-shrink: 0;
+    }
+    .erp-nav-brand {
+      font-weight: 700; font-size: 1rem; color: var(--accent-color);
+      margin-right: 1.5rem; white-space: nowrap;
+    }
+    .erp-nav-links { display: flex; gap: 0; }
+    .erp-nav-link {
+      padding: 0 1rem; height: 52px; display: flex; align-items: center;
+      color: var(--text-muted); cursor: pointer; font-size: 0.85rem;
+      border-bottom: 2px solid transparent; transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .erp-nav-link:hover { color: var(--text-primary); }
+    .erp-nav-link.active { color: var(--accent-color); border-bottom-color: var(--accent-color); }
+    .erp-nav-spacer { flex: 1; }
+    .erp-ai-toggle {
+      padding: 0.35rem 0.85rem; background: var(--accent-color);
+      color: #fff; border-radius: 4px; cursor: pointer; font-size: 0.8rem;
+      border: none; white-space: nowrap;
+    }
+
+    /* Main content area */
+    .erp-main { flex: 1; overflow-y: auto; padding: 1.5rem; }
+    .erp-section { display: none; }
+    .erp-section.active { display: block; }
+
+    /* KPI cards */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .kpi-card {
+      background: var(--bg-secondary); border: 1px solid var(--border-color);
+      border-radius: 8px; padding: 1.25rem;
+    }
+    .kpi-label { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.4rem; }
+    .kpi-value { font-size: 1.6rem; font-weight: 700; color: var(--text-primary); }
+    .kpi-value.danger { color: var(--danger-color, #e74c3c); }
+    .kpi-sub { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+    /* Tables */
+    .erp-table-wrap { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+    .erp-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .erp-table th { background: var(--bg-tertiary, var(--bg-primary)); padding: 0.65rem 0.85rem; text-align: left; color: var(--text-muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--border-color); }
+    .erp-table td { padding: 0.6rem 0.85rem; border-bottom: 1px solid var(--border-color); color: var(--text-primary); }
+    .erp-table tr:last-child td { border-bottom: none; }
+    .erp-table tr:hover td { background: var(--bg-hover, rgba(255,255,255,0.03)); }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 4px; font-size: 0.72rem; font-weight: 600; }
+    .badge-paid { background: #1a4a2e; color: #4ade80; }
+    .badge-partial { background: #4a3a1a; color: #fb923c; }
+    .badge-unpaid { background: #3a2a2a; color: #94a3b8; }
+    .badge-overdue { background: #4a1a1a; color: #f87171; }
+    .badge-draft { background: #2a2a3a; color: #94a3b8; }
+    .badge-approved { background: #1a3a4a; color: #38bdf8; }
+    .badge-received { background: #1a3a4a; color: #38bdf8; }
+
+    /* Action buttons */
+    .btn-xs { padding: 0.2rem 0.55rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; border: 1px solid transparent; }
+    .btn-primary { background: var(--accent-color); color: #fff; border-color: var(--accent-color); }
+    .btn-outline { background: transparent; color: var(--text-muted); border-color: var(--border-color); }
+    .btn-outline:hover { color: var(--text-primary); border-color: var(--text-muted); }
+    .btn-danger { background: transparent; color: #f87171; border-color: #f87171; }
+
+    /* Section header */
+    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+    .section-title { font-size: 1rem; font-weight: 600; color: var(--text-primary); }
+
+    /* Filter bar */
+    .filter-bar { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .filter-bar input, .filter-bar select {
+      background: var(--bg-secondary); border: 1px solid var(--border-color);
+      color: var(--text-primary); padding: 0.4rem 0.75rem; border-radius: 4px;
+      font-size: 0.82rem; outline: none;
+    }
+    .filter-bar input:focus, .filter-bar select:focus { border-color: var(--accent-color); }
+
+    /* Two-column grid */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* Report tabs */
+    .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--border-color); margin-bottom: 1rem; }
+    .tab-btn { padding: 0.5rem 1rem; font-size: 0.82rem; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; background: none; border-top: none; border-left: none; border-right: none; }
+    .tab-btn.active { color: var(--accent-color); border-bottom-color: var(--accent-color); }
+
+    /* AI Command Bar */
+    .ai-bar {
+      border-top: 1px solid var(--border-color); background: var(--bg-secondary);
+      padding: 0.75rem 1rem; flex-shrink: 0;
+    }
+    .ai-bar-inner { display: flex; gap: 0.5rem; align-items: center; }
+    .ai-bar-label { font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
+    .ai-bar input {
+      flex: 1; background: var(--bg-primary); border: 1px solid var(--border-color);
+      color: var(--text-primary); padding: 0.45rem 0.75rem; border-radius: 4px;
+      font-size: 0.85rem; outline: none;
+    }
+    .ai-bar input:focus { border-color: var(--accent-color); }
+    .ai-response {
+      margin-top: 0.5rem; font-size: 0.82rem; color: var(--text-muted);
+      max-height: 120px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5;
+    }
+
+    /* Modal */
+    .erp-modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      display: flex; align-items: center; justify-content: center; z-index: 1000;
+    }
+    .erp-modal {
+      background: var(--bg-secondary); border: 1px solid var(--border-color);
+      border-radius: 8px; padding: 1.5rem; width: 100%; max-width: 440px;
+    }
+    .erp-modal h3 { font-size: 0.95rem; font-weight: 600; margin-bottom: 1rem; }
+    .form-row { margin-bottom: 0.75rem; }
+    .form-label { display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.3rem; }
+    .form-input {
+      width: 100%; background: var(--bg-primary); border: 1px solid var(--border-color);
+      color: var(--text-primary); padding: 0.45rem 0.65rem; border-radius: 4px;
+      font-size: 0.85rem; outline: none; box-sizing: border-box;
+    }
+    .form-input:focus { border-color: var(--accent-color); }
+    .form-error { font-size: 0.75rem; color: #f87171; margin-top: 0.25rem; }
+    .modal-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+
+    /* Loading spinner */
+    .loading-row td { text-align: center; color: var(--text-muted); padding: 2rem !important; }
+
+    /* Mini bar chart */
+    .bar-row { display: flex; align-items: center; gap: 0.5rem; margin: 0.3rem 0; font-size: 0.8rem; }
+    .bar-label { width: 100px; color: var(--text-muted); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-track { flex: 1; background: var(--bg-primary); border-radius: 3px; height: 14px; overflow: hidden; }
+    .bar-fill { height: 100%; background: var(--accent-color); border-radius: 3px; min-width: 2px; transition: width 0.3s; }
+    .bar-fill.danger { background: #e74c3c; }
+    .bar-val { width: 80px; color: var(--text-primary); font-weight: 600; }
+  </style>
+</head>
+<body>
+<div class="erp-layout" x-data="erpApp()" x-init="init()">
+
+  <!-- ── Top Navigation ─────────────────────────── -->
+  <nav class="erp-nav">
+    <span class="erp-nav-brand">⚡ LUX ERP</span>
+    <div class="erp-nav-links">
+      <a class="erp-nav-link" :class="{active: view==='dashboard'}" @click="view='dashboard'">Dashboard</a>
+      <a class="erp-nav-link" :class="{active: view==='customers'}" @click="view='customers'; loadCustomers()">Kupci</a>
+      <a class="erp-nav-link" :class="{active: view==='invoices'}" @click="view='invoices'; loadInvoices()">Fakture</a>
+      <a class="erp-nav-link" :class="{active: view==='vendor'}" @click="view='vendor'; loadVendorInvoices()">URA</a>
+      <a class="erp-nav-link" :class="{active: view==='inventory'}" @click="view='inventory'; loadProducts()">Zalihe</a>
+      <a class="erp-nav-link" :class="{active: view==='reports'}" @click="view='reports'; loadReport('vat')">Izvještaji</a>
+    </div>
+    <div class="erp-nav-spacer"></div>
+    <a href="/" style="font-size:0.78rem; color:var(--text-muted); margin-right:1rem; text-decoration:none;">← Chat</a>
+    <button class="erp-ai-toggle" @click="aiOpen=!aiOpen">AI asistent</button>
+  </nav>
+
+  <!-- ── Main Content ────────────────────────────── -->
+  <div class="erp-main">
+
+    <!-- DASHBOARD -->
+    <div class="erp-section" :class="{active: view==='dashboard'}">
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Ukupna potraživanja</div>
+          <div class="kpi-value" x-text="fmt(kpi.receivables_total)"></div>
+          <div class="kpi-sub" x-text="kpi.receivables_count + ' otvorenih računa'"></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Zakašnjela potraživanja</div>
+          <div class="kpi-value" :class="{danger: kpi.overdue_total > 0}" x-text="fmt(kpi.overdue_total)"></div>
+          <div class="kpi-sub" x-text="kpi.overdue_count + ' zakašnjelih'"></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Ukupne obveze</div>
+          <div class="kpi-value" x-text="fmt(kpi.payables_total)"></div>
+          <div class="kpi-sub" x-text="kpi.payables_count + ' ulaznih računa'"></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Cash flow (30 dana)</div>
+          <div class="kpi-value" :class="{danger: kpi.cashflow < 0}" x-text="fmt(kpi.cashflow)"></div>
+          <div class="kpi-sub">prihodi − rashodi</div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <!-- Top 5 overdue -->
+        <div>
+          <div class="section-header"><span class="section-title">Top 5 zakašnjelih</span></div>
+          <div class="erp-table-wrap">
+            <table class="erp-table">
+              <thead><tr><th>Kupac</th><th>Iznos</th><th>Dana</th><th></th></tr></thead>
+              <tbody>
+                <template x-if="overdueInvoices.length === 0">
+                  <tr><td colspan="4" style="text-align:center; color:var(--text-muted); padding:1rem">Nema zakašnjelih</td></tr>
+                </template>
+                <template x-for="inv in overdueInvoices.slice(0,5)" :key="inv._id">
+                  <tr>
+                    <td x-text="inv.customer_name || inv.buyer_name || '—'" style="max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
+                    <td x-text="fmt(inv.erp_amount_due)"></td>
+                    <td><span class="badge badge-overdue" x-text="daysOverdue(inv) + 'd'"></span></td>
+                    <td><button class="btn-xs btn-primary" @click="openPayment(inv)">Uplata</button></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <!-- Low stock -->
+        <div>
+          <div class="section-header"><span class="section-title">Niske zalihe</span></div>
+          <div class="erp-table-wrap">
+            <table class="erp-table">
+              <thead><tr><th>Artikl</th><th>Kol.</th><th>Min</th><th></th></tr></thead>
+              <tbody>
+                <template x-if="lowStockProducts.length === 0">
+                  <tr><td colspan="4" style="text-align:center; color:var(--text-muted); padding:1rem">Sve u redu</td></tr>
+                </template>
+                <template x-for="p in lowStockProducts.slice(0,5)" :key="p._id">
+                  <tr>
+                    <td x-text="p.name" style="max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
+                    <td x-text="p.stock_quantity ?? 0"></td>
+                    <td x-text="p.min_stock ?? '—'"></td>
+                    <td><button class="btn-xs btn-outline" @click="openAdjust(p)">Uskladi</button></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Activity Feed -->
+      <div style="margin-top:1.5rem">
+        <div class="section-header"><span class="section-title">Posljednje aktivnosti</span></div>
+        <div class="erp-table-wrap">
+          <table class="erp-table">
+            <thead><tr><th style="width:30px"></th><th>Akcija</th><th>Dokument</th><th>Vrijeme</th></tr></thead>
+            <tbody>
+              <tr x-show="loadingActivity" class="loading-row"><td colspan="4">Učitavanje...</td></tr>
+              <template x-if="activityFeed.length === 0 && !loadingActivity">
+                <tr><td colspan="4" style="text-align:center; color:var(--text-muted); padding:1rem">Nema aktivnosti</td></tr>
+              </template>
+              <template x-for="a in activityFeed.slice(0,10)" :key="a.id">
+                <tr>
+                  <td style="text-align:center; font-weight:700; color:var(--accent-color)" x-text="activityIcon(a.action)"></td>
+                  <td x-text="a.description" style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
+                  <td style="font-family:monospace; font-size:0.78rem" x-text="a.display_id || '—'"></td>
+                  <td style="color:var(--text-muted); font-size:0.78rem; white-space:nowrap" x-text="activityTime(a.timestamp)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- CUSTOMERS -->
+    <div class="erp-section" :class="{active: view==='customers'}">
+      <div class="section-header">
+        <span class="section-title">Kupci i dobavljači</span>
+      </div>
+      <div class="filter-bar">
+        <input x-model="customerSearch" @input.debounce.400ms="loadCustomers()" placeholder="Pretraga..." />
+        <select x-model="customerTypeFilter" @change="loadCustomers()">
+          <option value="">Svi tipovi</option>
+          <option value="customer">Kupci</option>
+          <option value="supplier">Dobavljači</option>
+          <option value="both">Oboje</option>
+        </select>
+      </div>
+      <div class="erp-table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>Naziv</th><th>OIB</th><th>Tip</th><th>Kategorija</th><th>Email</th><th></th></tr></thead>
+          <tbody>
+            <tr x-show="loadingCustomers" class="loading-row"><td colspan="6">Učitavanje...</td></tr>
+            <template x-for="c in customers" :key="c._id">
+              <tr>
+                <td x-text="c.name"></td>
+                <td x-text="c.oib || '—'" style="font-family:monospace; font-size:0.78rem"></td>
+                <td><span class="badge badge-draft" x-text="c.party_type || 'customer'"></span></td>
+                <td x-text="c.category || '—'"></td>
+                <td x-text="c.email || '—'" style="font-size:0.78rem"></td>
+                <td>
+                  <button class="btn-xs btn-outline" @click="viewCustomerBalance(c)">Saldo</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="!loadingCustomers && customers.length === 0" class="loading-row"><td colspan="6">Nema rezultata</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- INVOICES -->
+    <div class="erp-section" :class="{active: view==='invoices'}">
+      <div class="section-header">
+        <span class="section-title">Izlazni računi</span>
+      </div>
+      <div class="filter-bar">
+        <select x-model="invoiceTypeFilter" @change="loadInvoices()">
+          <option value="">Svi tipovi</option>
+          <option value="b2c">B2C</option>
+          <option value="b2b">B2B</option>
+          <option value="b2g">B2G</option>
+          <option value="eu">EU</option>
+          <option value="int">INT</option>
+        </select>
+        <select x-model="invoiceStatusFilter" @change="loadInvoices()">
+          <option value="">Svi statusi</option>
+          <option value="unpaid">Neplaćeni</option>
+          <option value="partial">Djelomično plaćeni</option>
+          <option value="paid">Plaćeni</option>
+        </select>
+        <input type="date" x-model="invoiceDateFrom" @change="loadInvoices()" placeholder="Od datuma" />
+        <input type="date" x-model="invoiceDateTo" @change="loadInvoices()" placeholder="Do datuma" />
+      </div>
+      <div class="erp-table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>Broj računa</th><th>Kupac</th><th>Datum</th><th>Iznos</th><th>Duguje</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            <tr x-show="loadingInvoices" class="loading-row"><td colspan="7">Učitavanje...</td></tr>
+            <template x-for="inv in invoices" :key="inv._id">
+              <tr>
+                <td style="font-family:monospace; font-size:0.78rem" x-text="inv.invoice_number || inv.display_id || inv._id"></td>
+                <td x-text="inv.customer_name || inv.buyer_name || '—'" style="max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
+                <td x-text="(inv.date || '').slice(0,10)"></td>
+                <td x-text="fmt(inv.grand_total || inv.total_gross || 0)"></td>
+                <td x-text="fmt(inv.erp_amount_due)"></td>
+                <td><span class="badge" :class="paymentBadge(inv)" x-text="paymentLabel(inv)"></span></td>
+                <td>
+                  <button class="btn-xs btn-primary" x-show="inv.erp_payment_status !== 'paid'" @click="openPayment(inv)">Uplata</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="!loadingInvoices && invoices.length === 0" class="loading-row"><td colspan="7">Nema računa</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- VENDOR INVOICES (URA) -->
+    <div class="erp-section" :class="{active: view==='vendor'}">
+      <div class="section-header">
+        <span class="section-title">Ulazni računi (URA)</span>
+      </div>
+      <div class="filter-bar">
+        <select x-model="vendorStatusFilter" @change="loadVendorInvoices()">
+          <option value="">Svi statusi</option>
+          <option value="draft">Nacrt</option>
+          <option value="received">Primljeno</option>
+          <option value="approved">Odobreno</option>
+          <option value="disputed">Sporno</option>
+        </select>
+        <select x-model="vendorPaymentFilter" @change="loadVendorInvoices()">
+          <option value="">Sva plaćanja</option>
+          <option value="unpaid">Neplaćeno</option>
+          <option value="partial">Djelomično</option>
+          <option value="paid">Plaćeno</option>
+        </select>
+      </div>
+      <div class="erp-table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>Broj URA</th><th>Dobavljač</th><th>Datum</th><th>Iznos</th><th>Status dok.</th><th>Status uplate</th><th></th></tr></thead>
+          <tbody>
+            <tr x-show="loadingVendor" class="loading-row"><td colspan="7">Učitavanje...</td></tr>
+            <template x-for="ura in vendorInvoices" :key="ura._id">
+              <tr style="cursor:pointer" @click="openURADetail(ura)">
+                <td style="font-family:monospace; font-size:0.78rem" x-text="ura.display_id || ura._id"></td>
+                <td x-text="ura.vendor_name || '—'" style="max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
+                <td x-text="(ura.issue_date || '').slice(0,10)"></td>
+                <td x-text="fmt(ura.total_gross || 0)"></td>
+                <td><span class="badge badge-draft" x-text="ura.document_status || 'draft'"></span></td>
+                <td><span class="badge" :class="paymentBadge(ura)" x-text="ura.payment_status || 'unpaid'"></span></td>
+                <td style="display:flex; gap:0.3rem; flex-wrap:nowrap" @click.stop>
+                  <button class="btn-xs btn-outline" x-show="ura.document_status === 'draft'" @click="confirmURAReceived(ura)">Potvrdi primitak</button>
+                  <button class="btn-xs btn-outline" x-show="ura.document_status === 'received'" @click="approveURA(ura)">Odobri</button>
+                  <button class="btn-xs btn-primary" x-show="ura.document_status === 'approved' && ura.payment_status !== 'paid'" @click="openVendorPayment(ura)">Plati</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="!loadingVendor && vendorInvoices.length === 0" class="loading-row"><td colspan="7">Nema ulaznih računa</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- INVENTORY -->
+    <div class="erp-section" :class="{active: view==='inventory'}">
+      <div class="section-header">
+        <span class="section-title">Zalihe</span>
+        <label style="font-size:0.8rem; color:var(--text-muted)">
+          <input type="checkbox" x-model="lowStockFilter" @change="loadProducts()" /> Samo niske zalihe
+        </label>
+      </div>
+      <div class="erp-table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>SKU</th><th>Naziv</th><th>Količina</th><th>Jed.</th><th>Min</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            <tr x-show="loadingProducts" class="loading-row"><td colspan="7">Učitavanje...</td></tr>
+            <template x-for="p in products" :key="p._id">
+              <tr>
+                <td style="font-family:monospace; font-size:0.78rem" x-text="p.sku || '—'"></td>
+                <td x-text="p.name"></td>
+                <td x-text="p.stock_quantity ?? 0" style="font-weight:600"></td>
+                <td x-text="p.unit || 'kom'" style="color:var(--text-muted)"></td>
+                <td x-text="p.min_stock ?? '—'" style="color:var(--text-muted)"></td>
+                <td>
+                  <span x-show="p.low_stock" class="badge badge-overdue">Nisko</span>
+                  <span x-show="!p.low_stock" class="badge badge-paid">OK</span>
+                </td>
+                <td style="display:flex; gap:0.3rem">
+                  <button class="btn-xs btn-outline" @click="openMovements(p)">Kretanja</button>
+                  <button class="btn-xs btn-outline" @click="openAdjust(p)">Uskladi</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="!loadingProducts && products.length === 0" class="loading-row"><td colspan="7">Nema artikala</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- REPORTS -->
+    <div class="erp-section" :class="{active: view==='reports'}">
+      <div class="tab-bar">
+        <button class="tab-btn" :class="{active: reportTab==='vat'}" @click="reportTab='vat'; loadReport('vat')">PDV</button>
+        <button class="tab-btn" :class="{active: reportTab==='receivables'}" @click="reportTab='receivables'; loadReport('receivables')">Potraživanja</button>
+        <button class="tab-btn" :class="{active: reportTab==='payables'}" @click="reportTab='payables'; loadReport('payables')">Obveze</button>
+        <button class="tab-btn" :class="{active: reportTab==='financial'}" @click="reportTab='financial'; loadReport('financial')">Financije</button>
+      </div>
+
+      <!-- VAT -->
+      <div x-show="reportTab==='vat'">
+        <div class="filter-bar">
+          <select x-model="vatYear" @change="loadReport('vat')">
+            <template x-for="y in [2025,2026,2027]" :key="y"><option :value="y" x-text="y"></option></template>
+          </select>
+          <select x-model="vatMonth" @change="loadReport('vat')">
+            <template x-for="m in 12" :key="m"><option :value="m" x-text="monthName(m)"></option></template>
+          </select>
+        </div>
+        <div x-show="vatReport" class="two-col">
+          <div>
+            <div class="section-title" style="margin-bottom:0.75rem">Izlazni PDV (fakture)</div>
+            <div class="erp-table-wrap">
+              <table class="erp-table">
+                <thead><tr><th>Stopa</th><th>Osnovica (EUR)</th><th>PDV (EUR)</th></tr></thead>
+                <tbody>
+                  <template x-for="[rate, data] in Object.entries(vatReport?.output_vat || {})" :key="rate">
+                    <tr>
+                      <td x-text="rate + '%'"></td>
+                      <td x-text="fmt(data.taxable_amount)"></td>
+                      <td x-text="fmt(data.vat_amount)"></td>
+                    </tr>
+                  </template>
+                  <tr style="font-weight:600; border-top: 1px solid var(--border-color)">
+                    <td>UKUPNO</td><td>—</td><td x-text="fmt(vatReport?.total_output_vat)"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <div class="section-title" style="margin-bottom:0.75rem">Ulazni PDV (URA)</div>
+            <div class="erp-table-wrap">
+              <table class="erp-table">
+                <thead><tr><th>Stopa</th><th>Osnovica (EUR)</th><th>PDV (EUR)</th></tr></thead>
+                <tbody>
+                  <template x-for="[rate, data] in Object.entries(vatReport?.input_vat || {})" :key="rate">
+                    <tr>
+                      <td x-text="rate"></td>
+                      <td x-text="fmt(data.taxable_amount)"></td>
+                      <td x-text="fmt(data.vat_amount)"></td>
+                    </tr>
+                  </template>
+                  <tr style="font-weight:600">
+                    <td>UKUPNO</td><td>—</td><td x-text="fmt(vatReport?.total_input_vat)"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div style="margin-top:0.75rem; padding:0.75rem; background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:6px; font-size:0.85rem">
+              <strong>PDV za uplatu: </strong>
+              <span x-text="fmt((vatReport?.total_output_vat || 0) - (vatReport?.total_input_vat || 0))"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RECEIVABLES AGING -->
+      <div x-show="reportTab==='receivables'">
+        <template x-if="agingReport">
+          <div>
+            <div class="kpi-grid" style="margin-bottom:1rem">
+              <div class="kpi-card">
+                <div class="kpi-label">Ukupno otvoreno</div>
+                <div class="kpi-value" x-text="fmt(agingReport.total_open_eur)"></div>
+                <div class="kpi-sub" x-text="agingReport.total_count + ' računa'"></div>
+              </div>
+            </div>
+            <template x-for="[bucket, data] in Object.entries(agingReport.buckets || {})" :key="bucket">
+              <div x-show="data.invoices && data.invoices.length > 0" style="margin-bottom:1rem">
+                <div class="section-title" x-text="bucketLabel(bucket)" style="margin-bottom:0.5rem"></div>
+                <div class="erp-table-wrap">
+                  <table class="erp-table">
+                    <thead><tr><th>Račun</th><th>Kupac</th><th>Dospijeće</th><th>Duguje</th><th></th></tr></thead>
+                    <tbody>
+                      <template x-for="inv in data.invoices" :key="inv._id">
+                        <tr>
+                          <td style="font-family:monospace; font-size:0.78rem" x-text="inv.invoice_number || inv._id"></td>
+                          <td x-text="inv.customer_name || inv.buyer_name || '—'"></td>
+                          <td x-text="(inv.due_date || '').slice(0,10)"></td>
+                          <td x-text="fmt(inv.erp_amount_due)"></td>
+                          <td><button class="btn-xs btn-primary" x-show="inv.erp_payment_status !== 'paid'" @click="openPayment(inv)">Uplata</button></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <!-- PAYABLES AGING -->
+      <div x-show="reportTab==='payables'">
+        <template x-if="payablesReport">
+          <div>
+            <div class="kpi-grid" style="margin-bottom:1rem">
+              <div class="kpi-card">
+                <div class="kpi-label">Ukupno dugujemo</div>
+                <div class="kpi-value" x-text="fmt(payablesReport.total_due_eur)"></div>
+                <div class="kpi-sub" x-text="payablesReport.total_count + ' URA'"></div>
+              </div>
+            </div>
+            <template x-for="[bucket, data] in Object.entries(payablesReport.buckets || {})" :key="bucket">
+              <div x-show="data.invoices && data.invoices.length > 0" style="margin-bottom:1rem">
+                <div class="section-title" x-text="bucketLabel(bucket)" style="margin-bottom:0.5rem"></div>
+                <div class="erp-table-wrap">
+                  <table class="erp-table">
+                    <thead><tr><th>URA br.</th><th>Dobavljač</th><th>Dospijeće</th><th>Duguje</th></tr></thead>
+                    <tbody>
+                      <template x-for="ura in data.invoices" :key="ura._id">
+                        <tr>
+                          <td style="font-family:monospace; font-size:0.78rem" x-text="ura.display_id || ura._id"></td>
+                          <td x-text="ura.vendor_name || '—'"></td>
+                          <td x-text="(ura.due_date || '').slice(0,10)"></td>
+                          <td x-text="fmt(ura.amount_due)"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <!-- FINANCIAL SUMMARY -->
+      <div x-show="reportTab==='financial'">
+        <div class="filter-bar">
+          <input type="date" x-model="finStart" @change="loadReport('financial')" />
+          <input type="date" x-model="finEnd" @change="loadReport('financial')" />
+        </div>
+        <template x-if="financialReport">
+          <div>
+            <div class="kpi-grid">
+              <div class="kpi-card">
+                <div class="kpi-label">Prihodi</div>
+                <div class="kpi-value" x-text="fmt(financialReport.revenue_eur)"></div>
+                <div class="kpi-sub" x-text="financialReport.invoice_count + ' faktura'"></div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-label">Rashodi</div>
+                <div class="kpi-value" x-text="fmt(financialReport.expenses_eur)"></div>
+                <div class="kpi-sub" x-text="financialReport.vendor_invoice_count + ' URA'"></div>
+              </div>
+              <div class="kpi-card">
+                <div class="kpi-label">Bruto marža</div>
+                <div class="kpi-value" :class="{danger: financialReport.gross_margin_eur < 0}" x-text="fmt(financialReport.gross_margin_eur)"></div>
+                <div class="kpi-sub" x-text="financialReport.gross_margin_pct + '%'"></div>
+              </div>
+            </div>
+            <div style="margin-top:1rem">
+              <div class="section-title" style="margin-bottom:0.75rem">Rashodi po kategoriji</div>
+              <template x-for="[cat, amount] in sortedExpenses()" :key="cat">
+                <div class="bar-row">
+                  <div class="bar-label" x-text="cat"></div>
+                  <div class="bar-track">
+                    <div class="bar-fill" :style="'width:' + barWidth(amount, financialReport.expenses_eur) + '%'"></div>
+                  </div>
+                  <div class="bar-val" x-text="fmt(amount)"></div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+  </div><!-- /erp-main -->
+
+  <!-- ── AI Command Bar ─────────────────────────── -->
+  <div class="ai-bar" x-show="aiOpen">
+    <div class="ai-bar-inner">
+      <span class="ai-bar-label">AI:</span>
+      <input x-model="aiInput" placeholder="Npr. 'Pokaži zakašnjele račune' ili 'Koliko dugujemo?'"
+             @keydown.enter="sendAI()" />
+      <button class="btn-xs btn-primary" @click="sendAI()" :disabled="aiStreaming">
+        <span x-show="!aiStreaming">Pošalji</span>
+        <span x-show="aiStreaming">...</span>
+      </button>
+    </div>
+    <div class="ai-response" x-show="aiResponse" x-text="aiResponse"></div>
+  </div>
+
+  <!-- ── URA Detail Modal ───────────────────────── -->
+  <div class="erp-modal-overlay" x-show="uraDetail.open" @click.self="uraDetail.open=false">
+    <div class="erp-modal" style="max-width:560px">
+      <h3 style="margin-bottom:1rem">
+        <span x-text="uraDetail.data.display_id"></span>
+        <span class="badge badge-draft" style="margin-left:0.5rem; font-size:0.7rem" x-text="uraDetail.data.document_status"></span>
+      </h3>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.6rem 1.2rem; margin-bottom:1rem">
+        <div><div class="kpi-label">Dobavljač</div><div x-text="uraDetail.data.vendor_name || '—'"></div></div>
+        <div><div class="kpi-label">OIB dobavljača</div><div x-text="uraDetail.data.vendor_oib || '—'" style="font-family:monospace"></div></div>
+        <div><div class="kpi-label">Broj računa dobavljača</div><div x-text="uraDetail.data.vendor_invoice_no || '—'" style="font-family:monospace"></div></div>
+        <div><div class="kpi-label">Datum računa</div><div x-text="(uraDetail.data.issue_date || '—').slice(0,10)"></div></div>
+        <div><div class="kpi-label">Bruto iznos</div><div x-text="fmt(uraDetail.data.total_gross || 0)" style="font-weight:700"></div></div>
+        <div><div class="kpi-label">PDV</div><div x-text="fmt(uraDetail.data.vat_amount || 0)"></div></div>
+        <div><div class="kpi-label">Neto</div><div x-text="fmt(uraDetail.data.subtotal_net || 0)"></div></div>
+        <div><div class="kpi-label">Kategorija</div><div x-text="uraDetail.data.category || '—'"></div></div>
+      </div>
+      <div x-show="uraDetail.data.notes" style="margin-bottom:0.8rem; padding:0.6rem 0.75rem; background:var(--bg-input); border-radius:5px; font-size:0.8rem; color:var(--text-muted)" x-text="uraDetail.data.notes"></div>
+      <!-- OCR stavke -->
+      <div x-show="uraDetail.data.items && uraDetail.data.items.length > 0" style="margin-bottom:1rem">
+        <div class="kpi-label" style="margin-bottom:0.4rem">Stavke (OCR)</div>
+        <table class="erp-table" style="font-size:0.78rem">
+          <thead><tr><th>Opis</th><th style="text-align:right">Iznos</th></tr></thead>
+          <tbody>
+            <template x-for="(item, i) in (uraDetail.data.items || [])" :key="i">
+              <tr>
+                <td x-text="item.description || item.name || '—'"></td>
+                <td style="text-align:right" x-text="fmt(item.amount || item.unit_price || 0)"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <!-- OCR confidence + vendor match -->
+      <div x-show="uraDetail.data.ocr_data" style="font-size:0.78rem; color:var(--text-muted); margin-bottom:1rem; display:flex; gap:1rem; flex-wrap:wrap; align-items:center">
+        <span x-show="uraDetail.data.ocr_data?.confidence_score">
+          OCR pouzdanost: <strong x-text="((uraDetail.data.ocr_data?.confidence_score || 0) * 100).toFixed(0) + '%'"></strong>
+        </span>
+        <span x-show="uraDetail.data.ocr_data?.vendor_match === 'matched'" class="badge badge-paid" style="font-size:0.72rem">
+          Dobavljac automatski prepoznat
+        </span>
+        <span x-show="uraDetail.data.ocr_data?.vendor_match === 'no_match'" class="badge badge-unpaid" style="font-size:0.72rem">
+          Dobavljac nije prepoznat
+        </span>
+      </div>
+      <div style="display:flex; gap:0.5rem; justify-content:flex-end; flex-wrap:wrap">
+        <button class="btn-xs btn-outline" @click="uraDetail.open=false">Zatvori</button>
+        <button class="btn-xs btn-outline" x-show="uraDetail.data.document_status === 'draft'" @click="confirmURAReceived(uraDetail.data); uraDetail.open=false">Potvrdi primitak</button>
+        <button class="btn-xs btn-outline" x-show="uraDetail.data.document_status === 'received'" @click="approveURA(uraDetail.data); uraDetail.open=false">Odobri</button>
+        <button class="btn-xs btn-primary" x-show="uraDetail.data.document_status === 'approved' && uraDetail.data.payment_status !== 'paid'" @click="openVendorPayment(uraDetail.data); uraDetail.open=false">Plati</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Payment Modal ──────────────────────────── -->
+  <div class="erp-modal-overlay" x-show="paymentModal.open" @click.self="paymentModal.open=false">
+    <div class="erp-modal">
+      <h3>Evidencija uplate — <span x-text="paymentModal.displayId"></span></h3>
+      <div class="form-row">
+        <label class="form-label">Iznos (EUR) — duguje: <strong x-text="paymentModal.amountDue.toFixed(2)"></strong></label>
+        <input class="form-input" type="number" x-model="paymentModal.amount" min="0.01" :max="paymentModal.amountDue" step="0.01" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Datum uplate</label>
+        <input class="form-input" type="date" x-model="paymentModal.date" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Način plaćanja</label>
+        <select class="form-input" x-model="paymentModal.method">
+          <option value="transfer">Transakcija</option>
+          <option value="cash">Gotovina</option>
+          <option value="card">Kartica</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Referenca (poziv na broj)</label>
+        <input class="form-input" type="text" x-model="paymentModal.reference" />
+      </div>
+      <div class="form-error" x-show="paymentModal.error" x-text="paymentModal.error"></div>
+      <div class="modal-actions">
+        <button class="btn-xs btn-outline" @click="paymentModal.open=false">Odustani</button>
+        <button class="btn-xs btn-primary" @click="submitPayment()" :disabled="paymentModal.submitting">
+          <span x-show="!paymentModal.submitting">Spremi uplatu</span>
+          <span x-show="paymentModal.submitting">Snimanje...</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Movements Modal ───────────────────────── -->
+  <div class="erp-modal-overlay" x-show="movementsModal.open" @click.self="movementsModal.open=false">
+    <div class="erp-modal" style="max-width:600px">
+      <h3>Kretanja zaliha — <span x-text="movementsModal.productName"></span></h3>
+      <div class="erp-table-wrap" style="max-height:360px; overflow-y:auto">
+        <table class="erp-table">
+          <thead><tr><th>Datum</th><th>Tip</th><th>Promjena</th><th>Stanje</th><th>Razlog</th></tr></thead>
+          <tbody>
+            <tr x-show="movementsModal.loading" class="loading-row"><td colspan="5">Ucitavanje...</td></tr>
+            <template x-if="!movementsModal.loading && movementsModal.movements.length === 0">
+              <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:1rem">Nema kretanja</td></tr>
+            </template>
+            <template x-for="m in movementsModal.movements" :key="m._id">
+              <tr>
+                <td style="font-size:0.78rem; white-space:nowrap" x-text="(m.created_at || '').slice(0,10)"></td>
+                <td><span class="badge badge-draft" x-text="movementLabel(m.movement_type)"></span></td>
+                <td style="font-weight:600" :style="m.quantity_delta >= 0 ? 'color:#4ade80' : 'color:#f87171'" x-text="(m.quantity_delta >= 0 ? '+' : '') + m.quantity_delta"></td>
+                <td x-text="m.quantity_after"></td>
+                <td x-text="m.reason" style="max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.78rem; color:var(--text-muted)"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-xs btn-outline" @click="movementsModal.open=false">Zatvori</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Stock Adjust Modal ─────────────────────── -->
+  <div class="erp-modal-overlay" x-show="adjustModal.open" @click.self="adjustModal.open=false">
+    <div class="erp-modal">
+      <h3>Usklađivanje zaliha — <span x-text="adjustModal.productName"></span></h3>
+      <div class="form-row">
+        <label class="form-label">Trenutna količina</label>
+        <div style="font-size:1.1rem; font-weight:600; color:var(--text-primary)" x-text="adjustModal.currentQty"></div>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Nova količina</label>
+        <input class="form-input" type="number" x-model="adjustModal.newQty" min="0" step="0.001" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Razlog (min. 5 znakova)</label>
+        <input class="form-input" type="text" x-model="adjustModal.reason" placeholder="npr. Inventurno usklađivanje" />
+      </div>
+      <div class="form-error" x-show="adjustModal.error" x-text="adjustModal.error"></div>
+      <div class="modal-actions">
+        <button class="btn-xs btn-outline" @click="adjustModal.open=false">Odustani</button>
+        <button class="btn-xs btn-primary" @click="submitAdjust()" :disabled="adjustModal.submitting">
+          <span x-show="!adjustModal.submitting">Spremi</span>
+          <span x-show="adjustModal.submitting">Snimanje...</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /erp-layout -->
+
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.8/dist/cdn.min.js" defer></script>
+<script src="/static/erp.js"></script>
+</body>
+</html>

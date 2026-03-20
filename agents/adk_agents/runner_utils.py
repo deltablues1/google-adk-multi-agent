@@ -287,7 +287,17 @@ class RunnerHelper:
         self.app_name = app_name
 
         # Create session service
-        self.session_service = session_service or InMemorySessionService()
+        if session_service is not None:
+            self.session_service = session_service
+        else:
+            import os
+            use_persistent = os.environ.get("USE_PERSISTENT_ADK_SESSIONS", "false").lower() == "true"
+            if use_persistent:
+                from services.adk_session_service import FirestoreADKSessionService
+                self.session_service = FirestoreADKSessionService()
+                logger.info(f"RunnerHelper using FirestoreADKSessionService for session '{session_id}'")
+            else:
+                self.session_service = InMemorySessionService()
 
         # Create runner
         self.runner = Runner(

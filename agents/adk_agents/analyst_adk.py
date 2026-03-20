@@ -95,12 +95,25 @@ def create_analyst_agent(
     # Get Sheets tools
     sheets_tools = get_sheets_adk_tools(credentials=credentials)
 
+    from tools.adk_tools.erp_adk_tools import (
+        erp_get_vat_summary,
+        erp_get_receivables_aging,
+        erp_get_financial_summary,
+        erp_get_stock_levels,
+    )
+    all_tools = sheets_tools + [
+        erp_get_vat_summary,
+        erp_get_receivables_aging,
+        erp_get_financial_summary,
+        erp_get_stock_levels,
+    ]
+
     # Create agent using factory
     agent = create_adk_agent(
         name="analyst",
         model=model,
-        description="Google Sheets specialist for data analysis, schema-first reading, and efficient data manipulation",
-        tools=sheets_tools,
+        description="Google Sheets specialist for data analysis, schema-first reading, and efficient data manipulation. Also provides ERP financial reports: VAT, receivables aging, P&L, stock levels.",
+        tools=all_tools,
         load_instruction_from_file=True,  # Will load from agents/analyst/instructions.md
         config={
             "temperature": 0.2,  # Low temperature for precise data operations
@@ -108,7 +121,7 @@ def create_analyst_agent(
         }
     )
 
-    logger.info(f"Analyst ADK agent created with {len(sheets_tools)} Sheets tools")
+    logger.info(f"Analyst ADK agent created with {len(all_tools)} tools ({len(sheets_tools)} Sheets + 4 ERP)")
     return agent
 
 

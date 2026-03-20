@@ -240,6 +240,11 @@ Koji KPD kod želite koristiti? Ili unesite vlastiti kod.
         validate_kpd_code,
         calculate_tax,
     )
+    from tools.adk_tools.erp_adk_tools import (
+        erp_get_invoice,
+        erp_search_customers,
+        erp_get_product,
+    )
 
     # Create agent using factory with fiscalization tools
     agent = create_adk_agent(
@@ -255,6 +260,10 @@ Koji KPD kod želite koristiti? Ili unesite vlastiti kod.
             search_kpd_code,        # Search KPD codes
             validate_kpd_code,      # Validate user-provided KPD code
             calculate_tax,          # Calculate VAT breakdown
+            # ERP lookups (read-only)
+            erp_get_invoice,        # Pull invoice data from ERP
+            erp_search_customers,   # Look up customer/buyer OIB
+            erp_get_product,        # Get KPD code and VAT rate for product
         ],
         sub_agents=[],
         config={

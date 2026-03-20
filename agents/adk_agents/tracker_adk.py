@@ -55,6 +55,12 @@ def create_tracker_agent(
         tasks_complete_task
     )
 
+    from tools.adk_tools.erp_adk_tools import (
+        erp_list_open_invoices,
+        erp_record_payment,
+        erp_get_open_payables,
+    )
+
     # Create list of tools
     tools = [
         tasks_list_task_lists,
@@ -62,14 +68,18 @@ def create_tracker_agent(
         tasks_create_task,
         tasks_update_task,
         tasks_delete_task,
-        tasks_complete_task
+        tasks_complete_task,
+        # ERP payment tracking
+        erp_list_open_invoices,
+        erp_record_payment,
+        erp_get_open_payables,
     ]
 
     # Create agent using factory
     agent = create_adk_agent(
         name="tracker",
         model=model,
-        description="Google Tasks specialist: task management, scheduling, tracking action items",
+        description="Google Tasks specialist and ERP payment tracker: task management, open invoices, recording payments, payables tracking",
         tools=tools,
         instruction=instruction,
         config={

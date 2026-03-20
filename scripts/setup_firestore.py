@@ -19,6 +19,14 @@ Collections:
   - agent_learning         Agent adaptation patterns from conversations
   - audit_log              All agent actions for compliance
 
+ERP Module (new collections):
+  - payments               Incoming/outgoing payment records
+  - payment_allocations    Payment → invoice allocation (1 payment : N invoices)
+  - vendor_invoices        Incoming invoices (URA) from vendors
+  - erp_companies          Multi-tenant company registry
+  - erp_users              ERP user profiles with roles and permissions
+  - erp_counters           Sequential display ID counters
+
 Usage:
     python scripts/setup_firestore.py
     python scripts/setup_firestore.py --dry-run    # Preview without writing
@@ -635,6 +643,204 @@ def setup_audit_log(db, dry_run=False):
     print("  OK - audit_log")
 
 
+def setup_erp_payments(db, dry_run=False):
+    """ERP payment records (incoming and outgoing)."""
+    print("\n[15/20] payments (ERP)")
+    schema_doc = {
+        "_schema_version": "1.0",
+        "_description": "ERP payment records. UUID internal ID, display_id for humans.",
+        "_fields": {
+            "payment_id": "string - UUID (internal)",
+            "display_id": "string - PAY-2026-000001 (human-readable)",
+            "company_id": "string - multi-tenant isolation key",
+            "type": "string - incoming|outgoing",
+            "party_id": "string - FK → customers",
+            "party_name": "string - denormalized",
+            "invoice_ref_id": "string - FK → invoice document",
+            "invoice_ref_type": "string - b2c|b2b|b2g|eu|int|vendor",
+            "invoice_ref_display": "string - invoice display_id",
+            "amount": "decimal - EUR",
+            "currency": "string - EUR",
+            "payment_date": "date - YYYY-MM-DD",
+            "payment_method": "string - transfer|cash|card|direct_debit",
+            "reference": "string - poziv na broj",
+            "bank_account": "string - IBAN",
+            "status": "string - confirmed|pending|returned",
+            "notes": "string",
+            "created_at": "timestamp",
+            "created_by": "string",
+            "reconciled": "boolean",
+            "reconciled_at": "timestamp|null",
+            "idempotency_key": "string - SHA256 hash, prevents duplicates",
+        },
+        "_retention": "7 years",
+    }
+    if not dry_run:
+        db.collection("payments").document("_schema").set(schema_doc)
+        print("  OK - Schema doc written")
+    else:
+        print("  [DRY RUN] Would write schema doc")
+
+
+def setup_erp_payment_allocations(db, dry_run=False):
+    """Payment allocations — 1 payment can cover N invoices."""
+    print("\n[16/20] payment_allocations (ERP)")
+    schema_doc = {
+        "_schema_version": "1.0",
+        "_description": "Maps payments to invoices. One payment can partially cover multiple invoices.",
+        "_fields": {
+            "allocation_id": "string - UUID",
+            "company_id": "string",
+            "payment_id": "string - FK → payments",
+            "invoice_id": "string - FK → invoice document (UUID)",
+            "invoice_type": "string - b2c|b2b|b2g|eu|int|vendor",
+            "display_id": "string - invoice display_id for UI without join",
+            "amount": "decimal - portion of payment allocated to this invoice",
+            "allocated_at": "timestamp",
+            "allocated_by": "string - user_id",
+        },
+    }
+    if not dry_run:
+        db.collection("payment_allocations").document("_schema").set(schema_doc)
+        print("  OK - Schema doc written")
+    else:
+        print("  [DRY RUN] Would write schema doc")
+
+
+def setup_erp_vendor_invoices(db, dry_run=False):
+    """Vendor invoices — ulazni računi od dobavljača."""
+    print("\n[17/20] vendor_invoices (ERP)")
+    schema_doc = {
+        "_schema_version": "1.0",
+        "_description": "Incoming invoices (URA) from vendors. Separate from outgoing fiscal invoices.",
+        "_fields": {
+            "vendor_invoice_id": "string - UUID",
+            "display_id": "string - URA-2026-000001",
+            "company_id": "string",
+            "vendor_id": "string - FK → customers (party_type=supplier|both)",
+            "vendor_name": "string - denormalized",
+            "vendor_oib": "string",
+            "issue_date": "date - YYYY-MM-DD",
+            "due_date": "date - YYYY-MM-DD",
+            "received_date": "date - when physically received",
+            "items": "array[{description, quantity, unit_price, vat_rate, line_total}]",
+            "subtotal_net": "decimal",
+            "vat_amount": "decimal",
+            "total_gross": "decimal",
+            "currency": "string - EUR",
+            "document_status": "string - draft|received|approved|disputed|cancelled",
+            "payment_status": "string - unpaid|partial|paid (denormalized)",
+            "amount_paid": "decimal - running total of payments received",
+            "amount_due": "decimal - total_gross - amount_paid",
+            "category": "string - materials|services|utilities|equipment|other",
+            "vat_deductible": "boolean - can we reclaim input VAT?",
+            "scan_file_id": "string - FK → media_service file_id",
+            "ocr_data": "map - raw OCR output if scanned",
+            "notes": "string",
+            "approved_by": "string - user_id",
+            "approved_at": "timestamp",
+            "created_at": "timestamp",
+            "updated_at": "timestamp",
+            "created_by": "string",
+            "deleted": "boolean - soft delete",
+            "deleted_at": "timestamp|null",
+            "deleted_by": "string|null",
+            "idempotency_key": "string",
+        },
+        "_retention": "11 years",
+    }
+    if not dry_run:
+        db.collection("vendor_invoices").document("_schema").set(schema_doc)
+        print("  OK - Schema doc written")
+    else:
+        print("  [DRY RUN] Would write schema doc")
+
+
+def setup_erp_companies(db, dry_run=False):
+    """ERP multi-tenant company registry."""
+    print("\n[18/20] erp_companies (ERP)")
+    schema_doc = {
+        "_schema_version": "1.0",
+        "_description": "Multi-tenant company registry for ERP module.",
+        "_fields": {
+            "company_id": "string - UUID",
+            "name": "string",
+            "oib": "string - Croatian OIB (11 digits)",
+            "plan": "string - free|pro|enterprise",
+            "created_at": "timestamp",
+            "active": "boolean",
+        },
+    }
+    if not dry_run:
+        db.collection("erp_companies").document("_schema").set(schema_doc)
+        print("  OK - Schema doc written")
+    else:
+        print("  [DRY RUN] Would write schema doc")
+
+
+def setup_erp_users(db, dry_run=False):
+    """ERP user profiles with roles and explicit permissions."""
+    print("\n[19/20] erp_users (ERP)")
+    schema_doc = {
+        "_schema_version": "1.0",
+        "_description": "ERP user profiles. Role defaults + explicit permission grants/denies.",
+        "_fields": {
+            "user_id": "string - FK (Firebase Auth or custom)",
+            "company_id": "string - FK → erp_companies",
+            "role": "string - owner|accountant|employee|viewer",
+            "email": "string",
+            "display_name": "string",
+            "active": "boolean",
+            "permissions": "map - {grants: [string], denies: [string]}",
+        },
+        "_permission_precedence": (
+            "1. explicit deny (denies[]) beats everything. "
+            "2. explicit grant (grants[]) beats role default. "
+            "3. role default from ROLE_PERMISSIONS. "
+            "4. wildcard '*' in role grants all. "
+            "5. default: deny."
+        ),
+        "_role_defaults": {
+            "owner": ["*"],
+            "accountant": ["invoice:read", "invoice:create", "payment:record",
+                           "vendor_invoice:read", "vendor_invoice:approve",
+                           "customer:read", "customer:create", "customer:update",
+                           "product:read", "report:read"],
+            "employee": ["invoice:read", "vendor_invoice:read", "vendor_invoice:create",
+                         "expense:create", "customer:read", "product:read"],
+            "viewer": ["invoice:read", "vendor_invoice:read", "report:read",
+                       "customer:read", "product:read"],
+        },
+    }
+    if not dry_run:
+        db.collection("erp_users").document("_schema").set(schema_doc)
+        print("  OK - Schema doc written")
+    else:
+        print("  [DRY RUN] Would write schema doc")
+
+
+def setup_erp_counters(db, dry_run=False):
+    """Sequential display ID counters."""
+    print("\n[20/20] erp_counters (ERP)")
+    schema_doc = {
+        "_schema_version": "1.0",
+        "_description": (
+            "Sequential counters for human-readable display IDs. "
+            "Document key: {company_id}-{prefix}-{year}. "
+            "Incremented atomically via Firestore Increment(1). "
+            "Internal doc IDs are always UUID — this is only for display."
+        ),
+        "_example_key": "default-company-PAY-2026",
+        "_example_value": {"counter": 42},
+        "_prefixes": ["PAY", "URA", "QUOT", "ADJ"],
+    }
+    if not dry_run:
+        db.collection("erp_counters").document("_schema").set(schema_doc)
+        print("  OK - Schema doc written")
+    else:
+        print("  [DRY RUN] Would write schema doc")
+
+
 def create_composite_indexes(db, dry_run=False):
     """Print required composite indexes (must be created via gcloud or Console)."""
     print("\n" + "=" * 60)
@@ -735,6 +941,14 @@ def main():
     setup_user_preferences(db, args.dry_run)
     setup_agent_learning(db, args.dry_run)
     setup_audit_log(db, args.dry_run)
+
+    # ERP module collections
+    setup_erp_payments(db, args.dry_run)
+    setup_erp_payment_allocations(db, args.dry_run)
+    setup_erp_vendor_invoices(db, args.dry_run)
+    setup_erp_companies(db, args.dry_run)
+    setup_erp_users(db, args.dry_run)
+    setup_erp_counters(db, args.dry_run)
 
     create_composite_indexes(db, args.dry_run)
 

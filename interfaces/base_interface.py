@@ -112,11 +112,14 @@ class BaseInterface(ABC):
             if current_helper_session != session_id:
                 logger.info(f"Creating new RunnerHelper for session '{session_id}' (was '{current_helper_session}')")
                 from agents.adk_agents.runner_utils import RunnerHelper
+                # Reuse existing session_service from current helper so ADK context is shared
+                existing_service = getattr(self.system.orchestrator_helper, 'session_service', None)
                 self.system.orchestrator_helper = RunnerHelper(
                     agent=self.system.orchestrator,
                     session_id=session_id,
                     user_id=user_id,
-                    app_name="agents"
+                    app_name="agents",
+                    session_service=existing_service,
                 )
 
         try:
@@ -124,10 +127,10 @@ class BaseInterface(ABC):
             if self.system.active_mode == "CLASSROOM":
                 result = await self._process_classroom_mode(message)
             else:
-                # Check if we should switch to CLASSROOM
-                routing_decision = await self.system.master_router.run_with_fallback(message)
-
-                if "CLASSROOM" in routing_decision:
+                # Check if we should switch to CLASSROOM using keyword-based routing
+                # (master_router replaced with inline keyword check - same logic as CLI)
+                msg_lower = message.lower()
+                if any(kw in msg_lower for kw in self.system.philosophy_keywords):
                     self.system.active_mode = "CLASSROOM"
                     result = await self._process_classroom_mode(message, first_entry=True)
                 else:
