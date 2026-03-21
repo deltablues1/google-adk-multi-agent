@@ -653,6 +653,7 @@ def create_app(interface) -> FastAPI:
     @app.get("/api/erp/quotes")
     async def erp_list_quotes(
         document_status: str = "", customer_id: str = "",
+        customer_name: str = "",
         limit: int = 50, offset: int = 0
     ):
         from services.erp.quote_service import get_quote_service
@@ -662,6 +663,8 @@ def create_app(interface) -> FastAPI:
             filters["document_status"] = document_status
         if customer_id:
             filters["customer_id"] = customer_id
+        if customer_name:
+            filters["customer_name"] = customer_name
         return await get_quote_service().list_quotes(ctx, filters, _clamp_limit(limit), offset)
 
     @app.get("/api/erp/quotes/{quote_id}")
@@ -730,6 +733,7 @@ def create_app(interface) -> FastAPI:
     @app.get("/api/erp/quotes/{quote_id}/print")
     async def erp_print_quote(quote_id: str):
         """Return print-friendly HTML for a quote."""
+        from html import escape as esc
         from services.erp.quote_service import get_quote_service
         from fastapi.responses import HTMLResponse
         ctx = _get_dev_ctx()
@@ -737,14 +741,23 @@ def create_app(interface) -> FastAPI:
         items_html = ""
         for item in (q.get("items") or []):
             items_html += (
-                f"<tr><td>{item.get('description','')}</td>"
-                f"<td style='text-align:right'>{item.get('quantity',1)}</td>"
-                f"<td style='text-align:right'>{item.get('unit_price',0):.2f}</td>"
-                f"<td style='text-align:right'>{item.get('vat_rate',25)}%</td>"
-                f"<td style='text-align:right'>{item.get('line_gross',0):.2f}</td></tr>"
+                f"<tr><td>{esc(str(item.get('description','')))}</td>"
+                f"<td style='text-align:right'>{float(item.get('quantity',1))}</td>"
+                f"<td style='text-align:right'>{float(item.get('unit_price',0)):.2f}</td>"
+                f"<td style='text-align:right'>{int(item.get('vat_rate',25))}%</td>"
+                f"<td style='text-align:right'>{float(item.get('line_gross',0)):.2f}</td></tr>"
             )
+        display_id = esc(str(q.get('display_id', '')))
+        customer_name = esc(str(q.get('customer_name', '—')))
+        customer_oib = esc(str(q.get('customer_oib', '—')))
+        issue_date = esc(str(q.get('issue_date', ''))[:10])
+        valid_until = esc(str(q.get('valid_until', ''))[:10])
+        currency = esc(str(q.get('currency', 'EUR')))
+        status = esc(str(q.get('document_status', 'draft')))
+        notes_raw = q.get('notes', '')
+        notes_html = f"<div class='notes'>{esc(str(notes_raw))}</div>" if notes_raw else ""
         html = f"""<!DOCTYPE html>
-<html lang="hr"><head><meta charset="UTF-8"/><title>Ponuda {q.get('display_id','')}</title>
+<html lang="hr"><head><meta charset="UTF-8"/><title>Ponuda {display_id}</title>
 <style>
   body {{ font-family: 'Segoe UI', Arial, sans-serif; max-width: 700px; margin: 2rem auto; color: #222; font-size: 14px; }}
   h1 {{ font-size: 1.4rem; margin-bottom: 0.25rem; }}
@@ -760,24 +773,24 @@ def create_app(interface) -> FastAPI:
   .footer {{ margin-top: 2rem; font-size: 0.78rem; color: #999; border-top: 1px solid #ddd; padding-top: 0.75rem; }}
   @media print {{ body {{ margin: 0; }} }}
 </style></head><body>
-<h1>PONUDA {q.get('display_id','')}</h1>
+<h1>PONUDA {display_id}</h1>
 <dl class="meta">
-  <dt>Kupac</dt><dd>{q.get('customer_name','—')}</dd>
-  <dt>OIB</dt><dd>{q.get('customer_oib','—')}</dd>
-  <dt>Datum izdavanja</dt><dd>{str(q.get('issue_date','')).replace('T',' ')[:10]}</dd>
-  <dt>Rok valjanosti</dt><dd>{str(q.get('valid_until','')).replace('T',' ')[:10]}</dd>
-  <dt>Valuta</dt><dd>{q.get('currency','EUR')}</dd>
-  <dt>Status</dt><dd>{q.get('document_status','draft')}</dd>
+  <dt>Kupac</dt><dd>{customer_name}</dd>
+  <dt>OIB</dt><dd>{customer_oib}</dd>
+  <dt>Datum izdavanja</dt><dd>{issue_date}</dd>
+  <dt>Rok valjanosti</dt><dd>{valid_until}</dd>
+  <dt>Valuta</dt><dd>{currency}</dd>
+  <dt>Status</dt><dd>{status}</dd>
 </dl>
 <table><thead><tr><th>Opis</th><th style="text-align:right">Kol.</th><th style="text-align:right">Cijena</th><th style="text-align:right">PDV</th><th style="text-align:right">Ukupno</th></tr></thead>
 <tbody>{items_html}</tbody></table>
 <div class="totals">
-  Neto: {q.get('subtotal_net',0):.2f} EUR<br/>
-  PDV: {q.get('vat_total',0):.2f} EUR<br/>
-  <span class="gross">Ukupno: {q.get('total_gross',0):.2f} EUR</span>
+  Neto: {float(q.get('subtotal_net',0)):.2f} EUR<br/>
+  PDV: {float(q.get('vat_total',0)):.2f} EUR<br/>
+  <span class="gross">Ukupno: {float(q.get('total_gross',0)):.2f} EUR</span>
 </div>
-{"<div class='notes'>" + q.get('notes','') + "</div>" if q.get('notes') else ""}
-<div class="footer">Ponuda vrijedi do {str(q.get('valid_until','')).replace('T',' ')[:10]}. Plaćanje po dogovoru.</div>
+{notes_html}
+<div class="footer">Ponuda vrijedi do {valid_until}. Plaćanje po dogovoru.</div>
 </body></html>"""
         return HTMLResponse(content=html)
 

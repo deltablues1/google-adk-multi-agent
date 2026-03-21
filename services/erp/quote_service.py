@@ -6,6 +6,7 @@ Manages quotes with state machine enforcement and invoice conversion.
 
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, List
 from uuid import uuid4
 
@@ -31,6 +32,27 @@ class QuoteService(BaseERPService):
             self._repo = FirestoreQuoteRepository(db=self._get_db())
         return self._repo
 
+    @staticmethod
+    def _compute_item_totals(items: list) -> tuple:
+        """Compute line totals and return (items, subtotal_net, vat_total, total_gross) using Decimal."""
+        _Q = Decimal("0.01")
+        subtotal_net = Decimal("0")
+        vat_total = Decimal("0")
+        for item in items:
+            qty = Decimal(str(item.get("quantity", 1)))
+            price = Decimal(str(item.get("unit_price", 0)))
+            vat_rate = Decimal(str(item.get("vat_rate", 25)))
+            line_net = (qty * price).quantize(_Q, ROUND_HALF_UP)
+            line_vat = (line_net * vat_rate / Decimal("100")).quantize(_Q, ROUND_HALF_UP)
+            line_gross = line_net + line_vat
+            item["line_net"] = float(line_net)
+            item["line_vat"] = float(line_vat)
+            item["line_gross"] = float(line_gross)
+            subtotal_net += line_net
+            vat_total += line_vat
+        total_gross = subtotal_net + vat_total
+        return items, float(subtotal_net), float(vat_total), float(total_gross)
+
     async def get_quote(self, quote_id: str, ctx: ERPRequestContext) -> dict:
         check_permission(ctx, "quote:read")
         doc = await self._get_repo().get(quote_id, ctx)
@@ -46,7 +68,18 @@ class QuoteService(BaseERPService):
         limit: int = 50, offset: int = 0
     ) -> List[dict]:
         check_permission(ctx, "quote:read")
-        return await self._get_repo().list(ctx, filters, limit, offset)
+        f = dict(filters or {})
+        customer_name_q = f.pop("customer_name", "").strip().lower()
+        if customer_name_q:
+            # Firestore has no substring search — fetch more, filter in service
+            repo_limit = min(limit * 5, 500)
+        else:
+            repo_limit = limit
+        docs = await self._get_repo().list(ctx, f, repo_limit, offset if not customer_name_q else 0)
+        if customer_name_q:
+            docs = [d for d in docs if customer_name_q in (d.get("customer_name") or "").lower()]
+            docs = docs[offset:offset + limit]
+        return docs
 
     async def create_quote(self, data: dict, ctx: ERPRequestContext) -> dict:
         check_permission(ctx, "quote:create")
@@ -71,22 +104,8 @@ class QuoteService(BaseERPService):
                 field="valid_until",
             )
 
-        # Compute totals from items
-        subtotal_net = 0.0
-        vat_total = 0.0
-        for item in items:
-            qty = float(item.get("quantity", 1))
-            price = float(item.get("unit_price", 0))
-            vat_rate = float(item.get("vat_rate", 25))
-            line_net = round(qty * price, 2)
-            line_vat = round(line_net * vat_rate / 100, 2)
-            item["line_net"] = line_net
-            item["line_vat"] = line_vat
-            item["line_gross"] = round(line_net + line_vat, 2)
-            subtotal_net += line_net
-            vat_total += line_vat
-
-        total_gross = round(subtotal_net + vat_total, 2)
+        # Compute totals from items (Decimal precision)
+        items, subtotal_net, vat_total, total_gross = self._compute_item_totals(items)
 
         display_id = await generate_display_id(ctx.company_id, "PON", self._get_db())
 
@@ -139,25 +158,13 @@ class QuoteService(BaseERPService):
         }
         update_data = {k: v for k, v in data.items() if k in editable}
 
-        # Recompute totals if items changed
+        # Recompute totals if items changed (Decimal precision)
         if "items" in update_data:
-            items = update_data["items"]
-            subtotal_net = 0.0
-            vat_total = 0.0
-            for item in items:
-                qty = float(item.get("quantity", 1))
-                price = float(item.get("unit_price", 0))
-                vat_rate = float(item.get("vat_rate", 25))
-                line_net = round(qty * price, 2)
-                line_vat = round(line_net * vat_rate / 100, 2)
-                item["line_net"] = line_net
-                item["line_vat"] = line_vat
-                item["line_gross"] = round(line_net + line_vat, 2)
-                subtotal_net += line_net
-                vat_total += line_vat
-            update_data["subtotal_net"] = subtotal_net
-            update_data["vat_total"] = vat_total
-            update_data["total_gross"] = round(subtotal_net + vat_total, 2)
+            items, sn, vt, tg = self._compute_item_totals(update_data["items"])
+            update_data["items"] = items
+            update_data["subtotal_net"] = sn
+            update_data["vat_total"] = vt
+            update_data["total_gross"] = tg
 
         updated = await self._get_repo().update(quote_id, ctx, update_data)
         await write_audit(

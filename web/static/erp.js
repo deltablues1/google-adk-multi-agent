@@ -235,12 +235,8 @@ function erpApp() {
       try {
         const p = new URLSearchParams();
         if (this.quoteStatusFilter) p.set('document_status', this.quoteStatusFilter);
-        let results = await this.apiFetch(`/api/erp/quotes?${p}`);
-        if (this.quoteCustomerSearch) {
-          const q = this.quoteCustomerSearch.toLowerCase();
-          results = results.filter(r => (r.customer_name || '').toLowerCase().includes(q));
-        }
-        this.quotes = results;
+        if (this.quoteCustomerSearch) p.set('customer_name', this.quoteCustomerSearch);
+        this.quotes = await this.apiFetch(`/api/erp/quotes?${p}`);
       } catch (e) { console.warn('Quotes load error', e); this.quotes = []; }
       this.loadingQuotes = false;
     },
@@ -306,11 +302,19 @@ function erpApp() {
       m.submitting = false;
     },
 
+    async _refreshQuoteDetail(id) {
+      try {
+        const updated = await this.apiFetch(`/api/erp/quotes/${id}`);
+        if (this.quoteDetail.open) this.quoteDetail.data = updated;
+      } catch (_) { /* detail modal will show stale data — acceptable */ }
+    },
+
     async sendQuote(q) {
       if (!confirm(`Označiti ponudu ${q.display_id || q._id} kao poslanu?`)) return;
       try {
         await this.apiFetch(`/api/erp/quotes/${q._id}/send`, { method: 'POST' });
         await this.loadQuotes();
+        await this._refreshQuoteDetail(q._id);
       } catch (e) { alert(`Greška: ${e.message}`); }
     },
 
@@ -319,6 +323,7 @@ function erpApp() {
       try {
         await this.apiFetch(`/api/erp/quotes/${q._id}/accept`, { method: 'POST' });
         await this.loadQuotes();
+        await this._refreshQuoteDetail(q._id);
       } catch (e) { alert(`Greška: ${e.message}`); }
     },
 
@@ -327,6 +332,7 @@ function erpApp() {
       try {
         await this.apiFetch(`/api/erp/quotes/${q._id}/reject`, { method: 'POST' });
         await this.loadQuotes();
+        await this._refreshQuoteDetail(q._id);
       } catch (e) { alert(`Greška: ${e.message}`); }
     },
 
@@ -359,6 +365,7 @@ function erpApp() {
           alert(`Račun kreiran: ${result.invoice_display_id}`);
         }
         await this.loadQuotes();
+        await this._refreshQuoteDetail(m.quoteId);
       } catch (e) {
         m.error = e.message || 'Greška pri konverziji.';
       }

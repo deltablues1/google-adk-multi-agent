@@ -635,10 +635,9 @@ async def erp_list_quotes(
         filters = {}
         if status:
             filters["document_status"] = status
-        quotes = await get_quote_service().list_quotes(ctx, filters=filters, limit=clamped)
         if customer_name:
-            q = customer_name.lower()
-            quotes = [r for r in quotes if q in (r.get("customer_name") or "").lower()]
+            filters["customer_name"] = customer_name
+        quotes = await get_quote_service().list_quotes(ctx, filters=filters, limit=clamped)
         return {"success": True, "count": len(quotes), "quotes": quotes}
     except Exception as e:
         logger.error(f"erp_list_quotes failed: {e}")

@@ -49,13 +49,16 @@ class FirestoreQuoteRepository:
             query = query.where("document_status", "==", f["document_status"])
         if f.get("customer_id"):
             query = query.where("customer_id", "==", f["customer_id"])
-        query = query.order_by("created_at", direction="DESCENDING").limit(limit)
+        query = query.order_by("created_at", direction="DESCENDING")
+        if offset > 0:
+            query = query.offset(offset)
+        query = query.limit(limit)
         docs = []
         async for snap in query.stream():
             doc = snap.to_dict() or {}
             doc["_id"] = snap.id
             docs.append(doc)
-        return docs[offset:]
+        return docs
 
     async def create(self, data: dict, ctx: ERPRequestContext) -> dict:
         quote_id = str(uuid4())
