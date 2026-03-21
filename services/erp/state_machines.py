@@ -72,6 +72,20 @@ def compute_payment_status(amount_paid: Decimal, total_gross: Decimal) -> str:
     return "partial"
 
 
+# ---------------------------------------------------------------------------
+# Quote document_status transitions
+# ---------------------------------------------------------------------------
+QUOTE_DOC_TRANSITIONS: dict[str, list[str]] = {
+    "draft":     ["sent", "rejected", "expired", "cancelled"],
+    "sent":      ["accepted", "rejected", "expired"],
+    "accepted":  ["converted"],
+    "rejected":  [],      # terminal
+    "expired":   [],      # terminal
+    "converted": [],      # terminal
+    "cancelled": [],      # terminal
+}
+
+
 def is_overdue(
     due_date: Optional[date],
     payment_status: str,

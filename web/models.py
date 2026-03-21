@@ -118,6 +118,45 @@ class CustomerCreate(BaseModel):
     notes: str = Field(default="")
 
 
+class QuoteItemCreate(BaseModel):
+    """A single line item on a quote."""
+    description: str = Field(..., min_length=1)
+    quantity: Decimal = Field(default=Decimal("1"), gt=0)
+    unit_price: Decimal = Field(..., ge=0)
+    vat_rate: int = Field(default=25, description="VAT rate: 0, 5, 13, or 25")
+
+
+class QuoteCreate(BaseModel):
+    """Create a new quote (ponuda)."""
+    customer_id: str = Field(..., min_length=1)
+    customer_name: str = Field(default="")
+    customer_oib: str = Field(default="")
+    valid_until: date
+    currency: str = Field(default="EUR")
+    items: List[QuoteItemCreate] = Field(..., min_length=1)
+    notes: str = Field(default="")
+
+
+class QuoteUpdate(BaseModel):
+    """Update a draft quote."""
+    customer_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    customer_oib: Optional[str] = None
+    valid_until: Optional[date] = None
+    currency: Optional[str] = None
+    items: Optional[List[QuoteItemCreate]] = None
+    notes: Optional[str] = None
+
+
+class QuoteConvertRequest(BaseModel):
+    """Convert a quote to an invoice."""
+    invoice_type: str = Field(
+        default="b2c",
+        pattern="^(b2c|b2b|b2g|eu|int)$",
+        description="Target invoice type: b2c | b2b | b2g | eu | int"
+    )
+
+
 class ProductCreate(BaseModel):
     """Create a new product/service."""
     sku: str = Field(..., min_length=1)

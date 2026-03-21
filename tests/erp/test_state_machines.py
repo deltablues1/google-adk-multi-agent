@@ -13,6 +13,7 @@ from datetime import date
 from services.erp.state_machines import (
     OUTGOING_INVOICE_DOC_TRANSITIONS,
     VENDOR_INVOICE_DOC_TRANSITIONS,
+    QUOTE_DOC_TRANSITIONS,
     validate_transition,
     compute_payment_status,
     is_overdue,
@@ -169,3 +170,42 @@ class TestIsOverdue:
         import datetime
         old = today - datetime.timedelta(days=90)
         assert is_overdue(old, "unpaid", "issued", as_of=today) is True
+
+
+# ---------------------------------------------------------------------------
+# QUOTE_DOC_TRANSITIONS
+# ---------------------------------------------------------------------------
+
+class TestQuoteDocTransitions:
+
+    @pytest.mark.parametrize("current,target", [
+        ("draft", "sent"),
+        ("draft", "rejected"),
+        ("draft", "expired"),
+        ("draft", "cancelled"),
+        ("sent", "accepted"),
+        ("sent", "rejected"),
+        ("sent", "expired"),
+        ("accepted", "converted"),
+    ])
+    def test_valid_transitions(self, current, target):
+        validate_transition(current, target, QUOTE_DOC_TRANSITIONS)
+
+    @pytest.mark.parametrize("current,target", [
+        ("draft", "accepted"),
+        ("draft", "converted"),
+        ("sent", "draft"),
+        ("sent", "converted"),
+        ("sent", "cancelled"),
+        ("accepted", "draft"),
+        ("accepted", "sent"),
+        ("accepted", "rejected"),
+        ("rejected", "sent"),
+        ("rejected", "accepted"),
+        ("expired", "sent"),
+        ("converted", "draft"),
+        ("cancelled", "draft"),
+    ])
+    def test_invalid_transitions(self, current, target):
+        with pytest.raises(InvalidStateTransitionError):
+            validate_transition(current, target, QUOTE_DOC_TRANSITIONS)

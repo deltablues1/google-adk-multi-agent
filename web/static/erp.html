@@ -70,6 +70,12 @@
     .badge-draft { background: #2a2a3a; color: #94a3b8; }
     .badge-approved { background: #1a3a4a; color: #38bdf8; }
     .badge-received { background: #1a3a4a; color: #38bdf8; }
+    .badge-sent { background: #2a2a4a; color: #a78bfa; }
+    .badge-accepted { background: #1a4a2e; color: #4ade80; }
+    .badge-rejected { background: #4a1a1a; color: #f87171; }
+    .badge-expired { background: #3a2a2a; color: #94a3b8; }
+    .badge-converted { background: #1a3a4a; color: #38bdf8; }
+    .badge-cancelled { background: #3a2a2a; color: #94a3b8; }
 
     /* Action buttons */
     .btn-xs { padding: 0.2rem 0.55rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; border: 1px solid transparent; }
@@ -162,6 +168,7 @@
       <a class="erp-nav-link" :class="{active: view==='customers'}" @click="view='customers'; loadCustomers()">Kupci</a>
       <a class="erp-nav-link" :class="{active: view==='invoices'}" @click="view='invoices'; loadInvoices()">Fakture</a>
       <a class="erp-nav-link" :class="{active: view==='vendor'}" @click="view='vendor'; loadVendorInvoices()">URA</a>
+      <a class="erp-nav-link" :class="{active: view==='quotes'}" @click="view='quotes'; loadQuotes()">Ponude</a>
       <a class="erp-nav-link" :class="{active: view==='inventory'}" @click="view='inventory'; loadProducts()">Zalihe</a>
       <a class="erp-nav-link" :class="{active: view==='reports'}" @click="view='reports'; loadReport('vat')">Izvještaji</a>
     </div>
@@ -395,6 +402,50 @@
               </tr>
             </template>
             <tr x-show="!loadingVendor && vendorInvoices.length === 0" class="loading-row"><td colspan="7">Nema ulaznih računa</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- QUOTES (PONUDE) -->
+    <div class="erp-section" :class="{active: view==='quotes'}">
+      <div class="section-header">
+        <span class="section-title">Ponude</span>
+        <button class="btn-xs btn-primary" @click="openCreateQuote()">+ Nova ponuda</button>
+      </div>
+      <div class="filter-bar">
+        <select x-model="quoteStatusFilter" @change="loadQuotes()">
+          <option value="">Svi statusi</option>
+          <option value="draft">Nacrt</option>
+          <option value="sent">Poslano</option>
+          <option value="accepted">Prihvaćeno</option>
+          <option value="rejected">Odbijeno</option>
+          <option value="expired">Isteklo</option>
+          <option value="converted">Konvertirano</option>
+        </select>
+      </div>
+      <div class="erp-table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>Broj ponude</th><th>Kupac</th><th>Datum</th><th>Rok</th><th>Iznos</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            <tr x-show="loadingQuotes" class="loading-row"><td colspan="7">Učitavanje...</td></tr>
+            <template x-for="q in quotes" :key="q._id">
+              <tr style="cursor:pointer" @click="openQuoteDetail(q)">
+                <td style="font-family:monospace; font-size:0.78rem" x-text="q.display_id || q._id"></td>
+                <td x-text="q.customer_name || '—'" style="max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
+                <td x-text="(q.issue_date || q.created_at || '').slice(0,10)"></td>
+                <td x-text="(q.valid_until || '').slice(0,10)"></td>
+                <td x-text="fmt(q.total_gross || 0)"></td>
+                <td><span class="badge" :class="quoteBadge(q.document_status)" x-text="quoteLabel(q.document_status)"></span></td>
+                <td style="display:flex; gap:0.3rem; flex-wrap:nowrap" @click.stop>
+                  <button class="btn-xs btn-outline" x-show="q.document_status === 'draft'" @click="sendQuote(q)">Pošalji</button>
+                  <button class="btn-xs btn-outline" x-show="q.document_status === 'sent'" @click="acceptQuote(q)">Prihvati</button>
+                  <button class="btn-xs btn-outline" x-show="q.document_status === 'sent'" @click="rejectQuote(q)">Odbij</button>
+                  <button class="btn-xs btn-primary" x-show="q.document_status === 'accepted'" @click="openConvertQuote(q)">U račun</button>
+                </td>
+              </tr>
+            </template>
+            <tr x-show="!loadingQuotes && quotes.length === 0" class="loading-row"><td colspan="7">Nema ponuda</td></tr>
           </tbody>
         </table>
       </div>
@@ -747,6 +798,129 @@
       </div>
       <div class="modal-actions">
         <button class="btn-xs btn-outline" @click="movementsModal.open=false">Zatvori</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Quote Detail Modal ────────────────────── -->
+  <div class="erp-modal-overlay" x-show="quoteDetail.open" @click.self="quoteDetail.open=false">
+    <div class="erp-modal" style="max-width:560px">
+      <h3 style="margin-bottom:1rem">
+        <span x-text="quoteDetail.data.display_id || '—'"></span>
+        <span class="badge" :class="quoteBadge(quoteDetail.data.document_status)" style="margin-left:0.5rem; font-size:0.7rem" x-text="quoteLabel(quoteDetail.data.document_status)"></span>
+      </h3>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.6rem 1.2rem; margin-bottom:1rem">
+        <div><div class="kpi-label">Kupac</div><div x-text="quoteDetail.data.customer_name || '—'"></div></div>
+        <div><div class="kpi-label">OIB</div><div x-text="quoteDetail.data.customer_oib || '—'" style="font-family:monospace"></div></div>
+        <div><div class="kpi-label">Datum izdavanja</div><div x-text="(quoteDetail.data.issue_date || '').slice(0,10)"></div></div>
+        <div><div class="kpi-label">Rok valjanosti</div><div x-text="(quoteDetail.data.valid_until || '').slice(0,10)"></div></div>
+        <div><div class="kpi-label">Neto</div><div x-text="fmt(quoteDetail.data.subtotal_net || 0)"></div></div>
+        <div><div class="kpi-label">PDV</div><div x-text="fmt(quoteDetail.data.vat_total || 0)"></div></div>
+        <div><div class="kpi-label">Ukupno bruto</div><div x-text="fmt(quoteDetail.data.total_gross || 0)" style="font-weight:700"></div></div>
+        <div><div class="kpi-label">Valuta</div><div x-text="quoteDetail.data.currency || 'EUR'"></div></div>
+      </div>
+      <!-- Items table -->
+      <div x-show="quoteDetail.data.items && quoteDetail.data.items.length > 0" style="margin-bottom:1rem">
+        <div class="kpi-label" style="margin-bottom:0.4rem">Stavke</div>
+        <table class="erp-table" style="font-size:0.78rem">
+          <thead><tr><th>Opis</th><th style="text-align:right">Kol.</th><th style="text-align:right">Cijena</th><th style="text-align:right">PDV %</th><th style="text-align:right">Ukupno</th></tr></thead>
+          <tbody>
+            <template x-for="(item, i) in (quoteDetail.data.items || [])" :key="i">
+              <tr>
+                <td x-text="item.description || '—'"></td>
+                <td style="text-align:right" x-text="item.quantity"></td>
+                <td style="text-align:right" x-text="fmt(item.unit_price || 0)"></td>
+                <td style="text-align:right" x-text="(item.vat_rate || 25) + '%'"></td>
+                <td style="text-align:right; font-weight:600" x-text="fmt(item.line_gross || 0)"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <div x-show="quoteDetail.data.notes" style="margin-bottom:0.8rem; padding:0.6rem 0.75rem; background:var(--bg-input); border-radius:5px; font-size:0.8rem; color:var(--text-muted); max-height:80px; overflow-y:auto" x-text="quoteDetail.data.notes"></div>
+      <!-- Converted invoice link -->
+      <div x-show="quoteDetail.data.document_status === 'converted'" style="margin-bottom:0.8rem; padding:0.5rem 0.75rem; background:var(--bg-input); border-radius:5px; font-size:0.82rem">
+        Konvertirano u račun: <strong x-text="quoteDetail.data.converted_invoice_id || '—'" style="font-family:monospace"></strong>
+      </div>
+      <div style="display:flex; gap:0.5rem; justify-content:flex-end; flex-wrap:wrap">
+        <button class="btn-xs btn-outline" @click="quoteDetail.open=false">Zatvori</button>
+        <button class="btn-xs btn-outline" x-show="quoteDetail.data.document_status === 'draft'" @click="sendQuote(quoteDetail.data); quoteDetail.open=false">Pošalji</button>
+        <button class="btn-xs btn-outline" x-show="quoteDetail.data.document_status === 'sent'" @click="acceptQuote(quoteDetail.data); quoteDetail.open=false">Prihvati</button>
+        <button class="btn-xs btn-outline" x-show="quoteDetail.data.document_status === 'sent'" @click="rejectQuote(quoteDetail.data); quoteDetail.open=false">Odbij</button>
+        <button class="btn-xs btn-primary" x-show="quoteDetail.data.document_status === 'accepted'" @click="openConvertQuote(quoteDetail.data); quoteDetail.open=false">U račun</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Create Quote Modal ──────────────────────── -->
+  <div class="erp-modal-overlay" x-show="createQuoteModal.open" @click.self="createQuoteModal.open=false">
+    <div class="erp-modal" style="max-width:600px; max-height:80vh; overflow-y:auto">
+      <h3>Nova ponuda</h3>
+      <div class="form-row">
+        <label class="form-label">Kupac</label>
+        <select class="form-input" x-model="createQuoteModal.customer_id" @change="onQuoteCustomerChange()">
+          <option value="">— Odaberi kupca —</option>
+          <template x-for="c in quoteCustomerList" :key="c._id">
+            <option :value="c._id" x-text="c.name + (c.oib ? ' (' + c.oib + ')' : '')"></option>
+          </template>
+        </select>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Rok valjanosti</label>
+        <input class="form-input" type="date" x-model="createQuoteModal.valid_until" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Stavke</label>
+        <template x-for="(item, idx) in createQuoteModal.items" :key="idx">
+          <div style="display:flex; gap:0.4rem; margin-bottom:0.4rem; align-items:center">
+            <input class="form-input" style="flex:3" x-model="item.description" placeholder="Opis" />
+            <input class="form-input" style="flex:0.7" type="number" x-model="item.quantity" min="0.01" step="0.01" placeholder="Kol." />
+            <input class="form-input" style="flex:1" type="number" x-model="item.unit_price" min="0" step="0.01" placeholder="Cijena" />
+            <input class="form-input" style="flex:0.7" type="number" x-model="item.vat_rate" placeholder="PDV%" />
+            <button class="btn-xs btn-danger" @click="createQuoteModal.items.splice(idx, 1)" x-show="createQuoteModal.items.length > 1">×</button>
+          </div>
+        </template>
+        <button class="btn-xs btn-outline" style="margin-top:0.3rem" @click="createQuoteModal.items.push({description:'', quantity:1, unit_price:0, vat_rate:25})">+ Stavka</button>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Napomena</label>
+        <input class="form-input" type="text" x-model="createQuoteModal.notes" />
+      </div>
+      <div class="form-error" x-show="createQuoteModal.error" x-text="createQuoteModal.error"></div>
+      <div class="modal-actions">
+        <button class="btn-xs btn-outline" @click="createQuoteModal.open=false">Odustani</button>
+        <button class="btn-xs btn-primary" @click="submitCreateQuote()" :disabled="createQuoteModal.submitting">
+          <span x-show="!createQuoteModal.submitting">Spremi ponudu</span>
+          <span x-show="createQuoteModal.submitting">Snimanje...</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Convert Quote Modal ─────────────────────── -->
+  <div class="erp-modal-overlay" x-show="convertQuoteModal.open" @click.self="convertQuoteModal.open=false">
+    <div class="erp-modal">
+      <h3>Pretvori ponudu u račun</h3>
+      <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem">
+        Ponuda <strong x-text="convertQuoteModal.displayId"></strong> — <span x-text="fmt(convertQuoteModal.total)"></span> EUR
+      </p>
+      <div class="form-row">
+        <label class="form-label">Tip računa</label>
+        <select class="form-input" x-model="convertQuoteModal.invoiceType">
+          <option value="b2c">B2C</option>
+          <option value="b2b">B2B</option>
+          <option value="b2g">B2G</option>
+          <option value="eu">EU</option>
+          <option value="int">INT</option>
+        </select>
+      </div>
+      <div class="form-error" x-show="convertQuoteModal.error" x-text="convertQuoteModal.error"></div>
+      <div class="modal-actions">
+        <button class="btn-xs btn-outline" @click="convertQuoteModal.open=false">Odustani</button>
+        <button class="btn-xs btn-primary" @click="submitConvertQuote()" :disabled="convertQuoteModal.submitting">
+          <span x-show="!convertQuoteModal.submitting">Pretvori</span>
+          <span x-show="convertQuoteModal.submitting">Konverzija...</span>
+        </button>
       </div>
     </div>
   </div>

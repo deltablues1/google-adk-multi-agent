@@ -111,7 +111,10 @@ def create_expense_agent(
         add_expense_record,
         query_expenses
     )
-    from tools.adk_tools.erp_adk_tools import erp_create_vendor_invoice_from_ocr
+    from tools.adk_tools.erp_adk_tools import (
+        erp_create_vendor_invoice_from_ocr,
+        erp_get_vendor_invoice,
+    )
 
     # Create list of tools (ADK-compatible callables)
     tools = [
@@ -134,8 +137,9 @@ def create_expense_agent(
         create_quote,
         add_expense_record,
         query_expenses,
-        # ERP tool — creates URA draft from OCR data
+        # ERP tools — vendor invoice management
         erp_create_vendor_invoice_from_ocr,
+        erp_get_vendor_invoice,
     ]
 
     logger.info(f"Initialized {len(tools)} ADK tools for expense agent")

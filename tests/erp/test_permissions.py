@@ -59,6 +59,7 @@ class TestAccountantPermissions:
         "product:read", "product:write", "stock:adjust",
         "report:read",
         "expense:read",
+        "quote:read", "quote:create", "quote:update", "quote:send", "quote:convert",
     ])
     def test_accountant_allowed(self, permission):
         check_permission(ctx("accountant"), permission)  # should not raise
@@ -85,6 +86,7 @@ class TestEmployeePermissions:
         "expense:create",
         "customer:read",
         "product:read", "stock:adjust",
+        "quote:read", "quote:create", "quote:update", "quote:send",
     ])
     def test_employee_allowed(self, permission):
         check_permission(ctx("employee"), permission)  # should not raise
@@ -95,6 +97,7 @@ class TestEmployeePermissions:
         "product:write",
         "report:read",
         "invoice:create",
+        "quote:convert",
     ])
     def test_employee_forbidden(self, permission):
         with pytest.raises(InsufficientPermissionError):
@@ -113,6 +116,7 @@ class TestViewerPermissions:
         "report:read",
         "customer:read",
         "product:read",
+        "quote:read",
     ])
     def test_viewer_allowed(self, permission):
         check_permission(ctx("viewer"), permission)  # should not raise
@@ -124,6 +128,7 @@ class TestViewerPermissions:
         "product:write",
         "stock:adjust",
         "expense:create",
+        "quote:create", "quote:update", "quote:send", "quote:convert",
     ])
     def test_viewer_forbidden(self, permission):
         with pytest.raises(InsufficientPermissionError):

@@ -33,6 +33,7 @@ ROLE_PERMISSIONS: dict[str, set] = {
         "product:read", "product:write", "stock:adjust",
         "report:read",
         "expense:read",
+        "quote:read", "quote:create", "quote:update", "quote:send", "quote:convert",
     },
     "employee":    {
         "invoice:read",
@@ -40,6 +41,7 @@ ROLE_PERMISSIONS: dict[str, set] = {
         "expense:create",
         "customer:read",
         "product:read", "stock:adjust",
+        "quote:read", "quote:create", "quote:update", "quote:send",
     },
     "viewer":      {
         "invoice:read",
@@ -47,6 +49,7 @@ ROLE_PERMISSIONS: dict[str, set] = {
         "report:read",
         "customer:read",
         "product:read",
+        "quote:read",
     },
 }
 

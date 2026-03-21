@@ -59,6 +59,8 @@ def create_tracker_agent(
         erp_list_open_invoices,
         erp_record_payment,
         erp_get_open_payables,
+        erp_get_activity_feed,
+        erp_get_inventory_movements,
     )
 
     # Create list of tools
@@ -73,6 +75,9 @@ def create_tracker_agent(
         erp_list_open_invoices,
         erp_record_payment,
         erp_get_open_payables,
+        # ERP activity & inventory
+        erp_get_activity_feed,
+        erp_get_inventory_movements,
     ]
 
     # Create agent using factory

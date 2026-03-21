@@ -100,12 +100,16 @@ def create_analyst_agent(
         erp_get_receivables_aging,
         erp_get_financial_summary,
         erp_get_stock_levels,
+        erp_get_activity_feed,
+        erp_get_inventory_movements,
     )
     all_tools = sheets_tools + [
         erp_get_vat_summary,
         erp_get_receivables_aging,
         erp_get_financial_summary,
         erp_get_stock_levels,
+        erp_get_activity_feed,
+        erp_get_inventory_movements,
     ]
 
     # Create agent using factory

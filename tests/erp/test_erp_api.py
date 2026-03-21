@@ -156,6 +156,38 @@ def build_test_app(company_id: str) -> FastAPI:
             })
         return events
 
+    @app.get("/api/erp/quotes")
+    async def erp_list_quotes(document_status: str = "", limit: int = 50, offset: int = 0):
+        from services.erp.quote_service import get_quote_service
+        filters = {}
+        if document_status: filters["document_status"] = document_status
+        return await get_quote_service().list_quotes(_ctx(), filters, min(limit, 500), offset)
+
+    @app.post("/api/erp/quotes")
+    async def erp_create_quote(req: dict):
+        from services.erp.quote_service import get_quote_service
+        return await get_quote_service().create_quote(req, _ctx())
+
+    @app.get("/api/erp/quotes/{quote_id}")
+    async def erp_get_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        return await get_quote_service().get_quote(quote_id, _ctx())
+
+    @app.post("/api/erp/quotes/{quote_id}/send")
+    async def erp_send_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        return await get_quote_service().mark_sent(quote_id, _ctx())
+
+    @app.post("/api/erp/quotes/{quote_id}/accept")
+    async def erp_accept_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        return await get_quote_service().accept_quote(quote_id, _ctx())
+
+    @app.post("/api/erp/quotes/{quote_id}/convert")
+    async def erp_convert_quote(quote_id: str, req: dict):
+        from services.erp.quote_service import get_quote_service
+        return await get_quote_service().convert_to_invoice(quote_id, req.get("invoice_type", "b2c"), _ctx())
+
     return app
 
 
@@ -327,3 +359,72 @@ class TestHardeningEdgeCases:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.get("/api/erp/customers?limit=9999")
         assert resp.status_code == 200
+
+
+class TestQuotesAPI:
+
+    @pytest.mark.asyncio
+    async def test_list_quotes_returns_200(self, app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/quotes")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    @pytest.mark.asyncio
+    async def test_create_and_get_quote(self, app):
+        payload = {
+            "customer_id": "test-cust-123",
+            "customer_name": "Test Kupac",
+            "valid_until": "2026-12-31",
+            "items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0, "vat_rate": 25}],
+        }
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/erp/quotes", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["display_id"].startswith("PON-")
+        assert data["document_status"] == "draft"
+        assert data["total_gross"] == 125.0  # 2*50 * 1.25
+
+        # Get the created quote
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp2 = await client.get(f"/api/erp/quotes/{data['_id']}")
+        assert resp2.status_code == 200
+        assert resp2.json()["display_id"] == data["display_id"]
+
+    @pytest.mark.asyncio
+    async def test_quote_e2e_create_send_accept_convert(self, app):
+        """Full E2E: create → send → accept → convert to invoice."""
+        payload = {
+            "customer_id": "test-cust-e2e",
+            "customer_name": "E2E Kupac",
+            "valid_until": "2026-12-31",
+            "items": [{"description": "Usluga", "quantity": 1, "unit_price": 100.0, "vat_rate": 25}],
+        }
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            # Create
+            r = await client.post("/api/erp/quotes", json=payload)
+            assert r.status_code == 200
+            qid = r.json()["_id"]
+
+            # Send
+            r = await client.post(f"/api/erp/quotes/{qid}/send")
+            assert r.status_code == 200
+            assert r.json()["document_status"] == "sent"
+
+            # Accept
+            r = await client.post(f"/api/erp/quotes/{qid}/accept")
+            assert r.status_code == 200
+            assert r.json()["document_status"] == "accepted"
+
+            # Convert
+            r = await client.post(f"/api/erp/quotes/{qid}/convert", json={"invoice_type": "b2c"})
+            assert r.status_code == 200
+            result = r.json()
+            assert result["already_converted"] is False
+            assert result["invoice_display_id"].startswith("RA-")
+
+            # Verify quote is converted
+            r = await client.get(f"/api/erp/quotes/{qid}")
+            assert r.json()["document_status"] == "converted"
+            assert r.json()["converted_invoice_id"] == result["invoice_id"]

@@ -1,7 +1,7 @@
 """
 ERP ADK Tools Tests
 ====================
-Tests for the 12 ERP ADK tools in tools/adk_tools/erp_adk_tools.py.
+Tests for the 15 ERP ADK tools in tools/adk_tools/erp_adk_tools.py.
 
 These tests hit REAL Firestore with isolated company_id.
 The _build_ctx() in erp_adk_tools.py uses "default-company" — tests that need
@@ -108,3 +108,55 @@ class TestErpCreateVendorInvoiceFromOcr:
             display_id = result.get("display_id", "")
             assert display_id.startswith("URA-") or display_id != "", \
                 f"display_id should start with URA-: {display_id}"
+
+
+class TestErpGetActivityFeed:
+
+    @pytest.mark.asyncio
+    async def test_activity_feed_returns_list(self):
+        from tools.adk_tools.erp_adk_tools import erp_get_activity_feed
+        result = await erp_get_activity_feed(limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is True
+        assert isinstance(result.get("events"), list)
+        assert "count" in result
+
+    @pytest.mark.asyncio
+    async def test_activity_feed_clamps_limit(self):
+        """Limit > 100 should be clamped, not crash."""
+        from tools.adk_tools.erp_adk_tools import erp_get_activity_feed
+        result = await erp_get_activity_feed(limit=999)
+        assert result.get("success") is True
+        assert len(result.get("events", [])) <= 100
+
+
+class TestErpGetInventoryMovements:
+
+    @pytest.mark.asyncio
+    async def test_movements_nonexistent_product_returns_error(self):
+        """Nonexistent product → success=False (product not found)."""
+        from tools.adk_tools.erp_adk_tools import erp_get_inventory_movements
+        result = await erp_get_inventory_movements(product_id="nonexistent-product-xyz", limit=10)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_movements_nonexistent_does_not_crash(self):
+        """Limit > 100 with nonexistent product should not crash."""
+        from tools.adk_tools.erp_adk_tools import erp_get_inventory_movements
+        result = await erp_get_inventory_movements(product_id="any-id", limit=999)
+        assert isinstance(result, dict)
+        # Returns error (product not found) but doesn't crash
+        assert "success" in result
+
+
+class TestErpGetVendorInvoice:
+
+    @pytest.mark.asyncio
+    async def test_vendor_invoice_nonexistent_returns_error(self):
+        from tools.adk_tools.erp_adk_tools import erp_get_vendor_invoice
+        result = await erp_get_vendor_invoice(vendor_invoice_id="nonexistent-ura-xyz")
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result

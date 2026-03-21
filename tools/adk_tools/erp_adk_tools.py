@@ -524,3 +524,109 @@ async def erp_get_product(product_id: str) -> dict:
     except Exception as e:
         logger.error(f"erp_get_product failed: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Activity & Inventory read-only tools
+# ---------------------------------------------------------------------------
+
+async def erp_get_activity_feed(limit: int = 20) -> dict:
+    """
+    Return the latest ERP activity events from the audit log.
+
+    Use this when the user asks "what happened recently?", "show me recent
+    ERP activity", or when analyst/tracker agents need a chronological
+    overview of business actions (payments, invoices, stock changes).
+
+    Args:
+        limit: Max number of events to return (1-100, default 20)
+
+    Returns:
+        Dict with success, count, events list, and message if empty.
+        Each event: id, timestamp, action, description, entity_type,
+        display_id, user_id.
+    """
+    try:
+        from services.erp.base_erp_service import get_firestore_db
+        ctx = _build_ctx(role="viewer", user_id="analyst-agent")
+        db = get_firestore_db()
+        clamped = max(1, min(limit, 100))
+        query = (
+            db.collection("audit_log")
+            .where("company_id", "==", ctx.company_id)
+            .where("target_service", "==", "erp")
+            .order_by("timestamp", direction="DESCENDING")
+            .limit(clamped)
+        )
+        events = []
+        async for snap in query.stream():
+            doc = snap.to_dict() or {}
+            events.append({
+                "id": snap.id,
+                "timestamp": doc.get("timestamp"),
+                "action": doc.get("action_type"),
+                "description": doc.get("action_description"),
+                "entity_type": doc.get("entity_type"),
+                "display_id": doc.get("display_id"),
+                "user_id": doc.get("user_id"),
+            })
+        if not events:
+            return {"success": True, "count": 0, "events": [], "message": "Nema nedavnih ERP aktivnosti."}
+        return {"success": True, "count": len(events), "events": events}
+    except Exception as e:
+        logger.error(f"erp_get_activity_feed failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def erp_get_inventory_movements(product_id: str, limit: int = 20) -> dict:
+    """
+    Return inventory movement history for a specific product.
+
+    Use this when the user asks about stock changes, "what happened to
+    inventory for product X?", or when tracker agent needs to verify
+    stock adjustments and their reasons.
+
+    Args:
+        product_id: Internal product UUID
+        limit: Max number of movements to return (1-100, default 20)
+
+    Returns:
+        Dict with success, count, movements list, and message if empty.
+        Each movement: id, product_id, product_sku, movement_type,
+        quantity_delta, quantity_after, reason, reference_id, created_at,
+        created_by.
+    """
+    try:
+        from services.erp.product_service import get_product_service
+        ctx = _build_ctx(role="viewer", user_id="tracker-agent")
+        clamped = max(1, min(limit, 100))
+        movements = await get_product_service().get_stock_movements(product_id, ctx, clamped)
+        if not movements:
+            return {"success": True, "count": 0, "movements": [], "message": f"Nema kretanja zaliha za proizvod {product_id}."}
+        return {"success": True, "count": len(movements), "movements": movements}
+    except Exception as e:
+        logger.error(f"erp_get_inventory_movements failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def erp_get_vendor_invoice(vendor_invoice_id: str) -> dict:
+    """
+    Get a single vendor invoice (URA) by its ID.
+
+    Use this when the expense agent needs to check vendor invoice details,
+    approval status, or payment status for a specific URA document.
+
+    Args:
+        vendor_invoice_id: Internal vendor invoice UUID
+
+    Returns:
+        Dict with success and vendor_invoice document.
+    """
+    try:
+        from services.erp.vendor_invoice_service import get_vendor_invoice_service
+        ctx = _build_ctx(role="viewer", user_id="expense-agent")
+        result = await get_vendor_invoice_service().get_vendor_invoice(vendor_invoice_id, ctx)
+        return {"success": True, "vendor_invoice": result}
+    except Exception as e:
+        logger.error(f"erp_get_vendor_invoice failed: {e}")
+        return {"success": False, "error": str(e)}

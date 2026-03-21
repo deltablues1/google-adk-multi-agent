@@ -32,6 +32,20 @@ function erpApp() {
     products: [], loadingProducts: false,
     lowStockFilter: false,
 
+    quotes: [], loadingQuotes: false,
+    quoteStatusFilter: '',
+    quoteDetail: { open: false, data: {} },
+    quoteCustomerList: [],
+    createQuoteModal: {
+      open: false, customer_id: '', customer_name: '', customer_oib: '',
+      valid_until: '', items: [{ description: '', quantity: 1, unit_price: 0, vat_rate: 25 }],
+      notes: '', error: '', submitting: false,
+    },
+    convertQuoteModal: {
+      open: false, quoteId: '', displayId: '', total: 0,
+      invoiceType: 'b2c', error: '', submitting: false,
+    },
+
     overdueInvoices: [],
     lowStockProducts: [],
     activityFeed: [],
@@ -211,6 +225,135 @@ function erpApp() {
       } catch (e) {
         alert(`Greška: ${e.message}`);
       }
+    },
+
+    // =======================================================================
+    // Quotes
+    // =======================================================================
+    async loadQuotes() {
+      this.loadingQuotes = true;
+      try {
+        const p = new URLSearchParams();
+        if (this.quoteStatusFilter) p.set('document_status', this.quoteStatusFilter);
+        this.quotes = await this.apiFetch(`/api/erp/quotes?${p}`);
+      } catch (e) { console.warn('Quotes load error', e); this.quotes = []; }
+      this.loadingQuotes = false;
+    },
+
+    openQuoteDetail(q) {
+      this.quoteDetail.data = q;
+      this.quoteDetail.open = true;
+    },
+
+    async openCreateQuote() {
+      // Load customers for the dropdown
+      try {
+        this.quoteCustomerList = await this.apiFetch('/api/erp/customers?limit=200');
+      } catch (e) { this.quoteCustomerList = []; }
+      const d = new Date();
+      d.setDate(d.getDate() + 30);
+      this.createQuoteModal = {
+        open: true, customer_id: '', customer_name: '', customer_oib: '',
+        valid_until: d.toISOString().slice(0, 10),
+        items: [{ description: '', quantity: 1, unit_price: 0, vat_rate: 25 }],
+        notes: '', error: '', submitting: false,
+      };
+    },
+
+    onQuoteCustomerChange() {
+      const c = this.quoteCustomerList.find(c => c._id === this.createQuoteModal.customer_id);
+      if (c) {
+        this.createQuoteModal.customer_name = c.name || '';
+        this.createQuoteModal.customer_oib = c.oib || '';
+      }
+    },
+
+    async submitCreateQuote() {
+      const m = this.createQuoteModal;
+      m.error = '';
+      if (!m.customer_id) { m.error = 'Odaberite kupca.'; return; }
+      if (!m.valid_until) { m.error = 'Unesite rok valjanosti.'; return; }
+      const validItems = m.items.filter(i => i.description && i.unit_price > 0);
+      if (validItems.length === 0) { m.error = 'Dodajte barem jednu stavku s opisom i cijenom.'; return; }
+      m.submitting = true;
+      try {
+        await this.apiFetch('/api/erp/quotes', {
+          method: 'POST',
+          body: JSON.stringify({
+            customer_id: m.customer_id,
+            customer_name: m.customer_name,
+            customer_oib: m.customer_oib,
+            valid_until: m.valid_until,
+            items: validItems.map(i => ({
+              description: i.description,
+              quantity: parseFloat(i.quantity) || 1,
+              unit_price: parseFloat(i.unit_price) || 0,
+              vat_rate: parseInt(i.vat_rate) || 25,
+            })),
+            notes: m.notes,
+          }),
+        });
+        m.open = false;
+        await this.loadQuotes();
+      } catch (e) {
+        m.error = e.message || 'Greška pri kreiranju ponude.';
+      }
+      m.submitting = false;
+    },
+
+    async sendQuote(q) {
+      if (!confirm(`Označiti ponudu ${q.display_id || q._id} kao poslanu?`)) return;
+      try {
+        await this.apiFetch(`/api/erp/quotes/${q._id}/send`, { method: 'POST' });
+        await this.loadQuotes();
+      } catch (e) { alert(`Greška: ${e.message}`); }
+    },
+
+    async acceptQuote(q) {
+      if (!confirm(`Prihvatiti ponudu ${q.display_id || q._id}?`)) return;
+      try {
+        await this.apiFetch(`/api/erp/quotes/${q._id}/accept`, { method: 'POST' });
+        await this.loadQuotes();
+      } catch (e) { alert(`Greška: ${e.message}`); }
+    },
+
+    async rejectQuote(q) {
+      if (!confirm(`Odbiti ponudu ${q.display_id || q._id}?`)) return;
+      try {
+        await this.apiFetch(`/api/erp/quotes/${q._id}/reject`, { method: 'POST' });
+        await this.loadQuotes();
+      } catch (e) { alert(`Greška: ${e.message}`); }
+    },
+
+    openConvertQuote(q) {
+      this.convertQuoteModal = {
+        open: true, quoteId: q._id,
+        displayId: q.display_id || q._id,
+        total: q.total_gross || 0,
+        invoiceType: 'b2c', error: '', submitting: false,
+      };
+    },
+
+    async submitConvertQuote() {
+      const m = this.convertQuoteModal;
+      m.error = '';
+      m.submitting = true;
+      try {
+        const result = await this.apiFetch(`/api/erp/quotes/${m.quoteId}/convert`, {
+          method: 'POST',
+          body: JSON.stringify({ invoice_type: m.invoiceType }),
+        });
+        m.open = false;
+        if (result.already_converted) {
+          alert(`Ponuda je već konvertirana u račun ${result.invoice_id}.`);
+        } else {
+          alert(`Račun kreiran: ${result.invoice_display_id}`);
+        }
+        await this.loadQuotes();
+      } catch (e) {
+        m.error = e.message || 'Greška pri konverziji.';
+      }
+      m.submitting = false;
     },
 
     // =======================================================================
@@ -490,6 +633,25 @@ function erpApp() {
       return new Date(2024, m - 1, 1).toLocaleDateString('hr-HR', { month: 'long' });
     },
 
+    quoteBadge(status) {
+      const map = {
+        draft: 'badge-draft', sent: 'badge-sent',
+        accepted: 'badge-accepted', rejected: 'badge-rejected',
+        expired: 'badge-expired', converted: 'badge-converted',
+        cancelled: 'badge-cancelled',
+      };
+      return map[status] || 'badge-draft';
+    },
+
+    quoteLabel(status) {
+      const labels = {
+        draft: 'Nacrt', sent: 'Poslano', accepted: 'Prihvaćeno',
+        rejected: 'Odbijeno', expired: 'Isteklo', converted: 'Konvertirano',
+        cancelled: 'Otkazano',
+      };
+      return labels[status] || status;
+    },
+
     activityIcon(action) {
       const icons = {
         customer_created: '+', customer_deleted: '-',
@@ -497,6 +659,9 @@ function erpApp() {
         vendor_invoice_created: '+', vendor_invoice_received: '!',
         vendor_invoice_approved: '!', vendor_payment_recorded: '$',
         payment_recorded: '$', invoice_created: '+',
+        quote_created: '+', quote_sent: '>',
+        quote_accepted: '!', quote_rejected: 'x',
+        quote_converted: '$',
       };
       return icons[action] || '*';
     },

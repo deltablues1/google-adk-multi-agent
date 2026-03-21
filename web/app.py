@@ -24,6 +24,7 @@ from web.models import (
     AgentInfo, TraceEvent,
     PaymentRequest, VendorInvoiceCreate, StockAdjustRequest,
     CustomerCreate, ProductCreate,
+    QuoteCreate, QuoteUpdate, QuoteConvertRequest,
 )
 from config.agent_registry import get_agent_config, get_worker_agent_names
 from services.erp.errors import BusinessError
@@ -647,6 +648,84 @@ def create_app(interface) -> FastAPI:
             customer_totals[cid]["invoice_count"] += 1
         sorted_customers = sorted(customer_totals.values(), key=lambda x: x["total_revenue"], reverse=True)
         return sorted_customers[:limit]
+
+    # ── Quotes (Ponude) ─────────────────────────────────────────────────────
+    @app.get("/api/erp/quotes")
+    async def erp_list_quotes(
+        document_status: str = "", customer_id: str = "",
+        limit: int = 50, offset: int = 0
+    ):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        filters = {}
+        if document_status:
+            filters["document_status"] = document_status
+        if customer_id:
+            filters["customer_id"] = customer_id
+        return await get_quote_service().list_quotes(ctx, filters, _clamp_limit(limit), offset)
+
+    @app.get("/api/erp/quotes/{quote_id}")
+    async def erp_get_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        return await get_quote_service().get_quote(quote_id, ctx)
+
+    @app.post("/api/erp/quotes")
+    async def erp_create_quote(req: QuoteCreate):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        data = req.model_dump()
+        data["valid_until"] = data["valid_until"].isoformat()
+        data["items"] = [
+            {k: (float(v) if isinstance(v, Decimal) else v) for k, v in item.items()}
+            for item in data["items"]
+        ]
+        return await get_quote_service().create_quote(data, ctx)
+
+    @app.patch("/api/erp/quotes/{quote_id}")
+    async def erp_update_quote(quote_id: str, req: QuoteUpdate):
+        from services.erp.quote_service import get_quote_service
+        from decimal import Decimal
+        ctx = _get_dev_ctx()
+        data = {k: v for k, v in req.model_dump().items() if v is not None}
+        if "valid_until" in data:
+            data["valid_until"] = data["valid_until"].isoformat()
+        if "items" in data:
+            data["items"] = [
+                {k: (float(v) if isinstance(v, Decimal) else v) for k, v in item.items()}
+                for item in data["items"]
+            ]
+        return await get_quote_service().update_quote(quote_id, data, ctx)
+
+    @app.post("/api/erp/quotes/{quote_id}/send")
+    async def erp_send_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        return await get_quote_service().mark_sent(quote_id, ctx)
+
+    @app.post("/api/erp/quotes/{quote_id}/accept")
+    async def erp_accept_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        return await get_quote_service().accept_quote(quote_id, ctx)
+
+    @app.post("/api/erp/quotes/{quote_id}/reject")
+    async def erp_reject_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        return await get_quote_service().reject_quote(quote_id, ctx)
+
+    @app.post("/api/erp/quotes/{quote_id}/expire")
+    async def erp_expire_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        return await get_quote_service().expire_quote(quote_id, ctx)
+
+    @app.post("/api/erp/quotes/{quote_id}/convert")
+    async def erp_convert_quote(quote_id: str, req: QuoteConvertRequest):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        return await get_quote_service().convert_to_invoice(quote_id, req.invoice_type, ctx)
 
     # ── Activity Feed ────────────────────────────────────────────────────────
     @app.get("/api/erp/activity")
