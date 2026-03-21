@@ -5,6 +5,7 @@ from typing import Optional, List
 from uuid import uuid4
 
 from google.cloud.firestore_v1.async_client import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from ...request_context import ERPRequestContext
 from ...base_erp_service import get_firestore_db
@@ -24,8 +25,8 @@ class FirestorePaymentRepository:
         """Check if an idempotency key already exists in this company's payments."""
         query = (
             self._db.collection(_PAYMENTS_COL)
-            .where("company_id", "==", company_id)
-            .where("idempotency_key", "==", idempotency_key)
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("idempotency_key", "==", idempotency_key))
             .limit(1)
         )
         docs = [s async for s in query.stream()]
@@ -64,18 +65,18 @@ class FirestorePaymentRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> List[dict]:
-        query = self._db.collection(_PAYMENTS_COL).where("company_id", "==", ctx.company_id)
+        query = self._db.collection(_PAYMENTS_COL).where(filter=FieldFilter("company_id", "==", ctx.company_id))
         f = filters or {}
         if f.get("type"):
-            query = query.where("type", "==", f["type"])
+            query = query.where(filter=FieldFilter("type", "==", f["type"]))
         if f.get("party_id"):
-            query = query.where("party_id", "==", f["party_id"])
+            query = query.where(filter=FieldFilter("party_id", "==", f["party_id"]))
         if f.get("status"):
-            query = query.where("status", "==", f["status"])
+            query = query.where(filter=FieldFilter("status", "==", f["status"]))
         if f.get("date_from"):
-            query = query.where("payment_date", ">=", f["date_from"])
+            query = query.where(filter=FieldFilter("payment_date", ">=", f["date_from"]))
         if f.get("date_to"):
-            query = query.where("payment_date", "<=", f["date_to"])
+            query = query.where(filter=FieldFilter("payment_date", "<=", f["date_to"]))
         query = query.order_by("payment_date", direction="DESCENDING").limit(limit)
         docs = []
         async for snap in query.stream():
@@ -90,8 +91,8 @@ class FirestorePaymentRepository:
         """All payment allocations for a given invoice_id."""
         query = (
             self._db.collection(_ALLOCATIONS_COL)
-            .where("company_id", "==", company_id)
-            .where("invoice_id", "==", invoice_id)
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("invoice_id", "==", invoice_id))
         )
         docs = []
         async for snap in query.stream():
@@ -106,8 +107,8 @@ class FirestorePaymentRepository:
         """All payment allocations for a given payment_id."""
         query = (
             self._db.collection(_ALLOCATIONS_COL)
-            .where("company_id", "==", company_id)
-            .where("payment_id", "==", payment_id)
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("payment_id", "==", payment_id))
         )
         docs = []
         async for snap in query.stream():
@@ -122,10 +123,10 @@ class FirestorePaymentRepository:
         """Aggregate incoming vs outgoing payments for a date range."""
         query = (
             self._db.collection(_PAYMENTS_COL)
-            .where("company_id", "==", company_id)
-            .where("payment_date", ">=", date_from)
-            .where("payment_date", "<=", date_to)
-            .where("status", "==", "confirmed")
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("payment_date", ">=", date_from))
+            .where(filter=FieldFilter("payment_date", "<=", date_to))
+            .where(filter=FieldFilter("status", "==", "confirmed"))
         )
         incoming = 0.0
         outgoing = 0.0

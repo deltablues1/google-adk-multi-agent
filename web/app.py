@@ -805,12 +805,13 @@ def create_app(interface) -> FastAPI:
     async def erp_activity_feed(limit: int = 50):
         """Chronological feed of ERP business actions from the audit log."""
         from services.erp.base_erp_service import get_firestore_db
+        from google.cloud.firestore_v1.base_query import FieldFilter
         ctx = _get_dev_ctx()
         db = get_firestore_db()
         query = (
             db.collection("audit_log")
-            .where("company_id", "==", ctx.company_id)
-            .where("target_service", "==", "erp")
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("target_service", "==", "erp"))
             .order_by("timestamp", direction="DESCENDING")
             .limit(_clamp_limit(limit))
         )

@@ -14,6 +14,8 @@ from datetime import date
 from typing import Optional, List
 from itertools import chain
 
+from google.cloud.firestore_v1.base_query import FieldFilter
+
 from .base_erp_service import BaseERPService, check_permission
 from .request_context import ERPRequestContext
 from .repositories.firestore.invoice_repo import (
@@ -179,9 +181,9 @@ class ReportingService(BaseERPService):
         try:
             query = (
                 self._get_db().collection(collection)
-                .where("company_id", "==", company_id)
-                .where(date_field, ">=", date_from)
-                .where(date_field, "<=", date_to)
+                .where(filter=FieldFilter("company_id", "==", company_id))
+                .where(filter=FieldFilter(date_field, ">=", date_from))
+                .where(filter=FieldFilter(date_field, "<=", date_to))
                 .limit(1000)
             )
             docs = []
@@ -199,9 +201,9 @@ class ReportingService(BaseERPService):
         try:
             query = (
                 self._get_db().collection(collection)
-                .where("company_id", "==", company_id)
-                .where("date", ">=", date_from)
-                .where("date", "<=", date_to)
+                .where(filter=FieldFilter("company_id", "==", company_id))
+                .where(filter=FieldFilter("date", ">=", date_from))
+                .where(filter=FieldFilter("date", "<=", date_to))
                 .limit(1000)
             )
             total = 0.0

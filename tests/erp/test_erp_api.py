@@ -71,7 +71,7 @@ def build_test_app(company_id: str) -> FastAPI:
     @app.post("/api/erp/customers")
     async def erp_create_customer(req: CustomerCreate):
         from services.erp.customer_service import get_customer_service
-        return await get_customer_service().create_customer(req.dict(), _ctx())
+        return await get_customer_service().create_customer(req.model_dump(), _ctx())
 
     @app.get("/api/erp/reports/vat")
     async def erp_vat_report(year: int = 2026, month: int = 1):
@@ -116,7 +116,7 @@ def build_test_app(company_id: str) -> FastAPI:
     @app.post("/api/erp/vendor-invoices")
     async def erp_create_vendor_invoice(req: VendorInvoiceCreate):
         from services.erp.vendor_invoice_service import get_vendor_invoice_service
-        return await get_vendor_invoice_service().create_vendor_invoice(req.dict(), _ctx())
+        return await get_vendor_invoice_service().create_vendor_invoice(req.model_dump(), _ctx())
 
     @app.get("/api/erp/vendor-invoices")
     async def erp_list_vendor_invoices(document_status: str = "", payment_status: str = "",
@@ -136,12 +136,13 @@ def build_test_app(company_id: str) -> FastAPI:
     @app.get("/api/erp/activity")
     async def erp_activity_feed(limit: int = 50):
         from services.erp.base_erp_service import get_firestore_db
+        from google.cloud.firestore_v1.base_query import FieldFilter
         ctx = _ctx()
         db = get_firestore_db()
         query = (
             db.collection("audit_log")
-            .where("company_id", "==", ctx.company_id)
-            .where("target_service", "==", "erp")
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("target_service", "==", "erp"))
             .order_by("timestamp", direction="DESCENDING")
             .limit(min(limit, 500))
         )

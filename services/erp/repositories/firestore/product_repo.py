@@ -6,6 +6,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from google.cloud.firestore_v1.async_client import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from ...request_context import ERPRequestContext
 from ...base_erp_service import get_firestore_db
@@ -41,12 +42,12 @@ class FirestoreProductRepository:
     ) -> List[dict]:
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", ctx.company_id)
-            .where("deleted", "==", False)
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("deleted", "==", False))
         )
         f = filters or {}
         if f.get("active") is not None:
-            query = query.where("active", "==", f["active"])
+            query = query.where(filter=FieldFilter("active", "==", f["active"]))
         query = query.order_by("name").limit(limit)
         docs = []
         async for snap in query.stream():

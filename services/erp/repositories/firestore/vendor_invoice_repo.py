@@ -7,6 +7,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from google.cloud.firestore_v1.async_client import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from ...request_context import ERPRequestContext
 from ...base_erp_service import get_firestore_db
@@ -42,20 +43,20 @@ class FirestoreVendorInvoiceRepository:
     ) -> List[dict]:
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", ctx.company_id)
-            .where("deleted", "==", False)
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("deleted", "==", False))
         )
         f = filters or {}
         if f.get("document_status"):
-            query = query.where("document_status", "==", f["document_status"])
+            query = query.where(filter=FieldFilter("document_status", "==", f["document_status"]))
         if f.get("payment_status"):
-            query = query.where("payment_status", "==", f["payment_status"])
+            query = query.where(filter=FieldFilter("payment_status", "==", f["payment_status"]))
         if f.get("vendor_id"):
-            query = query.where("vendor_id", "==", f["vendor_id"])
+            query = query.where(filter=FieldFilter("vendor_id", "==", f["vendor_id"]))
         if f.get("date_from"):
-            query = query.where("issue_date", ">=", f["date_from"])
+            query = query.where(filter=FieldFilter("issue_date", ">=", f["date_from"]))
         if f.get("date_to"):
-            query = query.where("issue_date", "<=", f["date_to"])
+            query = query.where(filter=FieldFilter("issue_date", "<=", f["date_to"]))
         query = query.order_by("issue_date", direction="DESCENDING").limit(limit)
         docs = []
         async for snap in query.stream():
@@ -68,9 +69,9 @@ class FirestoreVendorInvoiceRepository:
         """All vendor invoices with payment_status != paid."""
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", ctx.company_id)
-            .where("deleted", "==", False)
-            .where("payment_status", "in", ["unpaid", "partial"])
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("deleted", "==", False))
+            .where(filter=FieldFilter("payment_status", "in", ["unpaid", "partial"]))
             .limit(500)
         )
         docs = []
@@ -109,9 +110,9 @@ class FirestoreVendorInvoiceRepository:
     async def find_by_dedup_hash(self, dedup_hash: str, company_id: str) -> Optional[dict]:
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", company_id)
-            .where("_dedup_hash", "==", dedup_hash)
-            .where("deleted", "==", False)
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("_dedup_hash", "==", dedup_hash))
+            .where(filter=FieldFilter("deleted", "==", False))
             .limit(1)
         )
         async for snap in query.stream():

@@ -295,11 +295,12 @@ class TestActivityFeed:
 
         await svc.create_customer({"name": "Feed Test d.o.o.", "party_type": "customer"}, ctx)
 
+        from google.cloud.firestore_v1.base_query import FieldFilter
         db = get_firestore_db()
         query = (
             db.collection("audit_log")
-            .where("company_id", "==", cid)
-            .where("target_service", "==", "erp")
+            .where(filter=FieldFilter("company_id", "==", cid))
+            .where(filter=FieldFilter("target_service", "==", "erp"))
             .order_by("timestamp", direction="DESCENDING")
             .limit(5)
         )

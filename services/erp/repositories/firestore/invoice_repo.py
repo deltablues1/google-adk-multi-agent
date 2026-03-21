@@ -13,6 +13,7 @@ from itertools import chain
 from typing import Optional, List
 
 from google.cloud.firestore_v1.async_client import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from ..base import InvoiceReference
 from ...request_context import ERPRequestContext
@@ -70,8 +71,8 @@ class FirestoreInvoiceRepository:
         for inv_type, col in INVOICE_TYPE_TO_COLLECTION.items():
             query = (
                 self._db.collection(col)
-                .where("company_id", "==", ctx.company_id)
-                .where("display_id", "==", display_id)
+                .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+                .where(filter=FieldFilter("display_id", "==", display_id))
                 .limit(1)
             )
             docs = [s async for s in query.stream()]
@@ -180,19 +181,19 @@ class FirestoreInvoiceRepository:
     ) -> List[dict]:
         """Build and execute a Firestore query for one collection."""
         try:
-            query = self._db.collection(collection).where("company_id", "==", ctx.company_id)
+            query = self._db.collection(collection).where(filter=FieldFilter("company_id", "==", ctx.company_id))
 
             if filters.get("payment_status"):
-                query = query.where("erp_payment_status", "==", filters["payment_status"])
+                query = query.where(filter=FieldFilter("erp_payment_status", "==", filters["payment_status"]))
             if filters.get("payment_status_ne") == "paid":
                 # Firestore doesn't support !=; we query partial + unpaid separately
                 pass  # handled in post-filter below
             if filters.get("customer_id"):
-                query = query.where("customer_id", "==", filters["customer_id"])
+                query = query.where(filter=FieldFilter("customer_id", "==", filters["customer_id"]))
             if filters.get("date_from"):
-                query = query.where("date", ">=", filters["date_from"])
+                query = query.where(filter=FieldFilter("date", ">=", filters["date_from"]))
             if filters.get("date_to"):
-                query = query.where("date", "<=", filters["date_to"])
+                query = query.where(filter=FieldFilter("date", "<=", filters["date_to"]))
 
             query = query.limit(limit)
             docs = []

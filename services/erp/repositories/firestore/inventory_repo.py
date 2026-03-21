@@ -6,6 +6,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from google.cloud.firestore_v1.async_client import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from ...base_erp_service import get_firestore_db
 
@@ -57,8 +58,8 @@ class FirestoreInventoryRepository:
     ) -> List[dict]:
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", company_id)
-            .where("product_id", "==", product_id)
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("product_id", "==", product_id))
             .order_by("created_at", direction="DESCENDING")
             .limit(limit)
         )

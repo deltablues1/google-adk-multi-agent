@@ -6,6 +6,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from google.cloud.firestore_v1.async_client import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from ...request_context import ERPRequestContext
 from ...base_erp_service import get_firestore_db
@@ -41,16 +42,16 @@ class FirestoreCustomerRepository:
     ) -> List[dict]:
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", ctx.company_id)
-            .where("deleted", "==", False)
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("deleted", "==", False))
         )
         f = filters or {}
         if f.get("party_type"):
-            query = query.where("party_type", "==", f["party_type"])
+            query = query.where(filter=FieldFilter("party_type", "==", f["party_type"]))
         if f.get("category"):
-            query = query.where("category", "==", f["category"])
+            query = query.where(filter=FieldFilter("category", "==", f["category"]))
         if f.get("active") is not None:
-            query = query.where("active", "==", f["active"])
+            query = query.where(filter=FieldFilter("active", "==", f["active"]))
         query = query.order_by("name").limit(limit)
         docs = []
         async for snap in query.stream():
@@ -98,9 +99,9 @@ class FirestoreCustomerRepository:
             return None
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", company_id)
-            .where("oib", "==", oib)
-            .where("deleted", "==", False)
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("oib", "==", oib))
+            .where(filter=FieldFilter("deleted", "==", False))
             .limit(1)
         )
         async for snap in query.stream():
@@ -116,8 +117,8 @@ class FirestoreCustomerRepository:
         needle = name.lower().strip()
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", company_id)
-            .where("deleted", "==", False)
+            .where(filter=FieldFilter("company_id", "==", company_id))
+            .where(filter=FieldFilter("deleted", "==", False))
             .limit(limit)
         )
         async for snap in query.stream():
