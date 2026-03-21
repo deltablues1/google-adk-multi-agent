@@ -188,6 +188,13 @@ def build_test_app(company_id: str) -> FastAPI:
         from services.erp.quote_service import get_quote_service
         return await get_quote_service().convert_to_invoice(quote_id, req.get("invoice_type", "b2c"), _ctx())
 
+    @app.get("/api/erp/quotes/{quote_id}/print")
+    async def erp_print_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        from fastapi.responses import HTMLResponse
+        q = await get_quote_service().get_quote(quote_id, _ctx())
+        return HTMLResponse(content=f"<html><body><h1>{q.get('display_id','')}</h1></body></html>")
+
     return app
 
 
@@ -428,3 +435,22 @@ class TestQuotesAPI:
             r = await client.get(f"/api/erp/quotes/{qid}")
             assert r.json()["document_status"] == "converted"
             assert r.json()["converted_invoice_id"] == result["invoice_id"]
+
+    @pytest.mark.asyncio
+    async def test_print_quote_returns_html(self, app):
+        """Print endpoint returns HTML with display_id."""
+        payload = {
+            "customer_id": "test-cust-print",
+            "customer_name": "Print Kupac",
+            "valid_until": "2026-12-31",
+            "items": [{"description": "Stavka", "quantity": 1, "unit_price": 10.0, "vat_rate": 25}],
+        }
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.post("/api/erp/quotes", json=payload)
+            qid = r.json()["_id"]
+            display_id = r.json()["display_id"]
+
+            r = await client.get(f"/api/erp/quotes/{qid}/print")
+        assert r.status_code == 200
+        assert "text/html" in r.headers.get("content-type", "")
+        assert display_id in r.text

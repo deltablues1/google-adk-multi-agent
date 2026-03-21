@@ -89,12 +89,49 @@ _DEFAULT_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "fabled-sector-476018-
 _db_instance: Optional[AsyncClient] = None
 
 
+def _load_adc_credentials():
+    """Load credentials from ADC file directly, bypassing google.auth.default()
+    which hangs on networks where GCE metadata server is unreachable."""
+    import json
+    adc_path = os.path.join(
+        os.environ.get("APPDATA", os.path.expanduser("~")),
+        "gcloud", "application_default_credentials.json",
+    )
+    creds_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", adc_path)
+    try:
+        with open(creds_file) as f:
+            adc = json.load(f)
+        if adc.get("type") == "authorized_user":
+            from google.oauth2.credentials import Credentials
+            import google.auth.transport.requests
+            creds = Credentials(
+                token=None,
+                refresh_token=adc["refresh_token"],
+                client_id=adc["client_id"],
+                client_secret=adc["client_secret"],
+                token_uri=adc.get("token_uri", "https://oauth2.googleapis.com/token"),
+            )
+            creds.refresh(google.auth.transport.requests.Request())
+            return creds, adc.get("quota_project_id")
+        elif adc.get("type") == "service_account":
+            from google.oauth2 import service_account
+            creds = service_account.Credentials.from_service_account_file(creds_file)
+            return creds, adc.get("project_id")
+    except (FileNotFoundError, KeyError, ValueError):
+        pass
+    return None, None
+
+
 def get_firestore_db(project_id: Optional[str] = None) -> AsyncClient:
     """Lazy singleton Firestore async client."""
     global _db_instance
     if _db_instance is None:
-        proj = project_id or _DEFAULT_PROJECT
-        _db_instance = AsyncClient(project=proj)
+        creds, adc_project = _load_adc_credentials()
+        proj = project_id or adc_project or _DEFAULT_PROJECT
+        if creds:
+            _db_instance = AsyncClient(project=proj, credentials=creds)
+        else:
+            _db_instance = AsyncClient(project=proj)
         logger.info(f"[ERP] Firestore client initialized (project={proj})")
     return _db_instance
 

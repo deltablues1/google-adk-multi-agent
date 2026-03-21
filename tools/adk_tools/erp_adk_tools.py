@@ -6,7 +6,7 @@ Each function receives flat typed parameters (ADK requirement),
 builds an ERPRequestContext from session state or defaults,
 and delegates to the appropriate ERP service.
 
-Context is built explicitly — no magic session state lookups.
+17 tools total. Context is built explicitly — no magic session state lookups.
 """
 
 import logging
@@ -606,6 +606,65 @@ async def erp_get_inventory_movements(product_id: str, limit: int = 20) -> dict:
         return {"success": True, "count": len(movements), "movements": movements}
     except Exception as e:
         logger.error(f"erp_get_inventory_movements failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def erp_list_quotes(
+    status: str = "",
+    customer_name: str = "",
+    limit: int = 50,
+) -> dict:
+    """
+    List quotes (ponude) with optional filters.
+
+    Use this when the user asks about quotes, offers, ponude — e.g. "show me
+    all sent quotes", "pending ponude", "quotes for customer X".
+
+    Args:
+        status: Filter by document_status (draft|sent|accepted|rejected|expired|converted|cancelled)
+        customer_name: Filter by customer name (case-insensitive substring match)
+        limit: Max results (1-100, default 50)
+
+    Returns:
+        Dict with success, count, quotes list.
+    """
+    try:
+        from services.erp.quote_service import get_quote_service
+        ctx = _build_ctx(role="viewer", user_id="analyst-agent")
+        clamped = max(1, min(limit, 100))
+        filters = {}
+        if status:
+            filters["document_status"] = status
+        quotes = await get_quote_service().list_quotes(ctx, filters=filters, limit=clamped)
+        if customer_name:
+            q = customer_name.lower()
+            quotes = [r for r in quotes if q in (r.get("customer_name") or "").lower()]
+        return {"success": True, "count": len(quotes), "quotes": quotes}
+    except Exception as e:
+        logger.error(f"erp_list_quotes failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def erp_get_quote(quote_id: str) -> dict:
+    """
+    Get a single quote (ponuda) by its ID.
+
+    Use this when the user asks about a specific quote — details, items,
+    status, validity date, total amount.
+
+    Args:
+        quote_id: Internal quote UUID
+
+    Returns:
+        Dict with success and quote document including items, totals, status.
+    """
+    try:
+        from services.erp.quote_service import get_quote_service
+        ctx = _build_ctx(role="viewer", user_id="analyst-agent")
+        result = await get_quote_service().get_quote(quote_id, ctx)
+        return {"success": True, "quote": result}
+    except Exception as e:
+        logger.error(f"erp_get_quote failed: {e}")
         return {"success": False, "error": str(e)}
 
 

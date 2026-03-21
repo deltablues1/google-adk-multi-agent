@@ -423,6 +423,7 @@
           <option value="expired">Isteklo</option>
           <option value="converted">Konvertirano</option>
         </select>
+        <input x-model="quoteCustomerSearch" @input.debounce.400ms="loadQuotes()" placeholder="Pretraga kupca..." />
       </div>
       <div class="erp-table-wrap">
         <table class="erp-table">
@@ -838,11 +839,20 @@
         </table>
       </div>
       <div x-show="quoteDetail.data.notes" style="margin-bottom:0.8rem; padding:0.6rem 0.75rem; background:var(--bg-input); border-radius:5px; font-size:0.8rem; color:var(--text-muted); max-height:80px; overflow-y:auto" x-text="quoteDetail.data.notes"></div>
+      <!-- Status timeline -->
+      <div style="margin-bottom:0.8rem; display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.75rem; color:var(--text-muted)">
+        <span x-show="quoteDetail.data.created_at">Kreirano: <strong x-text="(quoteDetail.data.created_at || '').slice(0,10)"></strong></span>
+        <span x-show="quoteDetail.data.sent_at">Poslano: <strong x-text="(quoteDetail.data.sent_at || '').slice(0,10)"></strong></span>
+        <span x-show="quoteDetail.data.accepted_at" style="color:#4ade80">Prihvaćeno: <strong x-text="(quoteDetail.data.accepted_at || '').slice(0,10)"></strong></span>
+        <span x-show="quoteDetail.data.rejected_at" style="color:#f87171">Odbijeno: <strong x-text="(quoteDetail.data.rejected_at || '').slice(0,10)"></strong></span>
+        <span x-show="quoteDetail.data.converted_at" style="color:#38bdf8">Konvertirano: <strong x-text="(quoteDetail.data.converted_at || '').slice(0,10)"></strong></span>
+      </div>
       <!-- Converted invoice link -->
       <div x-show="quoteDetail.data.document_status === 'converted'" style="margin-bottom:0.8rem; padding:0.5rem 0.75rem; background:var(--bg-input); border-radius:5px; font-size:0.82rem">
         Konvertirano u račun: <strong x-text="quoteDetail.data.converted_invoice_id || '—'" style="font-family:monospace"></strong>
       </div>
       <div style="display:flex; gap:0.5rem; justify-content:flex-end; flex-wrap:wrap">
+        <button class="btn-xs btn-outline" @click="printQuote(quoteDetail.data)">Ispis</button>
         <button class="btn-xs btn-outline" @click="quoteDetail.open=false">Zatvori</button>
         <button class="btn-xs btn-outline" x-show="quoteDetail.data.document_status === 'draft'" @click="sendQuote(quoteDetail.data); quoteDetail.open=false">Pošalji</button>
         <button class="btn-xs btn-outline" x-show="quoteDetail.data.document_status === 'sent'" @click="acceptQuote(quoteDetail.data); quoteDetail.open=false">Prihvati</button>

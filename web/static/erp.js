@@ -33,7 +33,7 @@ function erpApp() {
     lowStockFilter: false,
 
     quotes: [], loadingQuotes: false,
-    quoteStatusFilter: '',
+    quoteStatusFilter: '', quoteCustomerSearch: '',
     quoteDetail: { open: false, data: {} },
     quoteCustomerList: [],
     createQuoteModal: {
@@ -235,7 +235,12 @@ function erpApp() {
       try {
         const p = new URLSearchParams();
         if (this.quoteStatusFilter) p.set('document_status', this.quoteStatusFilter);
-        this.quotes = await this.apiFetch(`/api/erp/quotes?${p}`);
+        let results = await this.apiFetch(`/api/erp/quotes?${p}`);
+        if (this.quoteCustomerSearch) {
+          const q = this.quoteCustomerSearch.toLowerCase();
+          results = results.filter(r => (r.customer_name || '').toLowerCase().includes(q));
+        }
+        this.quotes = results;
       } catch (e) { console.warn('Quotes load error', e); this.quotes = []; }
       this.loadingQuotes = false;
     },
@@ -323,6 +328,10 @@ function erpApp() {
         await this.apiFetch(`/api/erp/quotes/${q._id}/reject`, { method: 'POST' });
         await this.loadQuotes();
       } catch (e) { alert(`Greška: ${e.message}`); }
+    },
+
+    printQuote(q) {
+      window.open(`/api/erp/quotes/${q._id}/print`, '_blank');
     },
 
     openConvertQuote(q) {

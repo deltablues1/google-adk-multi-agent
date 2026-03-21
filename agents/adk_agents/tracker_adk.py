@@ -61,6 +61,8 @@ def create_tracker_agent(
         erp_get_open_payables,
         erp_get_activity_feed,
         erp_get_inventory_movements,
+        erp_list_quotes,
+        erp_get_quote,
     )
 
     # Create list of tools
@@ -78,6 +80,9 @@ def create_tracker_agent(
         # ERP activity & inventory
         erp_get_activity_feed,
         erp_get_inventory_movements,
+        # ERP quotes
+        erp_list_quotes,
+        erp_get_quote,
     ]
 
     # Create agent using factory

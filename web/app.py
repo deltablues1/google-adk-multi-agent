@@ -727,6 +727,60 @@ def create_app(interface) -> FastAPI:
         ctx = _get_dev_ctx()
         return await get_quote_service().convert_to_invoice(quote_id, req.invoice_type, ctx)
 
+    @app.get("/api/erp/quotes/{quote_id}/print")
+    async def erp_print_quote(quote_id: str):
+        """Return print-friendly HTML for a quote."""
+        from services.erp.quote_service import get_quote_service
+        from fastapi.responses import HTMLResponse
+        ctx = _get_dev_ctx()
+        q = await get_quote_service().get_quote(quote_id, ctx)
+        items_html = ""
+        for item in (q.get("items") or []):
+            items_html += (
+                f"<tr><td>{item.get('description','')}</td>"
+                f"<td style='text-align:right'>{item.get('quantity',1)}</td>"
+                f"<td style='text-align:right'>{item.get('unit_price',0):.2f}</td>"
+                f"<td style='text-align:right'>{item.get('vat_rate',25)}%</td>"
+                f"<td style='text-align:right'>{item.get('line_gross',0):.2f}</td></tr>"
+            )
+        html = f"""<!DOCTYPE html>
+<html lang="hr"><head><meta charset="UTF-8"/><title>Ponuda {q.get('display_id','')}</title>
+<style>
+  body {{ font-family: 'Segoe UI', Arial, sans-serif; max-width: 700px; margin: 2rem auto; color: #222; font-size: 14px; }}
+  h1 {{ font-size: 1.4rem; margin-bottom: 0.25rem; }}
+  .meta {{ display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 2rem; margin: 1.5rem 0; font-size: 0.9rem; }}
+  .meta dt {{ color: #888; font-size: 0.8rem; }}
+  .meta dd {{ margin: 0 0 0.5rem; font-weight: 600; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }}
+  th {{ text-align: left; border-bottom: 2px solid #333; padding: 0.5rem 0.4rem; font-size: 0.8rem; text-transform: uppercase; color: #555; }}
+  td {{ padding: 0.45rem 0.4rem; border-bottom: 1px solid #ddd; }}
+  .totals {{ text-align: right; margin-top: 1rem; font-size: 0.95rem; }}
+  .totals .gross {{ font-size: 1.2rem; font-weight: 700; }}
+  .notes {{ margin-top: 1.5rem; padding: 0.75rem; background: #f5f5f5; border-radius: 4px; font-size: 0.85rem; color: #555; }}
+  .footer {{ margin-top: 2rem; font-size: 0.78rem; color: #999; border-top: 1px solid #ddd; padding-top: 0.75rem; }}
+  @media print {{ body {{ margin: 0; }} }}
+</style></head><body>
+<h1>PONUDA {q.get('display_id','')}</h1>
+<dl class="meta">
+  <dt>Kupac</dt><dd>{q.get('customer_name','—')}</dd>
+  <dt>OIB</dt><dd>{q.get('customer_oib','—')}</dd>
+  <dt>Datum izdavanja</dt><dd>{str(q.get('issue_date','')).replace('T',' ')[:10]}</dd>
+  <dt>Rok valjanosti</dt><dd>{str(q.get('valid_until','')).replace('T',' ')[:10]}</dd>
+  <dt>Valuta</dt><dd>{q.get('currency','EUR')}</dd>
+  <dt>Status</dt><dd>{q.get('document_status','draft')}</dd>
+</dl>
+<table><thead><tr><th>Opis</th><th style="text-align:right">Kol.</th><th style="text-align:right">Cijena</th><th style="text-align:right">PDV</th><th style="text-align:right">Ukupno</th></tr></thead>
+<tbody>{items_html}</tbody></table>
+<div class="totals">
+  Neto: {q.get('subtotal_net',0):.2f} EUR<br/>
+  PDV: {q.get('vat_total',0):.2f} EUR<br/>
+  <span class="gross">Ukupno: {q.get('total_gross',0):.2f} EUR</span>
+</div>
+{"<div class='notes'>" + q.get('notes','') + "</div>" if q.get('notes') else ""}
+<div class="footer">Ponuda vrijedi do {str(q.get('valid_until','')).replace('T',' ')[:10]}. Plaćanje po dogovoru.</div>
+</body></html>"""
+        return HTMLResponse(content=html)
+
     # ── Activity Feed ────────────────────────────────────────────────────────
     @app.get("/api/erp/activity")
     async def erp_activity_feed(limit: int = 50):

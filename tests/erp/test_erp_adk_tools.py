@@ -1,7 +1,7 @@
 """
 ERP ADK Tools Tests
 ====================
-Tests for the 15 ERP ADK tools in tools/adk_tools/erp_adk_tools.py.
+Tests for the 17 ERP ADK tools in tools/adk_tools/erp_adk_tools.py.
 
 These tests hit REAL Firestore with isolated company_id.
 The _build_ctx() in erp_adk_tools.py uses "default-company" — tests that need
@@ -149,6 +149,44 @@ class TestErpGetInventoryMovements:
         assert isinstance(result, dict)
         # Returns error (product not found) but doesn't crash
         assert "success" in result
+
+
+class TestErpListQuotes:
+
+    @pytest.mark.asyncio
+    async def test_list_quotes_returns_list(self):
+        from tools.adk_tools.erp_adk_tools import erp_list_quotes
+        result = await erp_list_quotes()
+        assert isinstance(result, dict)
+        assert result.get("success") is True
+        assert "quotes" in result
+        assert isinstance(result["quotes"], list)
+
+    @pytest.mark.asyncio
+    async def test_list_quotes_with_status_filter(self):
+        from tools.adk_tools.erp_adk_tools import erp_list_quotes
+        result = await erp_list_quotes(status="draft", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is True
+
+    @pytest.mark.asyncio
+    async def test_list_quotes_with_customer_name_filter(self):
+        from tools.adk_tools.erp_adk_tools import erp_list_quotes
+        result = await erp_list_quotes(customer_name="nonexistent-company-xyz")
+        assert isinstance(result, dict)
+        assert result.get("success") is True
+        assert result.get("count") == 0
+
+
+class TestErpGetQuote:
+
+    @pytest.mark.asyncio
+    async def test_get_quote_nonexistent_returns_error(self):
+        from tools.adk_tools.erp_adk_tools import erp_get_quote
+        result = await erp_get_quote(quote_id="nonexistent-quote-xyz")
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
 
 
 class TestErpGetVendorInvoice:
