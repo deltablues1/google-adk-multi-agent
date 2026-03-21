@@ -103,6 +103,21 @@ class QuoteService(BaseERPService):
                 message="Rok valjanosti (valid_until) je obavezan.",
                 field="valid_until",
             )
+        # valid_until must not be in the past
+        try:
+            vu = datetime.strptime(str(data["valid_until"])[:10], "%Y-%m-%d").date()
+            if vu < datetime.now(timezone.utc).date():
+                raise ValidationError(
+                    code="INVALID_DATE",
+                    message="Rok valjanosti ne može biti u prošlosti.",
+                    field="valid_until",
+                )
+        except ValueError:
+            raise ValidationError(
+                code="INVALID_DATE",
+                message="Neispravan format datuma za valid_until (očekivan YYYY-MM-DD).",
+                field="valid_until",
+            )
 
         # Compute totals from items (Decimal precision)
         items, subtotal_net, vat_total, total_gross = self._compute_item_totals(items)
@@ -130,6 +145,7 @@ class QuoteService(BaseERPService):
             "accepted_at": "",
             "rejected_at": "",
             "sent_at": "",
+            "cancelled_at": "",
             "created_by": ctx.user_id,
         }
 
@@ -220,6 +236,23 @@ class QuoteService(BaseERPService):
         })
         await write_audit(
             "quote_rejected", "quote", quote_id,
+            doc.get("display_id"), ctx, db=self._get_db()
+        )
+        return updated
+
+    async def cancel_quote(self, quote_id: str, ctx: ERPRequestContext) -> dict:
+        check_permission(ctx, "quote:update")
+        doc = await self._get_repo().get(quote_id, ctx)
+        if doc is None:
+            raise NotFoundError(code="NOT_FOUND", message=f"Ponuda '{quote_id}' nije pronađena.")
+        validate_transition(doc["document_status"], "cancelled", QUOTE_DOC_TRANSITIONS)
+        now = datetime.now(timezone.utc).isoformat()
+        updated = await self._get_repo().update(quote_id, ctx, {
+            "document_status": "cancelled",
+            "cancelled_at": now,
+        })
+        await write_audit(
+            "quote_cancelled", "quote", quote_id,
             doc.get("display_id"), ctx, db=self._get_db()
         )
         return updated

@@ -188,6 +188,11 @@ def build_test_app(company_id: str) -> FastAPI:
         from services.erp.quote_service import get_quote_service
         return await get_quote_service().convert_to_invoice(quote_id, req.get("invoice_type", "b2c"), _ctx())
 
+    @app.post("/api/erp/quotes/{quote_id}/cancel")
+    async def erp_cancel_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        return await get_quote_service().cancel_quote(quote_id, _ctx())
+
     @app.get("/api/erp/quotes/{quote_id}/print")
     async def erp_print_quote(quote_id: str):
         from services.erp.quote_service import get_quote_service
@@ -454,3 +459,20 @@ class TestQuotesAPI:
         assert r.status_code == 200
         assert "text/html" in r.headers.get("content-type", "")
         assert display_id in r.text
+
+    @pytest.mark.asyncio
+    async def test_cancel_draft_quote(self, app):
+        """Cancel a draft quote via API."""
+        payload = {
+            "customer_id": "test-cust-cancel",
+            "customer_name": "Cancel Kupac",
+            "valid_until": "2026-12-31",
+            "items": [{"description": "Stavka", "quantity": 1, "unit_price": 50.0, "vat_rate": 25}],
+        }
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            r = await client.post("/api/erp/quotes", json=payload)
+            qid = r.json()["_id"]
+
+            r = await client.post(f"/api/erp/quotes/{qid}/cancel")
+            assert r.status_code == 200
+            assert r.json()["document_status"] == "cancelled"

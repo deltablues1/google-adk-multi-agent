@@ -336,6 +336,15 @@ function erpApp() {
       } catch (e) { alert(`Greška: ${e.message}`); }
     },
 
+    async cancelQuote(q) {
+      if (!confirm(`Stornirati ponudu ${q.display_id || q._id}?`)) return;
+      try {
+        await this.apiFetch(`/api/erp/quotes/${q._id}/cancel`, { method: 'POST' });
+        await this.loadQuotes();
+        await this._refreshQuoteDetail(q._id);
+      } catch (e) { alert(`Greška: ${e.message}`); }
+    },
+
     printQuote(q) {
       window.open(`/api/erp/quotes/${q._id}/print`, '_blank');
     },

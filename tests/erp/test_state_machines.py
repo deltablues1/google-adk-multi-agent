@@ -186,6 +186,7 @@ class TestQuoteDocTransitions:
         ("sent", "accepted"),
         ("sent", "rejected"),
         ("sent", "expired"),
+        ("sent", "cancelled"),
         ("accepted", "converted"),
     ])
     def test_valid_transitions(self, current, target):
@@ -196,7 +197,6 @@ class TestQuoteDocTransitions:
         ("draft", "converted"),
         ("sent", "draft"),
         ("sent", "converted"),
-        ("sent", "cancelled"),
         ("accepted", "draft"),
         ("accepted", "sent"),
         ("accepted", "rejected"),

@@ -77,7 +77,7 @@ def compute_payment_status(amount_paid: Decimal, total_gross: Decimal) -> str:
 # ---------------------------------------------------------------------------
 QUOTE_DOC_TRANSITIONS: dict[str, list[str]] = {
     "draft":     ["sent", "rejected", "expired", "cancelled"],
-    "sent":      ["accepted", "rejected", "expired"],
+    "sent":      ["accepted", "rejected", "expired", "cancelled"],
     "accepted":  ["converted"],
     "rejected":  [],      # terminal
     "expired":   [],      # terminal

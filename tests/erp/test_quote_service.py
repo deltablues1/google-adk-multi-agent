@@ -251,6 +251,73 @@ class TestQuoteConvertToInvoice:
             await svc.convert_to_invoice(quote["_id"], "invalid_type", ctx)
 
 
+class TestQuoteCancelWorkflow:
+
+    @pytest.mark.asyncio
+    async def test_cancel_draft_quote(self, cid):
+        from services.erp.quote_service import QuoteService
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+        quote = await svc.create_quote(_sample_quote_data(cid), ctx)
+        cancelled = await svc.cancel_quote(quote["_id"], ctx)
+        assert cancelled["document_status"] == "cancelled"
+        assert cancelled["cancelled_at"] != ""
+
+    @pytest.mark.asyncio
+    async def test_cancel_sent_quote(self, cid):
+        from services.erp.quote_service import QuoteService
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+        quote = await svc.create_quote(_sample_quote_data(cid), ctx)
+        await svc.mark_sent(quote["_id"], ctx)
+        cancelled = await svc.cancel_quote(quote["_id"], ctx)
+        assert cancelled["document_status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cannot_cancel_accepted_quote(self, cid):
+        from services.erp.quote_service import QuoteService
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+        quote = await svc.create_quote(_sample_quote_data(cid), ctx)
+        await svc.mark_sent(quote["_id"], ctx)
+        await svc.accept_quote(quote["_id"], ctx)
+        with pytest.raises(InvalidStateTransitionError):
+            await svc.cancel_quote(quote["_id"], ctx)
+
+
+class TestQuoteValidUntilValidation:
+
+    @pytest.mark.asyncio
+    async def test_valid_until_in_past_raises_422(self, cid):
+        from services.erp.quote_service import QuoteService
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+        data = _sample_quote_data(cid)
+        data["valid_until"] = str(date.today() - timedelta(days=1))
+        with pytest.raises(ValidationError, match="prošlosti"):
+            await svc.create_quote(data, ctx)
+
+    @pytest.mark.asyncio
+    async def test_valid_until_today_is_allowed(self, cid):
+        from services.erp.quote_service import QuoteService
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+        data = _sample_quote_data(cid)
+        data["valid_until"] = str(date.today())
+        quote = await svc.create_quote(data, ctx)
+        assert quote["valid_until"] == str(date.today())
+
+    @pytest.mark.asyncio
+    async def test_invalid_date_format_raises_422(self, cid):
+        from services.erp.quote_service import QuoteService
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+        data = _sample_quote_data(cid)
+        data["valid_until"] = "not-a-date"
+        with pytest.raises(ValidationError, match="format"):
+            await svc.create_quote(data, ctx)
+
+
 class TestQuoteList:
 
     @pytest.mark.asyncio

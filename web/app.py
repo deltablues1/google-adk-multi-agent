@@ -724,6 +724,12 @@ def create_app(interface) -> FastAPI:
         ctx = _get_dev_ctx()
         return await get_quote_service().expire_quote(quote_id, ctx)
 
+    @app.post("/api/erp/quotes/{quote_id}/cancel")
+    async def erp_cancel_quote(quote_id: str):
+        from services.erp.quote_service import get_quote_service
+        ctx = _get_dev_ctx()
+        return await get_quote_service().cancel_quote(quote_id, ctx)
+
     @app.post("/api/erp/quotes/{quote_id}/convert")
     async def erp_convert_quote(quote_id: str, req: QuoteConvertRequest):
         from services.erp.quote_service import get_quote_service
