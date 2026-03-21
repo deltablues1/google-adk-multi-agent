@@ -220,3 +220,46 @@ Sve je postavljeno. Samo:
 3. Check Firestore Console
 
 **Gotovo!** 🚀
+
+---
+
+## 🗂️ Firestore Composite Indexes
+
+Repo sadrži `firestore.indexes.json` — manifest svih composite indexa potrebnih za ERP upite.
+
+### Primjena na novi projekt
+
+**Opcija 1 — Firebase CLI** (preporučeno):
+```bash
+firebase deploy --only firestore:indexes --project YOUR_PROJECT_ID
+```
+
+**Opcija 2 — gcloud CLI** (ručno, po indexu):
+```bash
+gcloud firestore indexes composite create \
+  --collection-group=quotes \
+  --field-config="field-path=company_id,order=ASCENDING" \
+  --field-config="field-path=deleted,order=ASCENDING" \
+  --field-config="field-path=created_at,order=DESCENDING" \
+  --project=YOUR_PROJECT_ID
+```
+
+### Dodavanje novog indexa
+
+Kad Firestore javi `FAILED_PRECONDITION: The query requires an index`:
+
+1. Kreiraj index ručno (`gcloud` ili link iz error poruke)
+2. Dodaj ga u `firestore.indexes.json`
+3. Commitaj promjenu
+
+### Trenutni indexi
+
+| Kolekcija | Polja | Svrha |
+|-----------|-------|-------|
+| `quotes` | company_id, deleted, created_at | Lista ponuda |
+| `quotes` | company_id, deleted, document_status, created_at | Filtriranje po statusu |
+| `inventory_movements` | company_id, product_id, created_at | Kretanja zaliha po proizvodu |
+| `audit_log` | company_id, target_service, timestamp | Activity feed |
+| `vendor_invoices` | company_id, deleted, issue_date | Lista URA |
+| `payments` | company_id, payment_date | Lista plaćanja |
+| ... | | (ukupno 26 indexa — vidi `firestore.indexes.json`) |
