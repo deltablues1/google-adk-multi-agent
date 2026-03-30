@@ -33,10 +33,9 @@ class AgentConfig:
 # ============================================================================
 # AGENT REGISTRY - Centralna registracija svih agenata
 # ============================================================================
-# MODEL TIERS (Vertex AI, Feb 2026):
-#   Tier 1: gemini-3.1-pro     - Orchestrator (complex multi-step reasoning, 2M+ context)
-#   Tier 2: gemini-2.5-pro     - Precision tasks (thinking mode, zero-tolerance validation)
-#   Tier 3: gemini-3-flash     - Speed workhorses (180+ tok/s, low latency)
+# MODEL TIERS (Vertex AI, Mar 2026):
+#   Tier 1: gemini-2.5-pro     - Precision tasks (thinking mode, zero-tolerance validation)
+#   Tier 2: gemini-3-flash     - Everything else incl. orchestrator (180+ tok/s, low latency)
 # ============================================================================
 
 AGENT_REGISTRY: Dict[str, AgentConfig] = {
@@ -47,7 +46,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="orchestrator",
         module="agents.adk_agents.orchestrator_adk",
         class_name="create_orchestrator_agent",
-        model="gemini-3.1-pro-preview",  # Tier 1: Best reasoning for multi-step coordination
+        model="gemini-3-flash-preview",  # Tier 3: Flash is sufficient for routing/coordination
         description="Main router agent that delegates tasks to specialized agents. Handles general queries.",
         tools=[],
         instruction_file="agents/orchestrator/instructions.md",

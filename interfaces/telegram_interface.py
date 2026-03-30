@@ -9,7 +9,10 @@ Provides Telegram bot integration with support for both:
 import os
 import logging
 import asyncio
+import base64
 import html
+import json
+import tempfile
 from typing import Optional, Set
 from functools import wraps
 
@@ -411,6 +414,179 @@ Koristi /classroom za ulazak.
                     f"Greška pri obradi zahtjeva: {str(e)}"
                 )
 
+    # === Photo & Document Handlers ===
+
+    async def _process_image_ocr(self, image_bytes: bytes, mime_type: str, chat_id: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Process an image through OCR and route results to expense agent.
+
+        Args:
+            image_bytes: Raw image bytes
+            mime_type: MIME type of the image
+            chat_id: Telegram chat ID
+            update: Telegram update object
+            context: Telegram context
+        """
+        user_id = str(update.effective_user.id)
+        session_id = self._get_session_for_chat(chat_id)
+
+        # Step 1: OCR extraction
+        await update.message.reply_text("Primio sam sliku. Pokrecem OCR ekstrakciju...")
+
+        try:
+            from tools.handlers.vision_handler import VisionHandler
+            handler = VisionHandler()
+
+            image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+            receipt_data = await handler.extract_receipt_data(
+                image_data=image_b64,
+                mime_type=mime_type
+            )
+
+            confidence = receipt_data.get('confidence_score', 0)
+            merchant = receipt_data.get('merchant_name', 'Nepoznat')
+            total = receipt_data.get('total_amount', 0)
+            currency = receipt_data.get('currency', 'EUR')
+            date = receipt_data.get('transaction_date', 'N/A')
+            category = receipt_data.get('expense_category', 'Ostalo')
+            invoice_num = receipt_data.get('receipt_number', 'N/A')
+
+            # Step 2: Show extracted data to user
+            confidence_emoji = "HIGH" if confidence >= 0.8 else "LOW" if confidence >= 0.5 else "VERY LOW"
+            summary = (
+                f"*OCR rezultat* (confidence: {confidence:.0%} - {confidence_emoji})\n\n"
+                f"Dobavljac: {merchant}\n"
+                f"Datum: {date}\n"
+                f"Broj racuna: {invoice_num}\n"
+                f"Iznos: {total} {currency}\n"
+                f"Kategorija: {category}\n"
+            )
+
+            items = receipt_data.get('items', [])
+            if items:
+                summary += f"\nStavke ({len(items)}):\n"
+                for item in items[:5]:
+                    desc = item.get('description', item.get('name', '?'))
+                    amt = item.get('amount', item.get('price', ''))
+                    summary += f"  - {desc}: {amt}\n"
+                if len(items) > 5:
+                    summary += f"  ... i jos {len(items) - 5} stavki\n"
+
+            await update.message.reply_text(summary, parse_mode=ParseMode.MARKDOWN)
+
+            # Step 3: Route through agent system for saving
+            if confidence >= 0.5:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+                # Build instruction for the orchestrator/expense agent
+                save_instruction = (
+                    f"Spremi ovaj racun u bazu (iz Telegram OCR-a). "
+                    f"OCR podaci (JSON): {json.dumps(receipt_data, ensure_ascii=False)}. "
+                    f"Confidence: {confidence:.2f}. "
+                )
+                if confidence >= 0.8:
+                    save_instruction += "Confidence je visok, spremi automatski u Firestore i napravi vendor invoice DRAFT."
+                else:
+                    save_instruction += "Confidence je nizak, spremi ali oznaci za manual review."
+
+                response = await self.process_message(
+                    user_id=user_id,
+                    message=save_instruction,
+                    session_id=session_id
+                )
+
+                formatted = self.format_response(response)
+                chunks = self._split_message(formatted)
+                for chunk in chunks:
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text(
+                    "Confidence je prenizak za automatsko spremanje. "
+                    "Posalji bolju sliku ili unesi podatke rucno."
+                )
+
+        except Exception as e:
+            logger.error(f"OCR processing failed: {e}")
+            await update.message.reply_text(
+                f"Greska pri OCR obradi: {str(e)}\n"
+                "Pokusaj poslati jasniju sliku."
+            )
+
+    @authorized_only
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle photo messages - OCR receipt/invoice processing."""
+        chat_id = str(update.effective_chat.id)
+        lock = await self._get_processing_lock(chat_id)
+
+        async with lock:
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+                # Get highest resolution photo
+                photo = update.message.photo[-1]
+                file = await context.bot.get_file(photo.file_id)
+
+                # Download photo
+                photo_bytes = await file.download_as_bytearray()
+
+                logger.info(f"Received photo from {chat_id}: {photo.file_id} ({len(photo_bytes)} bytes)")
+
+                await self._process_image_ocr(
+                    image_bytes=bytes(photo_bytes),
+                    mime_type="image/jpeg",
+                    chat_id=chat_id,
+                    update=update,
+                    context=context
+                )
+
+            except Exception as e:
+                logger.error(f"Error handling photo: {e}")
+                await update.message.reply_text(f"Greska pri obradi fotografije: {str(e)}")
+
+    @authorized_only
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle document messages - OCR for PDFs and image files."""
+        chat_id = str(update.effective_chat.id)
+        lock = await self._get_processing_lock(chat_id)
+
+        async with lock:
+            try:
+                document = update.message.document
+                file_name = document.file_name or "unknown"
+                mime_type = document.mime_type or ""
+
+                # Supported file types
+                supported_image = {"image/jpeg", "image/png", "image/bmp", "image/x-ms-bmp"}
+                supported_pdf = {"application/pdf"}
+                supported = supported_image | supported_pdf
+
+                if mime_type not in supported:
+                    await update.message.reply_text(
+                        f"Nepodrzani format: {mime_type}\n"
+                        "Podrzani formati: JPEG, PNG, BMP, PDF"
+                    )
+                    return
+
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+                # Download document
+                file = await context.bot.get_file(document.file_id)
+                doc_bytes = await file.download_as_bytearray()
+
+                logger.info(f"Received document from {chat_id}: {file_name} ({mime_type}, {len(doc_bytes)} bytes)")
+
+                await self._process_image_ocr(
+                    image_bytes=bytes(doc_bytes),
+                    mime_type=mime_type,
+                    chat_id=chat_id,
+                    update=update,
+                    context=context
+                )
+
+            except Exception as e:
+                logger.error(f"Error handling document: {e}")
+                await update.message.reply_text(f"Greska pri obradi dokumenta: {str(e)}")
+
     # === Application Setup ===
 
     def _setup_handlers(self):
@@ -432,7 +608,17 @@ Koristi /classroom za ulazak.
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
 
-        logger.info("Handlers registered")
+        # Photo messages (receipt/invoice OCR)
+        self.application.add_handler(
+            MessageHandler(filters.PHOTO, self.handle_photo)
+        )
+
+        # Document messages (PDF/image files)
+        self.application.add_handler(
+            MessageHandler(filters.Document.ALL, self.handle_document)
+        )
+
+        logger.info("Handlers registered (text + photo + document)")
 
     async def _setup_bot_commands(self):
         """Setup bot command menu in Telegram."""

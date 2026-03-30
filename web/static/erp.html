@@ -336,21 +336,40 @@
         </select>
         <input type="date" x-model="invoiceDateFrom" @change="loadInvoices()" placeholder="Od datuma" />
         <input type="date" x-model="invoiceDateTo" @change="loadInvoices()" placeholder="Do datuma" />
+        <select x-model="invoiceYearFilter" @change="$nextTick()">
+          <option value="">Sve godine</option>
+          <option value="2026">2026</option>
+          <option value="2025">2025</option>
+          <option value="2024">2024</option>
+          <option value="2023">2023</option>
+          <option value="2022">2022</option>
+        </select>
+      </div>
+      <div style="font-size:0.78rem; color:var(--text-muted); padding:0.3rem 0">
+        Prikazano: <span x-text="filteredInvoices.length"></span> / <span x-text="invoices.length"></span> računa
       </div>
       <div class="erp-table-wrap">
         <table class="erp-table">
-          <thead><tr><th>Broj računa</th><th>Kupac</th><th>Datum</th><th>Iznos</th><th>Duguje</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>
+            <th style="cursor:pointer" @click="toggleInvoiceSort('invoice_number')">Broj računa <span x-text="invoiceSort.field==='invoice_number' ? (invoiceSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th style="cursor:pointer" @click="toggleInvoiceSort('customer_name')">Kupac <span x-text="invoiceSort.field==='customer_name' ? (invoiceSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th style="cursor:pointer" @click="toggleInvoiceSort('date')">Datum <span x-text="invoiceSort.field==='date' ? (invoiceSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th style="cursor:pointer" @click="toggleInvoiceSort('grand_total')">Iznos <span x-text="invoiceSort.field==='grand_total' ? (invoiceSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th style="cursor:pointer" @click="toggleInvoiceSort('erp_amount_due')">Duguje <span x-text="invoiceSort.field==='erp_amount_due' ? (invoiceSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th>Status</th>
+            <th></th>
+          </tr></thead>
           <tbody>
             <tr x-show="loadingInvoices" class="loading-row"><td colspan="7">Učitavanje...</td></tr>
-            <template x-for="inv in invoices" :key="inv._id">
-              <tr>
+            <template x-for="inv in filteredInvoices" :key="inv._id">
+              <tr style="cursor:pointer" @click="openIRADetail(inv)">
                 <td style="font-family:monospace; font-size:0.78rem" x-text="inv.invoice_number || inv.display_id || inv._id"></td>
                 <td x-text="inv.customer_name || inv.buyer_name || '—'" style="max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
                 <td x-text="(inv.date || '').slice(0,10)"></td>
                 <td x-text="fmt(inv.grand_total || inv.total_gross || 0)"></td>
                 <td x-text="fmt(inv.erp_amount_due)"></td>
                 <td><span class="badge" :class="paymentBadge(inv)" x-text="paymentLabel(inv)"></span></td>
-                <td>
+                <td @click.stop>
                   <button class="btn-xs btn-primary" x-show="inv.erp_payment_status !== 'paid'" @click="openPayment(inv)">Uplata</button>
                 </td>
               </tr>
@@ -380,13 +399,32 @@
           <option value="partial">Djelomično</option>
           <option value="paid">Plaćeno</option>
         </select>
+        <select x-model="vendorYearFilter" @change="$nextTick()">
+          <option value="">Sve godine</option>
+          <option value="2026">2026</option>
+          <option value="2025">2025</option>
+          <option value="2024">2024</option>
+          <option value="2023">2023</option>
+          <option value="2022">2022</option>
+        </select>
+      </div>
+      <div style="font-size:0.78rem; color:var(--text-muted); padding:0.3rem 0">
+        Prikazano: <span x-text="filteredVendorInvoices.length"></span> / <span x-text="vendorInvoices.length"></span> računa
       </div>
       <div class="erp-table-wrap">
         <table class="erp-table">
-          <thead><tr><th>Broj URA</th><th>Dobavljač</th><th>Datum</th><th>Iznos</th><th>Status dok.</th><th>Status uplate</th><th></th></tr></thead>
+          <thead><tr>
+            <th style="cursor:pointer" @click="toggleVendorSort('display_id')">Broj URA <span x-text="vendorSort.field==='display_id' ? (vendorSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th style="cursor:pointer" @click="toggleVendorSort('vendor_name')">Dobavljač <span x-text="vendorSort.field==='vendor_name' ? (vendorSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th style="cursor:pointer" @click="toggleVendorSort('issue_date')">Datum <span x-text="vendorSort.field==='issue_date' ? (vendorSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th style="cursor:pointer" @click="toggleVendorSort('total_gross')">Iznos <span x-text="vendorSort.field==='total_gross' ? (vendorSort.dir==='asc'?'&#9650;':'&#9660;') : ''"></span></th>
+            <th>Status dok.</th>
+            <th>Status uplate</th>
+            <th></th>
+          </tr></thead>
           <tbody>
             <tr x-show="loadingVendor" class="loading-row"><td colspan="7">Učitavanje...</td></tr>
-            <template x-for="ura in vendorInvoices" :key="ura._id">
+            <template x-for="ura in filteredVendorInvoices" :key="ura._id">
               <tr style="cursor:pointer" @click="openURADetail(ura)">
                 <td style="font-family:monospace; font-size:0.78rem" x-text="ura.display_id || ura._id"></td>
                 <td x-text="ura.vendor_name || '—'" style="max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap"></td>
@@ -693,16 +731,45 @@
         <span class="badge badge-draft" style="margin-left:0.5rem; font-size:0.7rem" x-text="uraDetail.data.document_status"></span>
       </h3>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.6rem 1.2rem; margin-bottom:1rem">
-        <div><div class="kpi-label">Dobavljač</div><div x-text="uraDetail.data.vendor_name || '—'"></div></div>
-        <div><div class="kpi-label">OIB dobavljača</div><div x-text="uraDetail.data.vendor_oib || '—'" style="font-family:monospace"></div></div>
-        <div><div class="kpi-label">Broj računa dobavljača</div><div x-text="uraDetail.data.vendor_invoice_no || '—'" style="font-family:monospace"></div></div>
-        <div><div class="kpi-label">Datum računa</div><div x-text="(uraDetail.data.issue_date || '—').slice(0,10)"></div></div>
-        <div><div class="kpi-label">Bruto iznos</div><div x-text="fmt(uraDetail.data.total_gross || 0)" style="font-weight:700"></div></div>
-        <div><div class="kpi-label">PDV</div><div x-text="fmt(uraDetail.data.vat_amount || 0)"></div></div>
-        <div><div class="kpi-label">Neto</div><div x-text="fmt(uraDetail.data.subtotal_net || 0)"></div></div>
-        <div><div class="kpi-label">Kategorija</div><div x-text="uraDetail.data.category || '—'"></div></div>
+        <div><div class="kpi-label">Dobavljač</div>
+          <div x-show="!uraDetail.editing" x-text="uraDetail.data.vendor_name || '—'"></div>
+          <input x-show="uraDetail.editing" class="form-input" x-model="uraDetail.data.vendor_name" style="font-size:0.85rem" />
+        </div>
+        <div><div class="kpi-label">OIB dobavljača</div>
+          <div x-show="!uraDetail.editing" x-text="uraDetail.data.vendor_oib || '—'" style="font-family:monospace"></div>
+          <input x-show="uraDetail.editing" class="form-input" x-model="uraDetail.data.vendor_oib" style="font-size:0.85rem; font-family:monospace" />
+        </div>
+        <div><div class="kpi-label">Broj računa dobavljača</div>
+          <div x-show="!uraDetail.editing" x-text="uraDetail.data.vendor_invoice_no || '—'" style="font-family:monospace"></div>
+          <input x-show="uraDetail.editing" class="form-input" x-model="uraDetail.data.vendor_invoice_no" style="font-size:0.85rem; font-family:monospace" />
+        </div>
+        <div><div class="kpi-label">Datum računa</div>
+          <div x-show="!uraDetail.editing" x-text="(uraDetail.data.issue_date || '—').slice(0,10)"></div>
+          <input x-show="uraDetail.editing" class="form-input" type="date" x-model="uraDetail.data.issue_date" style="font-size:0.85rem" />
+        </div>
+        <div><div class="kpi-label">Bruto iznos</div>
+          <div x-show="!uraDetail.editing" x-text="fmt(uraDetail.data.total_gross || 0)" style="font-weight:700"></div>
+          <input x-show="uraDetail.editing" class="form-input" type="number" step="0.01" x-model="uraDetail.data.total_gross" style="font-size:0.85rem" />
+        </div>
+        <div><div class="kpi-label">PDV</div>
+          <div x-show="!uraDetail.editing" x-text="fmt(uraDetail.data.vat_amount || 0)"></div>
+          <input x-show="uraDetail.editing" class="form-input" type="number" step="0.01" x-model="uraDetail.data.vat_amount" style="font-size:0.85rem" />
+        </div>
+        <div><div class="kpi-label">Neto</div>
+          <div x-show="!uraDetail.editing" x-text="fmt(uraDetail.data.subtotal_net || 0)"></div>
+          <input x-show="uraDetail.editing" class="form-input" type="number" step="0.01" x-model="uraDetail.data.subtotal_net" style="font-size:0.85rem" />
+        </div>
+        <div><div class="kpi-label">Kategorija</div>
+          <div x-show="!uraDetail.editing" x-text="uraDetail.data.category || '—'"></div>
+          <input x-show="uraDetail.editing" class="form-input" x-model="uraDetail.data.category" style="font-size:0.85rem" />
+        </div>
       </div>
-      <div x-show="uraDetail.data.notes" style="margin-bottom:0.8rem; padding:0.6rem 0.75rem; background:var(--bg-input); border-radius:5px; font-size:0.8rem; color:var(--text-muted); max-height:120px; overflow-y:auto" x-text="uraDetail.data.notes"></div>
+      <!-- Notes -->
+      <div x-show="!uraDetail.editing && uraDetail.data.notes" style="margin-bottom:0.8rem; padding:0.6rem 0.75rem; background:var(--bg-input); border-radius:5px; font-size:0.8rem; color:var(--text-muted); max-height:120px; overflow-y:auto" x-text="uraDetail.data.notes"></div>
+      <div x-show="uraDetail.editing" style="margin-bottom:0.8rem">
+        <div class="kpi-label">Napomena</div>
+        <textarea class="form-input" x-model="uraDetail.data.notes" rows="3" style="font-size:0.82rem; resize:vertical"></textarea>
+      </div>
       <!-- OCR stavke -->
       <div x-show="uraDetail.data.items && uraDetail.data.items.length > 0" style="margin-bottom:1rem">
         <div class="kpi-label" style="margin-bottom:0.4rem">Stavke (OCR)</div>
@@ -731,10 +798,54 @@
         </span>
       </div>
       <div style="display:flex; gap:0.5rem; justify-content:flex-end; flex-wrap:wrap">
-        <button class="btn-xs btn-outline" @click="uraDetail.open=false">Zatvori</button>
-        <button class="btn-xs btn-outline" x-show="uraDetail.data.document_status === 'draft'" @click="confirmURAReceived(uraDetail.data); uraDetail.open=false">Potvrdi primitak</button>
-        <button class="btn-xs btn-outline" x-show="uraDetail.data.document_status === 'received'" @click="approveURA(uraDetail.data); uraDetail.open=false">Odobri</button>
-        <button class="btn-xs btn-primary" x-show="uraDetail.data.document_status === 'approved' && uraDetail.data.payment_status !== 'paid'" @click="openVendorPayment(uraDetail.data); uraDetail.open=false">Plati</button>
+        <button class="btn-xs btn-outline" @click="uraDetail.open=false; uraDetail.editing=false">Zatvori</button>
+        <button class="btn-xs btn-outline" x-show="!uraDetail.editing" @click="uraDetail.editing=true">Uredi</button>
+        <button class="btn-xs btn-primary" x-show="uraDetail.editing" @click="saveURAEdit()" :disabled="uraDetail.saving" x-text="uraDetail.saving ? 'Spremam...' : 'Spremi'"></button>
+        <button class="btn-xs btn-outline" x-show="uraDetail.editing" @click="uraDetail.editing=false">Odustani</button>
+        <button class="btn-xs btn-outline" x-show="!uraDetail.editing && uraDetail.data.document_status === 'draft'" @click="confirmURAReceived(uraDetail.data); uraDetail.open=false">Potvrdi primitak</button>
+        <button class="btn-xs btn-outline" x-show="!uraDetail.editing && uraDetail.data.document_status === 'received'" @click="approveURA(uraDetail.data); uraDetail.open=false">Odobri</button>
+        <button class="btn-xs btn-primary" x-show="!uraDetail.editing && uraDetail.data.document_status === 'approved' && uraDetail.data.payment_status !== 'paid'" @click="openVendorPayment(uraDetail.data); uraDetail.open=false">Plati</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── IRA Detail Modal ───────────────────────── -->
+  <div class="erp-modal-overlay" x-show="iraDetail.open" @click.self="iraDetail.open=false">
+    <div class="erp-modal" style="max-width:560px">
+      <h3 style="margin-bottom:1rem">
+        <span x-text="iraDetail.data.invoice_number || iraDetail.data.display_id || iraDetail.data._id || '—'"></span>
+        <span class="badge" :class="paymentBadge(iraDetail.data)" style="margin-left:0.5rem; font-size:0.7rem" x-text="paymentLabel(iraDetail.data)"></span>
+      </h3>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.6rem 1.2rem; margin-bottom:1rem">
+        <div><div class="kpi-label">Kupac</div><div x-text="iraDetail.data.customer_name || iraDetail.data.buyer_name || '—'"></div></div>
+        <div><div class="kpi-label">OIB kupca</div><div x-text="iraDetail.data.buyer_oib || iraDetail.data.customer_oib || '—'" style="font-family:monospace"></div></div>
+        <div><div class="kpi-label">Tip računa</div><div x-text="(iraDetail.data.invoice_type || iraDetail.data._invoice_type || '—').toUpperCase()"></div></div>
+        <div><div class="kpi-label">Datum</div><div x-text="(iraDetail.data.date || '').slice(0,10)"></div></div>
+        <div><div class="kpi-label">Ukupan iznos</div><div x-text="fmt(iraDetail.data.grand_total || iraDetail.data.total_gross || 0)" style="font-weight:700"></div></div>
+        <div><div class="kpi-label">Dugovanje</div><div x-text="fmt(iraDetail.data.erp_amount_due || 0)"></div></div>
+        <div><div class="kpi-label">Plaćeno</div><div x-text="fmt(iraDetail.data.erp_amount_paid || 0)"></div></div>
+        <div><div class="kpi-label">Dospijeće</div><div x-text="(iraDetail.data.due_date || iraDetail.data.erp_due_date || '—').slice(0,10)"></div></div>
+      </div>
+      <!-- Items table -->
+      <div x-show="iraDetail.data.items && iraDetail.data.items.length > 0" style="margin-bottom:1rem">
+        <div class="kpi-label" style="margin-bottom:0.4rem">Stavke</div>
+        <table class="erp-table" style="font-size:0.78rem">
+          <thead><tr><th>Opis</th><th style="text-align:right">Kol.</th><th style="text-align:right">Cijena</th><th style="text-align:right">Ukupno</th></tr></thead>
+          <tbody>
+            <template x-for="(item, i) in (iraDetail.data.items || [])" :key="i">
+              <tr>
+                <td x-text="item.description || item.name || '—'"></td>
+                <td style="text-align:right" x-text="item.quantity || 1"></td>
+                <td style="text-align:right" x-text="fmt(item.unit_price || 0)"></td>
+                <td style="text-align:right; font-weight:600" x-text="fmt(item.line_gross || item.amount || 0)"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <div style="display:flex; gap:0.5rem; justify-content:flex-end; flex-wrap:wrap">
+        <button class="btn-xs btn-outline" @click="iraDetail.open=false">Zatvori</button>
+        <button class="btn-xs btn-primary" x-show="iraDetail.data.erp_payment_status !== 'paid'" @click="openPayment(iraDetail.data); iraDetail.open=false">Uplata</button>
       </div>
     </div>
   </div>

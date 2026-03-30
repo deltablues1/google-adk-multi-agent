@@ -176,3 +176,58 @@ async def categorize_expense(
             "status": "error",
             "category": "Ostalo"  # Default fallback
         }
+
+
+async def monitor_drive_invoices(
+    folder: str = "all",
+    dry_run: bool = False
+) -> dict:
+    """
+    Monitor Google Drive folders for new invoices and process them via OCR.
+
+    Checks Invoices_Input and Expense_Receipts folders for unprocessed files,
+    runs OCR extraction, and saves results to Firestore.
+
+    Args:
+        folder: Drive folder alias to monitor.
+                Use "all" to check both Invoices_Input and Expense_Receipts.
+                Use "invoices_input" or "expense_receipts" for a specific folder.
+        dry_run: If True, only preview files without saving to database.
+
+    Returns:
+        Dictionary with:
+            - new_files: Number of new files found
+            - processed: Number successfully processed
+            - errors: Number of errors
+            - skipped: Number skipped (e.g., misidentified vendor)
+            - details: List of per-file results
+    """
+    try:
+        from scripts.monitor_drive_invoices import monitor_folder, monitor_all_folders
+
+        if folder == "all":
+            result = await monitor_all_folders(dry_run=dry_run)
+            total_new = sum(r.get("new_files", 0) for r in result.values())
+            total_processed = sum(r.get("processed", 0) for r in result.values())
+            return {
+                "status": "success",
+                "folders_checked": list(result.keys()),
+                "total_new_files": total_new,
+                "total_processed": total_processed,
+                "results": {k: {kk: vv for kk, vv in v.items() if kk != "details"}
+                           for k, v in result.items()}
+            }
+        else:
+            result = await monitor_folder(folder, dry_run=dry_run)
+            return {
+                "status": "success",
+                "folder": folder,
+                **{k: v for k, v in result.items() if k != "details"}
+            }
+
+    except Exception as e:
+        logger.error(f"monitor_drive_invoices failed: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }

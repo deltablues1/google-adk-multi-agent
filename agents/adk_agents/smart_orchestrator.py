@@ -32,7 +32,7 @@ FALLBACK_INSTRUCTION = (
 
 
 def create_smart_orchestrator(
-    model: str = "gemini-3.1-pro-preview",
+    model: str = "gemini-3-flash-preview",
     worker_agents: Optional[List[LlmAgent]] = None,
     validator_agent: Optional[LlmAgent] = None,
     ask_user_agent: Optional[LlmAgent] = None

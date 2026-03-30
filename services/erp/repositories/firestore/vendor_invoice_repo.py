@@ -34,6 +34,15 @@ class FirestoreVendorInvoiceRepository:
         doc["_id"] = snap.id
         return doc
 
+    # Fields needed for list views (excludes heavy ocr_data, items, scan_file_id)
+    _LIST_FIELDS = [
+        "company_id", "deleted", "display_id", "vendor_name", "vendor_oib",
+        "vendor_invoice_no", "vendor_id", "issue_date", "due_date",
+        "total_gross", "subtotal_net", "vat_amount", "category",
+        "document_status", "payment_status", "amount_paid", "amount_due",
+        "notes", "created_at", "updated_at",
+    ]
+
     async def list(
         self,
         ctx: ERPRequestContext,
@@ -57,7 +66,7 @@ class FirestoreVendorInvoiceRepository:
             query = query.where(filter=FieldFilter("issue_date", ">=", f["date_from"]))
         if f.get("date_to"):
             query = query.where(filter=FieldFilter("issue_date", "<=", f["date_to"]))
-        query = query.order_by("issue_date", direction="DESCENDING").limit(limit)
+        query = query.select(self._LIST_FIELDS).order_by("issue_date", direction="DESCENDING").limit(limit)
         docs = []
         async for snap in query.stream():
             doc = snap.to_dict() or {}

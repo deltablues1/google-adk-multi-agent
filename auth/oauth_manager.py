@@ -5,6 +5,7 @@ Implementira OAuth 2.1 flow s token refresh mehanizmom
 
 import os
 import json
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -159,8 +160,19 @@ class OAuthManager:
         self._load_token()
 
         if self._credentials:
+            # Bez expiry ne možemo znati je li token valjan - forsiraj refresh
+            if not self._credentials.expiry and self._credentials.refresh_token:
+                logger.info("Token loaded without expiry, forcing refresh")
+                try:
+                    self._credentials.refresh(Request())
+                    self._save_token()
+                    logger.info("Successfully refreshed OAuth token (missing expiry)")
+                except Exception as e:
+                    logger.error(f"Failed to refresh token (missing expiry): {e}")
+                    self._credentials = None
+
             # Provjeri je li token istekao i osvježi ga
-            if self._credentials.expired and self._credentials.refresh_token:
+            elif self._credentials.expired and self._credentials.refresh_token:
                 try:
                     self._credentials.refresh(Request())
                     self._save_token()
@@ -183,6 +195,7 @@ class OAuthManager:
             'client_id': self._credentials.client_id,
             'client_secret': self._credentials.client_secret,
             'scopes': self._credentials.scopes,
+            'expiry': self._credentials.expiry.isoformat() if self._credentials.expiry else None,
         }
 
         try:
@@ -201,6 +214,13 @@ class OAuthManager:
             with open(self.token_storage_path, 'r') as f:
                 token_data = json.load(f)
 
+            expiry = None
+            expiry_str = token_data.get('expiry')
+            if expiry_str:
+                expiry = datetime.fromisoformat(expiry_str)
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+
             self._credentials = Credentials(
                 token=token_data.get('token'),
                 refresh_token=token_data.get('refresh_token'),
@@ -208,6 +228,7 @@ class OAuthManager:
                 client_id=token_data.get('client_id'),
                 client_secret=token_data.get('client_secret'),
                 scopes=token_data.get('scopes'),
+                expiry=expiry,
             )
             logger.debug(f"Token loaded from {self.token_storage_path}")
         except Exception as e:

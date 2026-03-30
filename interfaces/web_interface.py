@@ -502,8 +502,22 @@ class WebInterface(BaseInterface):
         return response
 
     async def start(self) -> None:
-        """Initialize the agent system and load persisted sessions."""
+        """Initialize the agent system, start scheduler, and load persisted sessions."""
         self.initialize_system()
+
+        # Start scheduler for recurring jobs (Drive monitoring, etc.)
+        try:
+            from interfaces.scheduler_interface import SchedulerInterface
+            from tools.adk_tools.scheduler_adk_tools import set_scheduler_instance
+            self.system.scheduler = SchedulerInterface()
+            self.system.scheduler.system = self.system
+            self.system.scheduler._load_saved_jobs()
+            self.system.scheduler.scheduler.start()
+            set_scheduler_instance(self.system.scheduler)
+            job_count = len(self.system.scheduler.config.jobs)
+            logger.info(f"Scheduler started with {job_count} jobs")
+        except Exception as e:
+            logger.error(f"Failed to start scheduler: {e}")
 
         # Load sessions from Firestore
         try:

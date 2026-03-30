@@ -168,6 +168,15 @@
       "queryScope": "COLLECTION",
       "fields": [
         {"fieldPath": "company_id", "order": "ASCENDING"},
+        {"fieldPath": "status", "order": "ASCENDING"},
+        {"fieldPath": "payment_date", "order": "ASCENDING"}
+      ]
+    },
+    {
+      "collectionGroup": "payments",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {"fieldPath": "company_id", "order": "ASCENDING"},
         {"fieldPath": "idempotency_key", "order": "ASCENDING"}
       ]
     },

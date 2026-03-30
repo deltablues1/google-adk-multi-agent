@@ -16,7 +16,7 @@ from pathlib import Path
 
 # Setup logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for XML inspection
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)

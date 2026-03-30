@@ -20,22 +20,16 @@ from datetime import date
 
 import httpx
 from httpx import AsyncClient, ASGITransport
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-# ── Minimal ERP app for testing (no agent system, no lifespan) ──────────────
+from services.erp.errors import BusinessError
+from services.erp.request_context import ERPRequestContext
+from web.erp_routes import router as erp_router, get_erp_ctx
 
-def build_test_app(company_id: str) -> FastAPI:
-    """
-    Build a minimal FastAPI app with only ERP routes.
-    Bypasses the full lifespan / agent system initialization.
-    """
-    from fastapi.responses import JSONResponse
-    from fastapi import Request
-    from services.erp.errors import BusinessError
-    from services.erp.repositories.base import InvoiceReference
-    from web.models import PaymentRequest, VendorInvoiceCreate, StockAdjustRequest, CustomerCreate, ProductCreate
 
+def build_raw_app() -> FastAPI:
+    """App with NO dependency override — tests the real get_erp_ctx auth flow."""
     app = FastAPI()
 
     @app.exception_handler(BusinessError)
@@ -45,162 +39,38 @@ def build_test_app(company_id: str) -> FastAPI:
             content={"code": exc.code, "message": exc.message, "field": exc.field},
         )
 
-    import uuid as _uuid
-    from services.erp.request_context import ERPRequestContext
+    app.include_router(erp_router)
+    return app
 
-    def _ctx():
+
+def build_test_app(company_id: str) -> FastAPI:
+    """
+    Build a minimal FastAPI app with the REAL ERP router from web/erp_routes.py.
+    Uses dependency_overrides to inject test-specific ERPRequestContext.
+    No agent system, no lifespan — just the ERP routes.
+    """
+    app = FastAPI()
+
+    @app.exception_handler(BusinessError)
+    async def business_error_handler(request: Request, exc: BusinessError):
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={"code": exc.code, "message": exc.message, "field": exc.field},
+        )
+
+    app.include_router(erp_router)
+
+    def _test_ctx() -> ERPRequestContext:
         return ERPRequestContext(
             user_id="test-user",
             company_id=company_id,
             role="owner",
-            grants=set(),
-            denies=set(),
-            request_id=str(_uuid.uuid4()),
+            grants=["*"],
+            denies=[],
+            request_id=str(uuid4()),
         )
 
-    @app.get("/api/erp/me")
-    async def erp_me():
-        ctx = _ctx()
-        return {"user_id": ctx.user_id, "company_id": ctx.company_id, "role": ctx.role}
-
-    @app.get("/api/erp/customers")
-    async def erp_list_customers(limit: int = 20, offset: int = 0):
-        from services.erp.customer_service import get_customer_service
-        return await get_customer_service().list_customers(_ctx(), limit=limit, offset=offset)
-
-    @app.post("/api/erp/customers")
-    async def erp_create_customer(req: CustomerCreate):
-        from services.erp.customer_service import get_customer_service
-        return await get_customer_service().create_customer(req.model_dump(), _ctx())
-
-    @app.get("/api/erp/reports/vat")
-    async def erp_vat_report(year: int = 2026, month: int = 1):
-        from services.erp.reporting_service import get_reporting_service
-        return await get_reporting_service().get_vat_summary(_ctx(), year, month)
-
-    @app.get("/api/erp/payments/{payment_id}/allocations")
-    async def erp_payment_allocations(payment_id: str):
-        from services.erp.payment_service import get_payment_service
-        return await get_payment_service().get_allocations_for_payment(payment_id, _ctx())
-
-    @app.get("/api/erp/invoices/{invoice_type}/{invoice_id}/allocations")
-    async def erp_invoice_allocations(invoice_type: str, invoice_id: str):
-        from services.erp.payment_service import get_payment_service
-        return await get_payment_service().get_allocations_for_invoice(invoice_id, _ctx())
-
-    @app.post("/api/erp/invoices/{invoice_type}/{invoice_id}/payment")
-    async def erp_record_payment(invoice_type: str, invoice_id: str, req: PaymentRequest):
-        from services.erp.invoice_service import get_invoice_service
-        ctx = _ctx()
-        invoice_svc = get_invoice_service()
-        ref_tmp = InvoiceReference(invoice_id=invoice_id, invoice_type=invoice_type, display_id=invoice_id)
-        try:
-            invoice_doc = await invoice_svc.get_invoice(ref_tmp, ctx)
-            real_display_id = (
-                invoice_doc.get("invoice_number") or invoice_doc.get("display_id") or invoice_id
-            )
-        except Exception:
-            real_display_id = invoice_id
-        ref = InvoiceReference(invoice_id=invoice_id, invoice_type=invoice_type, display_id=real_display_id)
-        return await invoice_svc.record_payment(
-            invoice_ref=ref,
-            amount=req.amount,
-            payment_date=req.payment_date.isoformat(),
-            payment_method=req.payment_method,
-            reference=req.reference,
-            ctx=ctx,
-            idempotency_key=req.idempotency_key,
-            notes=req.notes,
-        )
-
-    @app.post("/api/erp/vendor-invoices")
-    async def erp_create_vendor_invoice(req: VendorInvoiceCreate):
-        from services.erp.vendor_invoice_service import get_vendor_invoice_service
-        return await get_vendor_invoice_service().create_vendor_invoice(req.model_dump(), _ctx())
-
-    @app.get("/api/erp/vendor-invoices")
-    async def erp_list_vendor_invoices(document_status: str = "", payment_status: str = "",
-                                       vendor_id: str = "", limit: int = 50, offset: int = 0):
-        from services.erp.vendor_invoice_service import get_vendor_invoice_service
-        filters = {}
-        if document_status: filters["document_status"] = document_status
-        if payment_status: filters["payment_status"] = payment_status
-        if vendor_id: filters["vendor_id"] = vendor_id
-        return await get_vendor_invoice_service().list_vendor_invoices(_ctx(), filters, min(limit, 500), offset)
-
-    @app.get("/api/erp/products/{product_id}/movements")
-    async def erp_get_stock_movements(product_id: str, limit: int = 100):
-        from services.erp.product_service import get_product_service
-        return await get_product_service().get_stock_movements(product_id, _ctx(), min(limit, 500))
-
-    @app.get("/api/erp/activity")
-    async def erp_activity_feed(limit: int = 50):
-        from services.erp.base_erp_service import get_firestore_db
-        from google.cloud.firestore_v1.base_query import FieldFilter
-        ctx = _ctx()
-        db = get_firestore_db()
-        query = (
-            db.collection("audit_log")
-            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
-            .where(filter=FieldFilter("target_service", "==", "erp"))
-            .order_by("timestamp", direction="DESCENDING")
-            .limit(min(limit, 500))
-        )
-        events = []
-        async for snap in query.stream():
-            doc = snap.to_dict() or {}
-            events.append({
-                "id": snap.id, "timestamp": doc.get("timestamp"),
-                "action": doc.get("action_type"), "description": doc.get("action_description"),
-                "entity_type": doc.get("entity_type"), "display_id": doc.get("display_id"),
-                "user_id": doc.get("user_id"),
-            })
-        return events
-
-    @app.get("/api/erp/quotes")
-    async def erp_list_quotes(document_status: str = "", limit: int = 50, offset: int = 0):
-        from services.erp.quote_service import get_quote_service
-        filters = {}
-        if document_status: filters["document_status"] = document_status
-        return await get_quote_service().list_quotes(_ctx(), filters, min(limit, 500), offset)
-
-    @app.post("/api/erp/quotes")
-    async def erp_create_quote(req: dict):
-        from services.erp.quote_service import get_quote_service
-        return await get_quote_service().create_quote(req, _ctx())
-
-    @app.get("/api/erp/quotes/{quote_id}")
-    async def erp_get_quote(quote_id: str):
-        from services.erp.quote_service import get_quote_service
-        return await get_quote_service().get_quote(quote_id, _ctx())
-
-    @app.post("/api/erp/quotes/{quote_id}/send")
-    async def erp_send_quote(quote_id: str):
-        from services.erp.quote_service import get_quote_service
-        return await get_quote_service().mark_sent(quote_id, _ctx())
-
-    @app.post("/api/erp/quotes/{quote_id}/accept")
-    async def erp_accept_quote(quote_id: str):
-        from services.erp.quote_service import get_quote_service
-        return await get_quote_service().accept_quote(quote_id, _ctx())
-
-    @app.post("/api/erp/quotes/{quote_id}/convert")
-    async def erp_convert_quote(quote_id: str, req: dict):
-        from services.erp.quote_service import get_quote_service
-        return await get_quote_service().convert_to_invoice(quote_id, req.get("invoice_type", "b2c"), _ctx())
-
-    @app.post("/api/erp/quotes/{quote_id}/cancel")
-    async def erp_cancel_quote(quote_id: str):
-        from services.erp.quote_service import get_quote_service
-        return await get_quote_service().cancel_quote(quote_id, _ctx())
-
-    @app.get("/api/erp/quotes/{quote_id}/print")
-    async def erp_print_quote(quote_id: str):
-        from services.erp.quote_service import get_quote_service
-        from fastapi.responses import HTMLResponse
-        q = await get_quote_service().get_quote(quote_id, _ctx())
-        return HTMLResponse(content=f"<html><body><h1>{q.get('display_id','')}</h1></body></html>")
-
+    app.dependency_overrides[get_erp_ctx] = _test_ctx
     return app
 
 
@@ -477,3 +347,107 @@ class TestQuotesAPI:
             r = await client.post(f"/api/erp/quotes/{qid}/cancel")
             assert r.status_code == 200
             assert r.json()["document_status"] == "cancelled"
+
+
+# ── Auth Flow Tests (no dependency override — tests real get_erp_ctx) ────────
+
+class TestAuthFlow:
+    """Tests the real get_erp_ctx dependency: headers → erp_users lookup → context."""
+
+    @pytest.mark.asyncio
+    async def test_missing_headers_returns_401(self):
+        """No identity headers → 401 Unauthorized."""
+        raw_app = build_raw_app()
+        async with AsyncClient(transport=ASGITransport(app=raw_app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/me")
+        assert resp.status_code == 401
+        assert "Missing" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_missing_company_header_returns_401(self):
+        """User header present but no company → 401."""
+        raw_app = build_raw_app()
+        async with AsyncClient(transport=ASGITransport(app=raw_app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/me", headers={"X-ERP-User-Id": "someone"})
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_nonexistent_membership_returns_403(self):
+        """Valid headers but user has no erp_users doc → 403."""
+        raw_app = build_raw_app()
+        headers = {
+            "X-ERP-User-Id": f"ghost-user-{uuid4().hex}",
+            "X-ERP-Company-Id": f"ghost-company-{uuid4().hex}",
+        }
+        async with AsyncClient(transport=ASGITransport(app=raw_app), base_url="http://test") as client:
+            resp = await client.get("/api/erp/me", headers=headers)
+        assert resp.status_code == 403
+        assert "No active ERP membership" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_valid_membership_returns_200(self):
+        """Seed an erp_users doc, send matching headers → 200 with correct context."""
+        from services.erp.base_erp_service import get_firestore_db
+
+        test_user_id = f"auth-test-{uuid4().hex[:8]}"
+        test_company_id = f"test-co-{uuid4().hex[:8]}"
+
+        db = get_firestore_db()
+        doc_ref = db.collection("erp_users").document(f"{test_user_id}_{test_company_id}")
+        await doc_ref.set({
+            "user_id": test_user_id,
+            "company_id": test_company_id,
+            "role": "accountant",
+            "email": "test@example.com",
+            "display_name": "Test Accountant",
+            "active": True,
+            "permissions": {"grants": [], "denies": ["payment:record"]},
+        })
+
+        try:
+            raw_app = build_raw_app()
+            headers = {
+                "X-ERP-User-Id": test_user_id,
+                "X-ERP-Company-Id": test_company_id,
+            }
+            async with AsyncClient(transport=ASGITransport(app=raw_app), base_url="http://test") as client:
+                resp = await client.get("/api/erp/me", headers=headers)
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["user_id"] == test_user_id
+            assert data["company_id"] == test_company_id
+            assert data["role"] == "accountant"
+        finally:
+            # Cleanup
+            await doc_ref.delete()
+
+    @pytest.mark.asyncio
+    async def test_inactive_user_returns_403(self):
+        """User exists but active=False → 403."""
+        from services.erp.base_erp_service import get_firestore_db
+
+        test_user_id = f"inactive-{uuid4().hex[:8]}"
+        test_company_id = f"test-co-{uuid4().hex[:8]}"
+
+        db = get_firestore_db()
+        doc_ref = db.collection("erp_users").document(f"{test_user_id}_{test_company_id}")
+        await doc_ref.set({
+            "user_id": test_user_id,
+            "company_id": test_company_id,
+            "role": "viewer",
+            "active": False,
+            "permissions": {"grants": [], "denies": []},
+        })
+
+        try:
+            raw_app = build_raw_app()
+            headers = {
+                "X-ERP-User-Id": test_user_id,
+                "X-ERP-Company-Id": test_company_id,
+            }
+            async with AsyncClient(transport=ASGITransport(app=raw_app), base_url="http://test") as client:
+                resp = await client.get("/api/erp/me", headers=headers)
+            assert resp.status_code == 403
+        finally:
+            await doc_ref.delete()

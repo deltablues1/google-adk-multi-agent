@@ -90,7 +90,8 @@ def create_expense_agent(
     # Import ADK tools (individual callables)
     from tools.adk_tools.vision_adk_tools import (
         extract_receipt_data,
-        categorize_expense
+        categorize_expense,
+        monitor_drive_invoices
     )
     from tools.adk_tools.drive_adk_tools import (
         drive_search_files,
@@ -140,6 +141,8 @@ def create_expense_agent(
         # ERP tools — vendor invoice management
         erp_create_vendor_invoice_from_ocr,
         erp_get_vendor_invoice,
+        # Drive monitoring — automated invoice processing
+        monitor_drive_invoices,
     ]
 
     logger.info(f"Initialized {len(tools)} ADK tools for expense agent")

@@ -25,9 +25,13 @@ function erpApp() {
     invoices: [], loadingInvoices: false,
     invoiceTypeFilter: '', invoiceStatusFilter: '',
     invoiceDateFrom: '', invoiceDateTo: '',
+    invoiceYearFilter: '',
+    invoiceSort: { field: 'date', dir: 'desc' },
 
     vendorInvoices: [], loadingVendor: false,
     vendorStatusFilter: '', vendorPaymentFilter: '',
+    vendorYearFilter: '',
+    vendorSort: { field: 'issue_date', dir: 'desc' },
 
     products: [], loadingProducts: false,
     lowStockFilter: false,
@@ -75,7 +79,8 @@ function erpApp() {
       currentQty: 0, newQty: '', reason: '',
       error: '', submitting: false,
     },
-    uraDetail: { open: false, data: {} },
+    uraDetail: { open: false, data: {}, editing: false, saving: false },
+    iraDetail: { open: false, data: {} },
     movementsModal: { open: false, movements: [], productName: '', loading: false },
 
     // ── AI bar ───────────────────────────────────
@@ -176,6 +181,7 @@ function erpApp() {
         if (this.invoiceStatusFilter) p.set('payment_status', this.invoiceStatusFilter);
         if (this.invoiceDateFrom) p.set('date_from', this.invoiceDateFrom);
         if (this.invoiceDateTo) p.set('date_to', this.invoiceDateTo);
+        p.set('limit', '500');
         this.invoices = await this.apiFetch(`/api/erp/invoices?${p}`);
       } catch (e) { console.warn('Invoices load error', e); this.invoices = []; }
       this.loadingInvoices = false;
@@ -190,14 +196,106 @@ function erpApp() {
         const p = new URLSearchParams();
         if (this.vendorStatusFilter) p.set('document_status', this.vendorStatusFilter);
         if (this.vendorPaymentFilter) p.set('payment_status', this.vendorPaymentFilter);
+        p.set('limit', '500');
         this.vendorInvoices = await this.apiFetch(`/api/erp/vendor-invoices?${p}`);
       } catch (e) { console.warn('Vendor invoices load error', e); this.vendorInvoices = []; }
       this.loadingVendor = false;
     },
 
-    openURADetail(ura) {
+    async openURADetail(ura) {
       this.uraDetail.data = ura;
+      this.uraDetail.editing = false;
       this.uraDetail.open = true;
+      try {
+        const full = await this.apiFetch(`/api/erp/vendor-invoices/${ura._id}`);
+        this.uraDetail.data = full;
+      } catch (e) { console.warn('URA detail fetch error', e); }
+    },
+
+    async saveURAEdit() {
+      this.uraDetail.saving = true;
+      try {
+        const d = this.uraDetail.data;
+        await this.apiFetch(`/api/erp/vendor-invoices/${d._id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            vendor_name: d.vendor_name,
+            vendor_oib: d.vendor_oib,
+            vendor_invoice_no: d.vendor_invoice_no,
+            issue_date: d.issue_date,
+            total_gross: parseFloat(d.total_gross) || 0,
+            vat_amount: parseFloat(d.vat_amount) || 0,
+            subtotal_net: parseFloat(d.subtotal_net) || 0,
+            category: d.category,
+            notes: d.notes,
+          })
+        });
+        this.uraDetail.editing = false;
+        await this.loadVendorInvoices();
+      } catch (e) { alert('Greska: ' + e.message); }
+      this.uraDetail.saving = false;
+    },
+
+    async openIRADetail(inv) {
+      this.iraDetail.data = inv;
+      this.iraDetail.open = true;
+      try {
+        const invType = inv.invoice_type || inv._invoice_type || 'b2b';
+        const full = await this.apiFetch(`/api/erp/invoices/${invType}/${inv._id}`);
+        this.iraDetail.data = full;
+      } catch (e) { console.warn('IRA detail fetch error', e); }
+    },
+
+    get filteredVendorInvoices() {
+      let list = this.vendorInvoices;
+      if (this.vendorYearFilter) {
+        list = list.filter(u => (u.issue_date || '').startsWith(this.vendorYearFilter));
+      }
+      const { field, dir } = this.vendorSort;
+      list = [...list].sort((a, b) => {
+        let va = a[field] || '', vb = b[field] || '';
+        if (typeof va === 'number' || field.includes('gross') || field.includes('amount') || field.includes('net')) {
+          va = parseFloat(va) || 0; vb = parseFloat(vb) || 0;
+        }
+        if (va < vb) return dir === 'asc' ? -1 : 1;
+        if (va > vb) return dir === 'asc' ? 1 : -1;
+        return 0;
+      });
+      return list;
+    },
+
+    get filteredInvoices() {
+      let list = this.invoices;
+      if (this.invoiceYearFilter) {
+        list = list.filter(i => (i.date || '').startsWith(this.invoiceYearFilter));
+      }
+      const { field, dir } = this.invoiceSort;
+      list = [...list].sort((a, b) => {
+        let va = a[field] || '', vb = b[field] || '';
+        if (typeof va === 'number' || field.includes('total') || field.includes('amount') || field.includes('due')) {
+          va = parseFloat(va) || 0; vb = parseFloat(vb) || 0;
+        }
+        if (va < vb) return dir === 'asc' ? -1 : 1;
+        if (va > vb) return dir === 'asc' ? 1 : -1;
+        return 0;
+      });
+      return list;
+    },
+
+    toggleVendorSort(field) {
+      if (this.vendorSort.field === field) {
+        this.vendorSort.dir = this.vendorSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.vendorSort = { field, dir: 'asc' };
+      }
+    },
+
+    toggleInvoiceSort(field) {
+      if (this.invoiceSort.field === field) {
+        this.invoiceSort.dir = this.invoiceSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        this.invoiceSort = { field, dir: 'asc' };
+      }
     },
 
     async confirmURAReceived(ura) {
@@ -601,6 +699,11 @@ function erpApp() {
       const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
       const token = localStorage.getItem('api_token');
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      // ERP identity headers (dev bridge → production: replaced by JWT/session)
+      const erpUser = localStorage.getItem('erp_user_id');
+      const erpCompany = localStorage.getItem('erp_company_id');
+      if (erpUser) headers['X-ERP-User-Id'] = erpUser;
+      if (erpCompany) headers['X-ERP-Company-Id'] = erpCompany;
       const r = await fetch(url, { ...opts, headers });
       if (!r.ok) {
         let errMsg = `HTTP ${r.status}`;

@@ -105,6 +105,19 @@ class VendorInvoiceService(BaseERPService):
             ))} for k, v in buckets.items()},
         }
 
+    async def update_vendor_invoice(
+        self, vendor_invoice_id: str, ctx: ERPRequestContext, update_data: dict
+    ) -> dict:
+        """Update safe fields on a vendor invoice."""
+        check_permission(ctx, "vendor_invoice:create")
+        doc = await self._get_repo().get(vendor_invoice_id, ctx)
+        if doc is None:
+            raise NotFoundError(
+                code="NOT_FOUND",
+                message=f"Ulazni racun '{vendor_invoice_id}' nije pronaden."
+            )
+        return await self._get_repo().update(vendor_invoice_id, ctx, update_data)
+
     async def create_vendor_invoice(self, data: dict, ctx: ERPRequestContext) -> dict:
         """Create a new vendor invoice (manual entry or from OCR)."""
         check_permission(ctx, "vendor_invoice:create")

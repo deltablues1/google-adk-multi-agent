@@ -6,6 +6,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from google.cloud.firestore_v1.async_client import AsyncClient
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from ...request_context import ERPRequestContext
 from ...base_erp_service import get_firestore_db
@@ -41,14 +42,14 @@ class FirestoreQuoteRepository:
     ) -> List[dict]:
         query = (
             self._db.collection(_COL)
-            .where("company_id", "==", ctx.company_id)
-            .where("deleted", "==", False)
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("deleted", "==", False))
         )
         f = filters or {}
         if f.get("document_status"):
-            query = query.where("document_status", "==", f["document_status"])
+            query = query.where(filter=FieldFilter("document_status", "==", f["document_status"]))
         if f.get("customer_id"):
-            query = query.where("customer_id", "==", f["customer_id"])
+            query = query.where(filter=FieldFilter("customer_id", "==", f["customer_id"]))
         query = query.order_by("created_at", direction="DESCENDING")
         if offset > 0:
             query = query.offset(offset)

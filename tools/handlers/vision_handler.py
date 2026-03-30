@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 
 from google.genai import Client
 from tools.schemas.receipt_schema import Receipt
+from tools.schemas.outgoing_invoice_schema import OutgoingInvoice
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,94 @@ class VisionHandler:
 
         except Exception as e:
             logger.error(f"Error extracting receipt data: {e}")
+            raise
+
+    async def extract_outgoing_invoice(self, image_data: str, mime_type: str = "application/pdf") -> Dict[str, Any]:
+        """
+        Extract structured data from an OUTGOING invoice (izlazni racun).
+        Lux Tech d.o.o. is the SELLER — we extract BUYER (customer) data.
+        """
+        if not self.client:
+            raise RuntimeError("VisionHandler client not initialized")
+
+        logger.info("Extracting outgoing invoice data...")
+
+        try:
+            from google.genai import types
+
+            prompt = """
+            You are analyzing an OUTGOING INVOICE (izlazni račun) ISSUED BY the company "Lux Tech d.o.o." (OIB: HR47034854402).
+
+            CRITICAL INSTRUCTIONS:
+
+            1. SELLER vs BUYER - PAY ATTENTION!
+               - This is an OUTGOING invoice (izlazni račun)
+               - SELLER (Prodavatelj/Izdavatelj) = Lux Tech d.o.o. — IGNORE THIS, we already know who we are!
+               - BUYER (Kupac/Primatelj) = The company or person who RECEIVED this invoice — EXTRACT THIS!
+
+            2. WHAT TO EXTRACT:
+               Extract data about the BUYER (recipient), NOT the seller (Lux Tech):
+
+               ✅ CORRECT - Extract from BUYER section:
+                  - buyer_name = Buyer's name/company (NOT "Lux Tech")
+                  - buyer_oib = Buyer's OIB (NOT "47034854402")
+                  - buyer_address = Buyer's address
+
+               ❌ WRONG - Do NOT extract seller info:
+                  - Ignore "Lux Tech d.o.o."
+                  - Ignore OIB "47034854402" or "HR47034854402"
+
+            3. INVOICE TYPE DETECTION:
+               - If buyer has OIB and is a company (d.o.o., d.d., obrt) → invoice_type = "b2b"
+               - If buyer is a government body (ministarstvo, grad, općina, javna ustanova) → invoice_type = "b2g"
+               - If buyer is a person without OIB or no buyer info → invoice_type = "b2c"
+
+            4. AMOUNTS:
+               - total_without_vat = Osnovica (base amount before VAT)
+               - total_vat = Iznos PDV-a (VAT amount)
+               - grand_total = Ukupno za platiti (total including VAT)
+               - vat_rate = PDV stopa u % (e.g., 25.0)
+
+            5. FISCALIZATION DATA (if visible on invoice):
+               - JIR: UUID format (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+               - ZKI: 32 hex characters
+               - These are only on B2C fiscal invoices
+
+            6. CURRENCY:
+               - Invoices before 01.01.2023 may be in HRK (Croatian Kuna)
+               - Invoices from 01.01.2023 onward are in EUR
+               - Set currency accordingly
+
+            7. VALIDATION:
+               - If buyer_name contains "Lux Tech" → YOU MADE A MISTAKE!
+               - If buyer_oib is "47034854402" → YOU MADE A MISTAKE!
+
+            Return the data as a JSON object matching the OutgoingInvoice schema.
+            """
+
+            image_part = types.Part.from_bytes(
+                data=base64.b64decode(image_data),
+                mime_type=mime_type
+            )
+
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=[prompt, image_part],
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": OutgoingInvoice
+                }
+            )
+
+            if response.text:
+                data = json.loads(response.text)
+                logger.info("Outgoing invoice data extracted successfully")
+                return data
+            else:
+                raise ValueError("Empty response from model")
+
+        except Exception as e:
+            logger.error(f"Error extracting outgoing invoice data: {e}")
             raise
 
     async def categorize_expense(self, merchant: str, items: list, total_amount: float, credentials: Optional[Any] = None, **kwargs) -> str:
