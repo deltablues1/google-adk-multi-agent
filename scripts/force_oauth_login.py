@@ -54,6 +54,16 @@ def main():
     print("   Browser will open automatically in a few seconds...")
     print("   If browser doesn't open, you'll see a URL to open manually\n")
 
+    # Kill any process holding port 8080 (stale server = CSRF state mismatch)
+    import subprocess
+    try:
+        subprocess.run(
+            ['cmd', '/c', 'for /f "tokens=5" %a in (\'netstat -ano ^| findstr :8080 ^| findstr LISTENING\') do taskkill /PID %a /F'],
+            capture_output=True, text=True
+        )
+    except Exception:
+        pass  # If kill fails, try anyway
+
     try:
         # Create flow from client secrets file
         flow = InstalledAppFlow.from_client_secrets_file(
@@ -61,9 +71,7 @@ def main():
             scopes=SCOPES
         )
 
-        # Run local server to handle OAuth callback
-        # This will open browser automatically
-        print("🌐 Opening browser for authentication...")
+        print("Opening browser for authentication...")
         credentials = flow.run_local_server(
             port=8080,
             open_browser=True,
@@ -86,7 +94,8 @@ def main():
                 'token_uri': credentials.token_uri,
                 'client_id': credentials.client_id,
                 'client_secret': credentials.client_secret,
-                'scopes': credentials.scopes
+                'scopes': list(credentials.scopes) if credentials.scopes else list(SCOPES),
+                'expiry': credentials.expiry.isoformat() if credentials.expiry else None,
             }
 
             with open(token_path, 'w') as f:

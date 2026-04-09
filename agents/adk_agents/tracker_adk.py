@@ -55,16 +55,6 @@ def create_tracker_agent(
         tasks_complete_task
     )
 
-    from tools.adk_tools.erp_adk_tools import (
-        erp_list_open_invoices,
-        erp_record_payment,
-        erp_get_open_payables,
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        erp_list_quotes,
-        erp_get_quote,
-    )
-
     # Create list of tools
     tools = [
         tasks_list_task_lists,
@@ -73,23 +63,38 @@ def create_tracker_agent(
         tasks_update_task,
         tasks_delete_task,
         tasks_complete_task,
-        # ERP payment tracking
-        erp_list_open_invoices,
-        erp_record_payment,
-        erp_get_open_payables,
-        # ERP activity & inventory
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        # ERP quotes
-        erp_list_quotes,
-        erp_get_quote,
     ]
+
+    # ERP tools — only on full deployment
+    from config.deployment_config import ENABLE_ERP
+    if ENABLE_ERP:
+        from tools.adk_tools.erp_adk_tools import (
+            erp_list_open_invoices,
+            erp_record_payment,
+            erp_get_open_payables,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        )
+        tools.extend([
+            erp_list_open_invoices,
+            erp_record_payment,
+            erp_get_open_payables,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        ])
 
     # Create agent using factory
     agent = create_adk_agent(
         name="tracker",
         model=model,
-        description="Google Tasks specialist and ERP payment tracker: task management, open invoices, recording payments, payables tracking",
+        description=(
+            "Google Tasks specialist: task management, task lists, creating and completing tasks."
+            + (" Also tracks ERP payments: open invoices, recording payments, payables, quotes." if ENABLE_ERP else "")
+        ),
         tools=tools,
         instruction=instruction,
         config={

@@ -73,18 +73,23 @@ class PaymentRequest(BaseModel):
 class VendorInvoiceCreate(BaseModel):
     """Create a new vendor invoice (URA — ulazni račun)."""
     vendor_id: str = Field(default="", description="FK → customers (party_type=supplier|both)")
+    vendor_name: str = Field(default="", description="Vendor name (denormalized, required if vendor_id is empty)")
+    vendor_oib: str = Field(default="", description="Vendor OIB")
     vendor_invoice_no: str = Field(default="", description="Supplier's own invoice number")
     issue_date: Optional[date] = None
     due_date: Optional[date] = None
+    received_date: Optional[date] = None
     items: List[Dict[str, Any]] = Field(default_factory=list)
     total_gross: Decimal = Field(..., gt=0, description="Total gross amount including VAT")
     vat_amount: Decimal = Field(..., ge=0, description="Total VAT amount")
+    subtotal_net: Optional[Decimal] = None
     category: str = Field(
         default="services",
         description="materials | services | utilities | equipment | other"
     )
     vat_deductible: bool = Field(default=True, description="Can we reclaim input VAT?")
     notes: str = Field(default="")
+    from_ocr: bool = Field(default=False, description="If True, vendor_id is optional (OCR/UBL import)")
     idempotency_key: str = Field(default_factory=lambda: str(uuid4()))
 
 
@@ -157,6 +162,20 @@ class QuoteConvertRequest(BaseModel):
     )
 
 
+class QuoteCreateInvoiceRequest(BaseModel):
+    """
+    Optional overrides when creating an outbound B2B invoice from an accepted quote.
+    All fields are optional — quote data is used as the base.
+    """
+    seller_name:    Optional[str]  = None
+    seller_oib:     Optional[str]  = None
+    seller_iban:    Optional[str]  = None
+    seller_address: Optional[str]  = None
+    seller_city:    Optional[str]  = None
+    due_date:       Optional[date] = None
+    notes:          Optional[str]  = None
+
+
 class ProductCreate(BaseModel):
     """Create a new product/service."""
     sku: str = Field(..., min_length=1)
@@ -171,3 +190,65 @@ class ProductCreate(BaseModel):
     stock_quantity: Decimal = Field(default=Decimal("0"))
     min_stock: Optional[Decimal] = None
     active: bool = Field(default=True)
+
+
+# ---------------------------------------------------------------------------
+# Outbound B2B eRačun models
+# ---------------------------------------------------------------------------
+
+class OutboundB2BItemCreate(BaseModel):
+    """A single line item on an outbound B2B invoice."""
+    description: str = Field(..., min_length=1)
+    name: str = Field(default="")
+    quantity: Decimal = Field(default=Decimal("1"), gt=0)
+    unit: str = Field(default="kom", description="Unit of measure (e.g. kom, sat, kg)")
+    unit_price: Decimal = Field(..., ge=0, description="Net unit price (without VAT)")
+    vat_rate: int = Field(default=25, description="VAT rate: 0, 5, 13, or 25")
+
+
+class OutboundB2BCreate(BaseModel):
+    """Create a new outgoing domestic B2B invoice (eRačun)."""
+    # Buyer
+    customer_id: str = Field(default="", description="FK → customers collection")
+    customer_name: str = Field(..., min_length=1)
+    customer_oib: str = Field(..., min_length=11, max_length=11, description="Buyer OIB (11 digits)")
+    customer_address: str = Field(default="")
+    customer_city: str = Field(default="")
+    customer_country: str = Field(default="HR")
+
+    # Seller info (filled from company profile or request body)
+    seller_name: str = Field(default="", description="Seller name — defaults to company profile")
+    seller_oib: str = Field(default="", description="Seller OIB")
+    seller_iban: str = Field(default="", description="Seller IBAN for payment block in UBL")
+    seller_address: str = Field(default="")
+    seller_city: str = Field(default="")
+
+    # Invoice header
+    invoice_number: str = Field(default="", description="Seller invoice number (auto-generated if empty)")
+    issue_date: date = Field(default_factory=date.today)
+    due_date: Optional[date] = None
+    payment_terms: int = Field(default=30, description="Payment terms in days")
+    currency: str = Field(default="EUR")
+
+    # Items (required — at least 1)
+    items: List[OutboundB2BItemCreate] = Field(..., min_length=1)
+
+    notes: str = Field(default="")
+
+
+class OutboundB2BSendRequest(BaseModel):
+    """Send an issued B2B invoice to the buyer."""
+    delivery_method: str = Field(
+        ..., pattern="^(email|peppol|manual)$",
+        description="email | peppol | manual"
+    )
+    delivery_target: str = Field(
+        default="",
+        description="Email address, Peppol participant ID, or blank for manual delivery"
+    )
+    delivery_ref: str = Field(default="", description="AP confirmation reference (optional)")
+
+
+class OutboundB2BRejectRequest(BaseModel):
+    """Buyer rejection of a sent/delivered B2B invoice."""
+    rejection_reason: str = Field(..., min_length=5, description="Mandatory rejection reason")

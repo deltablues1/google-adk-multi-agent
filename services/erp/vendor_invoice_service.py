@@ -15,7 +15,10 @@ from .base_erp_service import (
 )
 from .errors import ValidationError, NotFoundError, DuplicateError
 from .request_context import ERPRequestContext
-from .state_machines import VENDOR_INVOICE_DOC_TRANSITIONS, validate_transition, compute_payment_status
+from .state_machines import (
+    VENDOR_INVOICE_DOC_TRANSITIONS, validate_transition, compute_payment_status,
+    compute_fiscalization_deadline, is_fiscalization_overdue,
+)
 from .repositories.firestore.vendor_invoice_repo import FirestoreVendorInvoiceRepository
 from .repositories.firestore.payment_repo import FirestorePaymentRepository
 from .repositories.firestore.customer_repo import FirestoreCustomerRepository
@@ -212,22 +215,98 @@ class VendorInvoiceService(BaseERPService):
         }
         return await self.create_vendor_invoice(data, ctx)
 
+    async def create_from_ubl(
+        self,
+        xml_input: "str | bytes",
+        ctx: ERPRequestContext,
+        drive_file_id: str = "",
+        drive_folder_id: str = "",
+    ) -> dict:
+        """
+        Create a DRAFT vendor invoice from a UBL 2.1 inbound XML document.
+        Runs the parser, validates buyer identity, matches vendor, deduplicates.
+
+        Args:
+            xml_input:       Raw XML string or bytes of the inbound eRačun.
+            ctx:             ERP request context (company_id, user_id, …).
+            drive_file_id:   Drive file_id of the original XML (for archive reference).
+            drive_folder_id: Drive folder_id where the document lives.
+
+        Returns:
+            The created vendor_invoice dict (document_status='draft').
+        """
+        from .ubl_inbound_parser import parse_ubl_invoice
+        from config.agent_registry import get_company_oib  # noqa: optional helper
+
+        check_permission(ctx, "vendor_invoice:create")
+
+        # Resolve buyer OIB for this company (best-effort — mismatch is a hard error)
+        buyer_oib = ""
+        try:
+            buyer_oib = get_company_oib(ctx.company_id)
+        except Exception:
+            pass
+
+        result = parse_ubl_invoice(xml_input, buyer_oib=buyer_oib)
+        if not result["ok"]:
+            raise ValidationError(
+                code="UBL_PARSE_ERROR",
+                message=f"UBL parser: {result['error']}",
+            )
+
+        data = result["data"]
+
+        # Auto-match vendor
+        matched = await self._try_match_vendor(data["vendor_oib"], data["vendor_name"], ctx.company_id)
+        if matched:
+            data["vendor_id"] = matched["_id"]
+            data["vendor_name"] = matched.get("name") or data["vendor_name"]
+            data["vendor_match_status"] = "matched"
+        else:
+            data["vendor_match_status"] = "no_match"
+
+        # Archive references
+        if drive_file_id:
+            data["drive_original_file_id"] = drive_file_id
+        if drive_folder_id:
+            data["drive_folder_id"] = drive_folder_id
+        data["archive_status"] = "not_archived"
+
+        # Store original XML (truncated to 1 MB to stay within Firestore limits)
+        raw = xml_input if isinstance(xml_input, str) else xml_input.decode("utf-8", errors="replace")
+        data["source_ubl_xml"] = raw[:1_000_000]
+
+        notes_parts = ["Kreirano automatski iz UBL 2.1 inbound eRačuna."]
+        if matched:
+            notes_parts.append(f"Dobavljač automatski prepoznat: {data['vendor_name']}.")
+        else:
+            notes_parts.append("Molimo provjerite i dodijelite dobavljača.")
+        data["notes"] = (data.get("notes") or "") + " " + " ".join(notes_parts)
+
+        return await self.create_vendor_invoice(data, ctx)
+
     async def mark_received(self, vendor_invoice_id: str, ctx: ERPRequestContext) -> dict:
-        """Transition vendor invoice from 'draft' to 'received'."""
+        """Transition vendor invoice from 'draft' to 'received'.
+        Computes the 5-business-day fiscalization deadline per NN 89/2025."""
         check_permission(ctx, "vendor_invoice:create")
         doc = await self._get_repo().get(vendor_invoice_id, ctx)
         if doc is None:
             raise NotFoundError(code="NOT_FOUND", message=f"URA '{vendor_invoice_id}' nije pronađen.")
         validate_transition(doc["document_status"], "received", VENDOR_INVOICE_DOC_TRANSITIONS)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(timezone.utc)
+        received_date = now.date()
+        fiscal_deadline = compute_fiscalization_deadline(received_date)
         await self._get_repo()._db.collection("vendor_invoices").document(vendor_invoice_id).update({
             "document_status": "received",
-            "received_date": now,
-            "updated_at": now,
+            "received_date": now.isoformat(),
+            "fiscalization_deadline": fiscal_deadline.isoformat(),
+            "updated_at": now.isoformat(),
         })
         await write_audit("vendor_invoice_received", "vendor_invoice", vendor_invoice_id,
                           doc.get("display_id", ""), ctx, db=self._get_db())
         doc["document_status"] = "received"
+        doc["received_date"] = now.isoformat()
+        doc["fiscalization_deadline"] = fiscal_deadline.isoformat()
         return doc
 
     async def approve_vendor_invoice(self, vendor_invoice_id: str, ctx: ERPRequestContext) -> dict:
@@ -257,6 +336,386 @@ class VendorInvoiceService(BaseERPService):
                           doc.get("display_id"), ctx, db=self._get_db())
         return updated
 
+    async def mark_fisc_reported(
+        self, vendor_invoice_id: str, ctx: ERPRequestContext,
+        fisc_confirmation_ref: str = "",
+    ) -> dict:
+        """
+        Mark vendor invoice as fiscally reported to Porezna Uprava.
+        Transition: approved -> fisc_reported.
+        Per NN 89/2025, this must happen within 5 business days of received_date.
+        """
+        check_permission(ctx, "vendor_invoice:approve")
+        doc = await self._get_repo().get(vendor_invoice_id, ctx)
+        if doc is None:
+            raise NotFoundError(code="NOT_FOUND", message=f"URA '{vendor_invoice_id}' nije pronađen.")
+        validate_transition(doc["document_status"], "fisc_reported", VENDOR_INVOICE_DOC_TRANSITIONS)
+        now = datetime.now(timezone.utc).isoformat()
+        update_data = {
+            "document_status": "fisc_reported",
+            "fiscalization_status": "fiscalized",
+            "fisc_reported_at": now,
+            "fisc_reported_by": ctx.user_id,
+            "updated_at": now,
+        }
+        if fisc_confirmation_ref:
+            update_data["fisc_confirmation_ref"] = fisc_confirmation_ref
+        await self._get_repo()._db.collection("vendor_invoices").document(vendor_invoice_id).update(update_data)
+        await write_audit("vendor_invoice_fisc_reported", "vendor_invoice", vendor_invoice_id,
+                          doc.get("display_id"), ctx, {"ref": fisc_confirmation_ref}, db=self._get_db())
+        doc.update(update_data)
+        return doc
+
+    async def accept_vendor_invoice(self, vendor_invoice_id: str, ctx: ERPRequestContext) -> dict:
+        """
+        Accept a fiscally reported vendor invoice.
+        Transition: fisc_reported -> accepted.
+        """
+        check_permission(ctx, "vendor_invoice:approve")
+        doc = await self._get_repo().get(vendor_invoice_id, ctx)
+        if doc is None:
+            raise NotFoundError(code="NOT_FOUND", message=f"URA '{vendor_invoice_id}' nije pronađen.")
+        validate_transition(doc["document_status"], "accepted", VENDOR_INVOICE_DOC_TRANSITIONS)
+        now = datetime.now(timezone.utc).isoformat()
+        await self._get_repo()._db.collection("vendor_invoices").document(vendor_invoice_id).update({
+            "document_status": "accepted",
+            "acceptance_status": "accepted",
+            "accepted_at": now,
+            "accepted_by": ctx.user_id,
+            "updated_at": now,
+        })
+        await write_audit("vendor_invoice_accepted", "vendor_invoice", vendor_invoice_id,
+                          doc.get("display_id"), ctx, db=self._get_db())
+        doc["document_status"] = "accepted"
+        doc["acceptance_status"] = "accepted"
+        return doc
+
+    async def reject_vendor_invoice(
+        self, vendor_invoice_id: str, rejection_reason: str, ctx: ERPRequestContext
+    ) -> dict:
+        """
+        Reject a fiscally reported vendor invoice.
+        Transition: fisc_reported -> rejected.
+        rejection_reason is MANDATORY per NN 89/2025.
+        """
+        check_permission(ctx, "vendor_invoice:approve")
+        if not rejection_reason or not rejection_reason.strip():
+            raise ValidationError(
+                code="REQUIRED_FIELD",
+                message="Razlog odbijanja (rejection_reason) je obavezan.",
+                field="rejection_reason",
+            )
+        doc = await self._get_repo().get(vendor_invoice_id, ctx)
+        if doc is None:
+            raise NotFoundError(code="NOT_FOUND", message=f"URA '{vendor_invoice_id}' nije pronađen.")
+        validate_transition(doc["document_status"], "rejected", VENDOR_INVOICE_DOC_TRANSITIONS)
+        now = datetime.now(timezone.utc).isoformat()
+        await self._get_repo()._db.collection("vendor_invoices").document(vendor_invoice_id).update({
+            "document_status": "rejected",
+            "acceptance_status": "rejected",
+            "rejection_reason": rejection_reason.strip(),
+            "rejected_at": now,
+            "rejected_by": ctx.user_id,
+            "updated_at": now,
+        })
+        await write_audit("vendor_invoice_rejected", "vendor_invoice", vendor_invoice_id,
+                          doc.get("display_id"), ctx, {"reason": rejection_reason}, db=self._get_db())
+        doc["document_status"] = "rejected"
+        doc["acceptance_status"] = "rejected"
+        doc["rejection_reason"] = rejection_reason
+        return doc
+
+    async def archive_original_document(
+        self, vendor_invoice_id: str, ctx: ERPRequestContext
+    ) -> dict:
+        """
+        Move the original Drive document (XML or scan) into Invoices_Archive/IN/YYYY/MM/.
+        Updates archive_status, archived_at, drive_folder_id on the vendor invoice.
+
+        Safe to call multiple times — if already archived, returns current state.
+        """
+        from .drive_archive_service import archive_inbound_document
+
+        check_permission(ctx, "vendor_invoice:create")
+        doc = await self._get_repo().get(vendor_invoice_id, ctx)
+        if doc is None:
+            raise NotFoundError(code="NOT_FOUND", message=f"URA '{vendor_invoice_id}' nije pronađen.")
+
+        if doc.get("archive_status") == "archived":
+            return {"vendor_invoice_id": vendor_invoice_id, "archive_status": "archived",
+                    "archived_at": doc.get("archived_at"), "drive_folder_id": doc.get("drive_folder_id"),
+                    "note": "Already archived"}
+
+        drive_file_id = doc.get("drive_original_file_id") or doc.get("scan_file_id", "")
+        if not drive_file_id:
+            raise ValidationError(
+                code="NO_DRIVE_FILE",
+                message="Vendor invoice nema referencu na Drive fajl (drive_original_file_id / scan_file_id).",
+            )
+
+        attempts = int(doc.get("archive_attempts") or 0) + 1
+
+        result = await archive_inbound_document(drive_file_id, issue_date=doc.get("issue_date"))
+        now = datetime.now(timezone.utc).isoformat()
+
+        if not result["ok"]:
+            # Record failure for retry scheduler — do NOT raise so best-effort callers can continue
+            await self._get_repo().update(vendor_invoice_id, ctx, {
+                "archive_status": "failed",
+                "archive_attempts": attempts,
+                "last_archive_attempt_at": now,
+                "archive_error": result["error"][:500],
+            })
+            raise ValidationError(code="ARCHIVE_FAILED", message=f"Drive archive neuspješan: {result['error']}")
+
+        update = {
+            "archive_status": "archived",
+            "archived_at": result["archived_at"],
+            "drive_folder_id": result["drive_folder_id"],
+            "archive_attempts": attempts,
+            "last_archive_attempt_at": now,
+            "archive_error": "",
+        }
+        await self._get_repo().update(vendor_invoice_id, ctx, update)
+        await write_audit(
+            "vendor_invoice_archived", "vendor_invoice", vendor_invoice_id,
+            doc.get("display_id"), ctx, {"drive_folder_id": result["drive_folder_id"]},
+            db=self._get_db(),
+        )
+        return {"vendor_invoice_id": vendor_invoice_id, **update}
+
+    async def retry_pending_archives(self, ctx: ERPRequestContext, max_retries: int = 3) -> dict:
+        """
+        Re-attempt archiving for invoices with archive_status in (not_archived, failed).
+        Called by the daily archive-retry scheduler job.
+
+        Args:
+            max_retries: Skip invoices that have already failed this many times.
+        Returns:
+            Summary dict: {attempted, succeeded, failed, skipped}.
+        """
+        check_permission(ctx, "vendor_invoice:create")
+        pending = await self._get_repo().list_pending_archive(ctx, limit=200)
+        summary = {"attempted": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+
+        for doc in pending:
+            vid = doc.get("vendor_invoice_id") or doc.get("_id")
+            attempts_so_far = int(doc.get("archive_attempts") or 0)
+            if attempts_so_far >= max_retries:
+                summary["skipped"] += 1
+                logger.warning(f"Archive retry skipped {vid}: already {attempts_so_far} attempts")
+                continue
+            summary["attempted"] += 1
+            try:
+                await self.archive_original_document(vid, ctx)
+                summary["succeeded"] += 1
+            except Exception as exc:
+                summary["failed"] += 1
+                logger.warning(f"Archive retry failed for {vid}: {exc}")
+
+        logger.info(f"retry_pending_archives: {summary}")
+        return summary
+
+    async def list_pending_archive(self, ctx: ERPRequestContext) -> List[dict]:
+        """List invoices with a Drive file that still need archiving (archive_status failed/not_archived)."""
+        check_permission(ctx, "vendor_invoice:read")
+        return await self._get_repo().list_pending_archive(ctx)
+
+    async def list_rejected_invoices(self, ctx: ERPRequestContext, limit: int = 200) -> List[dict]:
+        """List rejected inbound vendor invoices (document_status=rejected)."""
+        check_permission(ctx, "vendor_invoice:read")
+        return await self._get_repo().list(ctx, {"document_status": "rejected"}, limit=limit)
+
+    async def get_overdue_fiscalizations(self, ctx: ERPRequestContext) -> List[dict]:
+        """
+        Find vendor invoices that have exceeded their 5-business-day
+        fiscalization deadline. Used for SLA monitoring/alerts.
+        """
+        from datetime import date as date_type
+        check_permission(ctx, "vendor_invoice:read")
+        # Get all approved but not yet fisc_reported invoices
+        docs = await self._get_repo().list(ctx, {"document_status": "approved"}, limit=200)
+        overdue = []
+        today = date_type.today()
+        for doc in docs:
+            received_str = doc.get("received_date")
+            if not received_str:
+                continue
+            try:
+                received = date_type.fromisoformat(str(received_str)[:10])
+            except (ValueError, TypeError):
+                continue
+            if is_fiscalization_overdue(received, doc.get("document_status", ""), today):
+                doc["is_fisc_overdue"] = True
+                doc["fisc_deadline"] = compute_fiscalization_deadline(received).isoformat()
+                doc["days_overdue"] = (today - compute_fiscalization_deadline(received)).days
+                overdue.append(doc)
+        return overdue
+
+    async def get_inbound_compliance_report(
+        self, year: Optional[int], month: Optional[int], ctx: ERPRequestContext,
+        export_format: str = "json",
+        save_to_drive: bool = False,
+    ) -> dict:
+        """
+        Monthly SLA compliance summary for inbound vendor invoices per NN 89/2025.
+
+        Primary dimension: received_date (SLA clock starts on physical receipt).
+        Secondary dimension: fisc_reported_at (regulatory reporting date).
+
+        If year/month are None, defaults to current month.
+        """
+        import calendar
+        from datetime import date as date_type
+
+        check_permission(ctx, "vendor_invoice:read")
+        today = date_type.today()
+        y = year  or today.year
+        m = month or today.month
+
+        last_day = calendar.monthrange(y, m)[1]
+        received_from = f"{y:04d}-{m:02d}-01"
+        received_to   = f"{y:04d}-{m:02d}-{last_day:02d}"
+
+        # Fetch all recent invoices and filter by received_date in Python.
+        # Using Firestore range filter on received_date + order_by(issue_date) requires
+        # a composite index. Filtering in Python avoids that index dependency and is
+        # acceptable for monthly reports (≤ 500 docs per company per report run).
+        all_docs = await self._get_repo().list(ctx, {}, limit=500)
+        docs = [
+            d for d in all_docs
+            if received_from <= str(d.get("received_date") or "")[:10] <= received_to
+        ]
+
+        statuses = ["draft", "received", "approved", "fisc_reported", "accepted", "rejected", "disputed", "cancelled"]
+        counts: dict[str, int] = {s: 0 for s in statuses}
+        totals: dict[str, float] = {s: 0.0 for s in statuses}
+        overdue_count = 0
+        archived_count = 0
+        fisc_reported_in_month = 0
+
+        for doc in docs:
+            st = doc.get("document_status", "draft")
+            counts[st] = counts.get(st, 0) + 1
+            totals[st] = totals.get(st, 0.0) + float(doc.get("total_gross") or 0)
+            if doc.get("archive_status") == "archived":
+                archived_count += 1
+            # SLA: did this invoice miss the 5-business-day fiscalization window?
+            received_str = doc.get("received_date")
+            if received_str:
+                try:
+                    received = date_type.fromisoformat(str(received_str)[:10])
+                    if is_fiscalization_overdue(received, st, today):
+                        overdue_count += 1
+                except (ValueError, TypeError):
+                    pass
+            # Regulatory: how many were fiscally reported this month?
+            fisc_at = doc.get("fisc_reported_at", "")
+            if fisc_at and fisc_at[:7] == f"{y:04d}-{m:02d}":
+                fisc_reported_in_month += 1
+
+        report = {
+            "period": f"{y:04d}-{m:02d}",
+            "period_basis": "received_date",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_invoices_received": len(docs),
+            "total_gross_eur": round(sum(totals.values()), 2),
+            "by_status": {
+                s: {"count": counts[s], "total_gross_eur": round(totals[s], 2)}
+                for s in statuses if counts[s] > 0
+            },
+            # SLA metrics (NN 89/2025: 5 business days from received_date)
+            "overdue_fiscalization_count": overdue_count,
+            "sla_compliant": overdue_count == 0,
+            # Regulatory metrics
+            "fisc_reported_this_period": fisc_reported_in_month,
+            "accepted_count": counts["accepted"],
+            "rejected_count": counts["rejected"],
+            # Archive
+            "archived_count": archived_count,
+            "not_archived_count": len(docs) - archived_count,
+        }
+
+        # Drive upload always happens first (before any format conversion)
+        if save_to_drive:
+            drive_file_id = await self._save_compliance_report_to_drive(report, ctx)
+            if drive_file_id:
+                report["drive_file_id"] = drive_file_id
+
+        if export_format == "csv":
+            return self._compliance_report_to_csv_response(report)
+
+        return report
+
+    @staticmethod
+    def _compliance_report_to_csv_response(report: dict):
+        """Convert compliance report dict to CSV plain-text response."""
+        import io, csv
+        from fastapi.responses import PlainTextResponse
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["period", "period_basis", "generated_at",
+                    "total_invoices_received", "total_gross_eur",
+                    "overdue_fiscalization_count", "sla_compliant",
+                    "fisc_reported_this_period",
+                    "accepted_count", "rejected_count",
+                    "archived_count", "not_archived_count"])
+        w.writerow([
+            report["period"], report["period_basis"], report["generated_at"],
+            report["total_invoices_received"], report["total_gross_eur"],
+            report["overdue_fiscalization_count"], report["sla_compliant"],
+            report["fisc_reported_this_period"],
+            report["accepted_count"], report["rejected_count"],
+            report["archived_count"], report["not_archived_count"],
+        ])
+        # Append by_status breakdown
+        w.writerow([])
+        w.writerow(["status", "count", "total_gross_eur"])
+        for status, vals in report.get("by_status", {}).items():
+            w.writerow([status, vals["count"], vals["total_gross_eur"]])
+
+        csv_text = buf.getvalue()
+        filename = f"inbound_compliance_{report['period']}.csv"
+        return PlainTextResponse(
+            content=csv_text,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    async def _save_compliance_report_to_drive(self, report: dict, ctx: ERPRequestContext) -> Optional[str]:
+        """Upload JSON compliance report to Reports_Output/ERP/ on Drive. Returns Drive file_id or None."""
+        import json
+        try:
+            from tools.drive_navigator import get_drive_navigator
+            from tools.api_implementations.drive_api import drive_upload_file
+            from tools.google_api_client import create_api_client_auto
+
+            nav = await get_drive_navigator()
+            folder_id = nav.get_folder_id("reports_erp")
+            if not folder_id:
+                logger.warning("reports_erp folder not resolved — skipping Drive export")
+                return None
+
+            credentials = create_api_client_auto().credentials
+            period = report["period"]
+            filename = f"inbound_compliance_{period}.json"
+            content = json.dumps(report, ensure_ascii=False, indent=2)
+
+            result = await drive_upload_file(
+                credentials=credentials,
+                file_name=filename,
+                content=content,
+                mime_type="application/json",
+                parent_folder_id=folder_id,
+            )
+            file_id = result.get("id", "")
+            logger.info(f"Compliance report uploaded to Drive: {filename} ({file_id})")
+            return file_id
+        except Exception as exc:
+            logger.warning(f"Drive compliance report upload failed: {exc}")
+            return None
+
     async def record_payment(
         self,
         vendor_invoice_id: str,
@@ -280,10 +739,10 @@ class VendorInvoiceService(BaseERPService):
         doc = await self._get_repo().get(vendor_invoice_id, ctx)
         if doc is None:
             raise NotFoundError(code="NOT_FOUND", message="URA nije pronađen.")
-        if doc["document_status"] not in ("approved", "partial_paid"):
+        if doc["document_status"] not in ("approved", "partial_paid", "fisc_reported", "accepted"):
             raise ValidationError(
                 code="WRONG_STATUS",
-                message=f"Plaćanje moguće samo za odobren račun. Trenutni status: {doc['document_status']}.",
+                message=f"Plaćanje moguće samo za odobren ili fiskaliz. prijavljeni račun. Trenutni status: {doc['document_status']}.",
             )
 
         amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

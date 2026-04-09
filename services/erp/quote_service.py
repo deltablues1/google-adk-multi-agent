@@ -367,6 +367,206 @@ class QuoteService(BaseERPService):
             "already_converted": False,
         }
 
+    # ------------------------------------------------------------------
+    # Faza 2E: quote → outbound B2B invoice
+    # ------------------------------------------------------------------
+
+    async def _find_existing_outbound_invoice(
+        self, quote_id: str, linked_id: Optional[str], ctx: ERPRequestContext
+    ) -> Optional[dict]:
+        """
+        Robust idempotency lookup for create_outbound_b2b_from_quote().
+
+        Two-stage strategy:
+          1. If linked_id is set, try to fetch that invoice by ID directly.
+          2. If fetch fails (deleted, wrong company, etc.) OR linked_id is missing,
+             fall back to a Firestore query on source_quote_id in invoices_b2b.
+             This catches the "link-back write failed" scenario.
+
+        Returns the invoice doc if found, None otherwise.
+        """
+        from .outbound_b2b_service import get_outbound_b2b_service
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        # Stage 1: fast path via stored linked_id
+        if linked_id:
+            try:
+                return await get_outbound_b2b_service().get(linked_id, ctx)
+            except (NotFoundError, Exception) as exc:
+                logger.warning(
+                    f"[QuoteService] linked_outbound_invoice_id={linked_id!r} fetch failed "
+                    f"({type(exc).__name__}); falling back to source_quote_id query."
+                )
+
+        # Stage 2: query invoices_b2b by source_quote_id — catches link-back failures.
+        # If this query itself fails we MUST NOT return None (which would let create()
+        # proceed and risk producing a duplicate). Raise instead so the caller aborts.
+        try:
+            db = self._get_db()
+            query = (
+                db.collection("invoices_b2b")
+                .where(filter=FieldFilter("company_id",      "==", ctx.company_id))
+                .where(filter=FieldFilter("source_quote_id", "==", quote_id))
+                .where(filter=FieldFilter("deleted",          "==", False))
+                .limit(1)
+            )
+            async for snap in query.stream():
+                inv = snap.to_dict() or {}
+                inv["_id"] = snap.id
+                logger.info(
+                    f"[QuoteService] Found existing invoice {inv.get('display_id')} "
+                    f"via source_quote_id fallback for quote {quote_id}."
+                )
+                return inv
+        except (ValidationError, NotFoundError):
+            raise  # propagate our own errors unchanged
+        except Exception as exc:
+            # Cannot verify uniqueness → refuse to create rather than risk a duplicate.
+            logger.error(
+                f"[QuoteService] source_quote_id fallback query failed for {quote_id}: {exc}. "
+                f"Aborting create to avoid duplicate invoice."
+            )
+            raise ValidationError(
+                code="IDEMPOTENCY_CHECK_FAILED",
+                message=(
+                    "Provjera duplikata nije uspjela zbog privremene greške baze podataka. "
+                    "Pokušajte ponovo za nekoliko trenutaka."
+                ),
+            )
+
+        return None
+
+    async def create_outbound_b2b_from_quote(
+        self,
+        quote_id: str,
+        ctx: ERPRequestContext,
+        overrides: Optional[dict] = None,
+    ) -> dict:
+        """
+        Create a fully-structured outbound B2B invoice from an accepted quote,
+        using OutboundB2BService.create() so all tracking fields are initialised.
+
+        The quote must be in 'accepted' status.
+
+        Idempotency (2E.1 hardened):
+          - If quote.linked_outbound_invoice_id is set: fetch that invoice by ID.
+          - If that fetch fails: fall back to querying invoices_b2b by source_quote_id.
+          - Only if both lookups return nothing: create a new invoice.
+        This ensures link-back write failures never produce duplicates.
+
+        Returns the invoice doc. Callers can inspect _already_exists=True to decide
+        whether to respond with HTTP 200 (existing) or 201 (created).
+
+        Args:
+            quote_id:  Firestore document ID of the quote.
+            ctx:       Request context (must have outbound:create permission).
+            overrides: Optional dict with seller_name, seller_oib, seller_iban,
+                       seller_address, seller_city, due_date, notes.
+        """
+        check_permission(ctx, "outbound:create")
+
+        doc = await self._get_repo().get(quote_id, ctx)
+        if doc is None:
+            raise NotFoundError(
+                code="NOT_FOUND",
+                message=f"Ponuda '{quote_id}' nije pronađena.",
+            )
+
+        # Robust idempotency check (Stage 1 + Stage 2 fallback)
+        existing = await self._find_existing_outbound_invoice(
+            quote_id, doc.get("linked_outbound_invoice_id"), ctx
+        )
+        if existing is not None:
+            existing["_already_exists"] = True
+            return existing
+
+        # Status guard — only after idempotency check so repeat calls on
+        # already-created invoices work regardless of current quote status.
+        if doc["document_status"] != "accepted":
+            raise ValidationError(
+                code="QUOTE_NOT_ACCEPTED",
+                message=(
+                    f"Ponuda mora biti u statusu 'accepted' za kreiranje računa "
+                    f"(trenutni status: {doc['document_status']!r})."
+                ),
+                field="document_status",
+            )
+
+        overrides = overrides or {}
+
+        items = [
+            {
+                "name":        item.get("name") or item.get("description") or "",
+                "description": item.get("description") or item.get("name") or "",
+                "quantity":    float(item.get("quantity", 1)),
+                "unit":        item.get("unit", "kom"),
+                "unit_price":  float(item.get("unit_price", 0)),
+                "vat_rate":    float(item.get("vat_rate", 25)),
+            }
+            for item in doc.get("items", [])
+        ]
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        payment_terms = int(doc.get("payment_terms", 30))
+
+        if overrides.get("due_date"):
+            due_date_str = str(overrides["due_date"])[:10]
+        else:
+            from datetime import timedelta
+            due_date_str = (
+                datetime.now(timezone.utc).date() + timedelta(days=payment_terms)
+            ).isoformat()
+
+        payload = {
+            "customer_id":       doc.get("customer_id", ""),
+            "customer_name":     doc["customer_name"],
+            "customer_oib":      doc.get("customer_oib", ""),
+            "customer_address":  doc.get("customer_address", ""),
+            "customer_city":     doc.get("customer_city", ""),
+            "customer_country":  doc.get("customer_country", "HR"),
+            "seller_name":       overrides.get("seller_name", ""),
+            "seller_oib":        overrides.get("seller_oib", ""),
+            "seller_iban":       overrides.get("seller_iban", ""),
+            "seller_address":    overrides.get("seller_address", ""),
+            "seller_city":       overrides.get("seller_city", ""),
+            "issue_date":        today,
+            "due_date":          due_date_str,
+            "payment_terms":     payment_terms,
+            "currency":          doc.get("currency", "EUR"),
+            "items":             items,
+            "notes":             overrides.get("notes")
+                                 or f"Kreirano iz ponude {doc.get('display_id', quote_id)}.",
+            "source_quote_id":   quote_id,
+        }
+
+        from .outbound_b2b_service import get_outbound_b2b_service
+        invoice = await get_outbound_b2b_service().create(payload, ctx)
+
+        # Link back to quote — if this fails, the next call will find the invoice
+        # via the source_quote_id fallback query in _find_existing_outbound_invoice().
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            await self._get_db().collection("quotes").document(quote_id).update({
+                "linked_outbound_invoice_id":         invoice["invoice_id"],
+                "linked_outbound_invoice_display_id": invoice.get("display_id", ""),
+                "updated_at":                         now,
+            })
+        except Exception as exc:
+            logger.warning(
+                f"[QuoteService] Link-back write failed for quote {quote_id} → "
+                f"invoice {invoice['invoice_id']}: {exc}. "
+                f"Next call will recover via source_quote_id query."
+            )
+
+        await write_audit(
+            "quote_outbound_invoice_created", "quote", quote_id,
+            doc.get("display_id"), ctx,
+            data={"invoice_id": invoice["invoice_id"],
+                  "invoice_display_id": invoice.get("display_id")},
+            db=self._get_db(),
+        )
+        return invoice
+
 
 _quote_service_instance: Optional[QuoteService] = None
 

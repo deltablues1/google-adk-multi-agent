@@ -95,32 +95,40 @@ def create_analyst_agent(
     # Get Sheets tools
     sheets_tools = get_sheets_adk_tools(credentials=credentials)
 
-    from tools.adk_tools.erp_adk_tools import (
-        erp_get_vat_summary,
-        erp_get_receivables_aging,
-        erp_get_financial_summary,
-        erp_get_stock_levels,
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        erp_list_quotes,
-        erp_get_quote,
-    )
-    all_tools = sheets_tools + [
-        erp_get_vat_summary,
-        erp_get_receivables_aging,
-        erp_get_financial_summary,
-        erp_get_stock_levels,
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        erp_list_quotes,
-        erp_get_quote,
-    ]
+    all_tools = list(sheets_tools)
+
+    # ERP financial reporting tools — only on full deployment
+    from config.deployment_config import ENABLE_ERP
+    if ENABLE_ERP:
+        from tools.adk_tools.erp_adk_tools import (
+            erp_get_vat_summary,
+            erp_get_receivables_aging,
+            erp_get_financial_summary,
+            erp_get_stock_levels,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        )
+        all_tools.extend([
+            erp_get_vat_summary,
+            erp_get_receivables_aging,
+            erp_get_financial_summary,
+            erp_get_stock_levels,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        ])
 
     # Create agent using factory
     agent = create_adk_agent(
         name="analyst",
         model=model,
-        description="Google Sheets specialist for data analysis, schema-first reading, and efficient data manipulation. Also provides ERP financial reports: VAT, receivables aging, P&L, stock levels.",
+        description=(
+            "Google Sheets specialist for data analysis, schema-first reading, and efficient data manipulation."
+            + (" Also provides ERP financial reports: VAT, receivables aging, P&L, stock levels." if ENABLE_ERP else "")
+        ),
         tools=all_tools,
         load_instruction_from_file=True,  # Will load from agents/analyst/instructions.md
         config={

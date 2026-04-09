@@ -112,11 +112,6 @@ def create_expense_agent(
         add_expense_record,
         query_expenses
     )
-    from tools.adk_tools.erp_adk_tools import (
-        erp_create_vendor_invoice_from_ocr,
-        erp_get_vendor_invoice,
-    )
-
     # Create list of tools (ADK-compatible callables)
     tools = [
         # Vision/OCR tools
@@ -138,12 +133,18 @@ def create_expense_agent(
         create_quote,
         add_expense_record,
         query_expenses,
-        # ERP tools — vendor invoice management
-        erp_create_vendor_invoice_from_ocr,
-        erp_get_vendor_invoice,
         # Drive monitoring — automated invoice processing
         monitor_drive_invoices,
     ]
+
+    # ERP tools — only on full deployment (vendor invoice management)
+    from config.deployment_config import ENABLE_ERP
+    if ENABLE_ERP:
+        from tools.adk_tools.erp_adk_tools import (
+            erp_create_vendor_invoice_from_ocr,
+            erp_get_vendor_invoice,
+        )
+        tools.extend([erp_create_vendor_invoice_from_ocr, erp_get_vendor_invoice])
 
     logger.info(f"Initialized {len(tools)} ADK tools for expense agent")
 

@@ -71,9 +71,11 @@ class OAuthManager:
         self.client_secret = client_secret or os.getenv('GOOGLE_OAUTH_CLIENT_SECRET')
         self.redirect_uri = redirect_uri or os.getenv('GOOGLE_OAUTH_REDIRECT_URI', 'http://localhost:8080/oauth2callback')
 
-        # Token storage
-        self.token_storage_path = token_storage_path or os.path.join(
-            Path.home(), '.google_workspace_adk', 'tokens.json'
+        # Token storage (priority: explicit arg > env var > default)
+        self.token_storage_path = (
+            token_storage_path
+            or os.getenv('OAUTH_TOKEN_STORAGE_PATH')
+            or os.path.join(Path.home(), '.google_workspace_adk', 'tokens.json')
         )
         os.makedirs(os.path.dirname(self.token_storage_path), exist_ok=True)
 
@@ -218,8 +220,10 @@ class OAuthManager:
             expiry_str = token_data.get('expiry')
             if expiry_str:
                 expiry = datetime.fromisoformat(expiry_str)
-                if expiry.tzinfo is None:
-                    expiry = expiry.replace(tzinfo=timezone.utc)
+                # google-auth._helpers.utcnow() returns naive datetime,
+                # so expiry must also be naive for comparison to work
+                if expiry.tzinfo is not None:
+                    expiry = expiry.replace(tzinfo=None)
 
             self._credentials = Credentials(
                 token=token_data.get('token'),

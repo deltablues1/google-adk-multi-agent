@@ -1,0 +1,21 @@
+[Unit]
+Description=Google ADK Web Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/google_claude
+EnvironmentFile=/home/pi/google_claude/.env
+Environment=DEPLOYMENT_PROFILE=rpi-home
+Environment=HITL_INTERFACE=web
+ExecStartPre=/home/pi/google_claude/.venv/bin/python scripts/check_oauth_health.py
+ExecStart=/home/pi/google_claude/.venv/bin/python run_web.py --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=Google ADK Wake Word Listener (Hey Jarvis)
+After=network-online.target adk-web.service
+Requires=adk-web.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/google_claude
+EnvironmentFile=/home/pi/google_claude/.env
+Environment=DEPLOYMENT_PROFILE=rpi-home
+Environment=ENABLE_WAKE_WORD=true
+ExecStart=/home/pi/google_claude/.venv/bin/python scripts/run_wakeword.py
+Restart=always
+RestartSec=10
+# Audio device access
+SupplementaryGroups=audio
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 import importlib
 import logging
 
+from config.deployment_config import ENABLE_ERP, ERP_AGENTS
+
 logger = logging.getLogger(__name__)
 
 
@@ -306,7 +308,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="socrates",
         module="agents.adk_agents.socrates_adk",
         class_name="create_socrates_agent",
-        model="gemini-2.5-pro",  # Tier 2: Deep philosophical reasoning with thinking mode
+        model="gemini-3-flash-preview",  # Tier 3: Flash is sufficient for Socratic dialogue
         description="Socratic dialogue specialist. Uses Socratic method to teach through questions, not answers. Deep philosophical reasoning. Philosophy knowledge base (RAG). Keywords: Sokrat, Socrates, filozofija, philosophy.",
         tools=["philosophy_rag"],
         instruction_file=None,
@@ -398,6 +400,22 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
     # FISKALIZACIJA - Croatian Invoice Fiscalization
     # ========================================================================
 
+    "smart_home": AgentConfig(
+        name="smart_home",
+        module="agents.adk_agents.smart_home_adk",
+        class_name="create_smart_home_agent",
+        model="gemini-3-flash-preview",  # Tier 3: Fast, simple MQTT commands
+        description="Smart home MQTT specialist: controls lights (15), outlets (14), dimmer (1) via ESP32-IO. Keywords: svjetlo, upali, ugasi, uključi, isključi, utičnica, bojler, pametna kuća, smart home, scena, film, noćno.",
+        tools=["mqtt_adk"],
+        instruction_file="agents/smart_home/instructions.md",
+        config={
+            "temperature": 0.3,
+            "max_tokens": 1536,
+        },
+        use_adk=True,
+        adk_factory_func="create_smart_home_agent"
+    ),
+
     "fiskalizacija": AgentConfig(
         name="fiskalizacija",
         module="agents.adk_agents.fiskalizacija_adk",
@@ -430,6 +448,9 @@ def get_agent_config(agent_name: str) -> Optional[AgentConfig]:
     Returns:
         AgentConfig objekt ili None ako agent ne postoji
     """
+    # Block ERP agents on non-ERP deployments
+    if not ENABLE_ERP and agent_name in ERP_AGENTS:
+        return None
     return AGENT_REGISTRY.get(agent_name)
 
 
@@ -476,6 +497,9 @@ def get_worker_agent_names() -> List[str]:
         "fiskalni_validator",
         "fiskalni_executor",
     }
+    # On non-ERP deployments, also exclude ERP-dependent agents
+    if not ENABLE_ERP:
+        excluded_agents |= ERP_AGENTS
     return [name for name in AGENT_REGISTRY.keys() if name not in excluded_agents]
 
 

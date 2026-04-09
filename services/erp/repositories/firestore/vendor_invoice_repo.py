@@ -34,13 +34,22 @@ class FirestoreVendorInvoiceRepository:
         doc["_id"] = snap.id
         return doc
 
-    # Fields needed for list views (excludes heavy ocr_data, items, scan_file_id)
+    # Fields needed for list views (excludes heavy ocr_data, items, source_ubl_xml)
     _LIST_FIELDS = [
-        "company_id", "deleted", "display_id", "vendor_name", "vendor_oib",
-        "vendor_invoice_no", "vendor_id", "issue_date", "due_date",
+        "vendor_invoice_id", "company_id", "deleted", "display_id",
+        "vendor_name", "vendor_oib", "vendor_invoice_no", "vendor_id",
+        "issue_date", "due_date",
         "total_gross", "subtotal_net", "vat_amount", "category",
         "document_status", "payment_status", "amount_paid", "amount_due",
         "notes", "created_at", "updated_at",
+        # Inbound compliance fields (required for overdue-fiscalizations query)
+        "received_date", "fiscalization_deadline", "fiscalization_status",
+        "fisc_reported_at", "fisc_confirmation_ref",
+        # Archive tracking — scan_file_id included so OCR invoices are found in pending-archive
+        "archive_status", "archive_attempts", "last_archive_attempt_at", "archive_error",
+        "drive_original_file_id", "scan_file_id",
+        # Source tracing
+        "source_type", "parsed_from_ubl",
     ]
 
     async def list(
@@ -62,10 +71,16 @@ class FirestoreVendorInvoiceRepository:
             query = query.where(filter=FieldFilter("payment_status", "==", f["payment_status"]))
         if f.get("vendor_id"):
             query = query.where(filter=FieldFilter("vendor_id", "==", f["vendor_id"]))
+        # issue_date range (for list view + supplier-side date filtering)
         if f.get("date_from"):
             query = query.where(filter=FieldFilter("issue_date", ">=", f["date_from"]))
         if f.get("date_to"):
             query = query.where(filter=FieldFilter("issue_date", "<=", f["date_to"]))
+        # received_date range (for SLA/compliance reporting — requires composite index)
+        if f.get("received_date_from"):
+            query = query.where(filter=FieldFilter("received_date", ">=", f["received_date_from"]))
+        if f.get("received_date_to"):
+            query = query.where(filter=FieldFilter("received_date", "<=", f["received_date_to"]))
         query = query.select(self._LIST_FIELDS).order_by("issue_date", direction="DESCENDING").limit(limit)
         docs = []
         async for snap in query.stream():
@@ -90,6 +105,29 @@ class FirestoreVendorInvoiceRepository:
             docs.append(doc)
         return docs
 
+    async def list_pending_archive(self, ctx: ERPRequestContext, limit: int = 200) -> List[dict]:
+        """
+        Return invoices that have a Drive file but are not yet archived
+        (archive_status in not_archived | failed | None).
+        Used by the archive-retry scheduler job.
+        """
+        query = (
+            self._db.collection(_COL)
+            .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+            .where(filter=FieldFilter("deleted", "==", False))
+            .where(filter=FieldFilter("archive_status", "in", ["not_archived", "failed"]))
+            .select(self._LIST_FIELDS)
+            .limit(limit)
+        )
+        docs = []
+        async for snap in query.stream():
+            doc = snap.to_dict() or {}
+            doc["_id"] = snap.id
+            # Only include invoices that actually have a file to archive
+            if doc.get("drive_original_file_id") or doc.get("scan_file_id"):
+                docs.append(doc)
+        return docs
+
     async def create(self, data: dict, ctx: ERPRequestContext) -> dict:
         vendor_invoice_id = str(uuid4())
         data["vendor_invoice_id"] = vendor_invoice_id
@@ -97,6 +135,9 @@ class FirestoreVendorInvoiceRepository:
         data["deleted"] = False
         data.setdefault("document_status", "draft")
         data.setdefault("payment_status", "unpaid")
+        # Always set archive_status so list_pending_archive() Firestore `in` query can find it
+        data.setdefault("archive_status", "not_archived")
+        data.setdefault("archive_attempts", 0)
         data.setdefault("amount_paid", 0.0)
         data.setdefault("amount_due", float(data.get("total_gross", 0)))
         data["created_at"] = datetime.now(timezone.utc).isoformat()

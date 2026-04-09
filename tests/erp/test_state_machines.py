@@ -13,9 +13,12 @@ from datetime import date
 from services.erp.state_machines import (
     OUTGOING_INVOICE_DOC_TRANSITIONS,
     VENDOR_INVOICE_DOC_TRANSITIONS,
+    OUTGOING_B2B_DOC_TRANSITIONS,
     QUOTE_DOC_TRANSITIONS,
     validate_transition,
     compute_payment_status,
+    compute_fiscalization_deadline,
+    is_fiscalization_overdue,
     is_overdue,
 )
 from services.erp.errors import InvalidStateTransitionError
@@ -70,29 +73,41 @@ class TestOutgoingInvoiceTransitions:
 class TestVendorInvoiceTransitions:
 
     @pytest.mark.parametrize("current, target", [
-        ("draft",    "received"),
-        ("draft",    "cancelled"),
-        ("received", "approved"),
-        ("received", "disputed"),
-        ("received", "cancelled"),
-        ("disputed", "received"),
-        ("disputed", "cancelled"),
+        ("draft",         "received"),
+        ("draft",         "cancelled"),
+        ("received",      "approved"),
+        ("received",      "disputed"),
+        ("received",      "cancelled"),
+        ("disputed",      "received"),
+        ("disputed",      "cancelled"),
+        ("approved",      "fisc_reported"),
+        ("approved",      "cancelled"),
+        ("fisc_reported", "accepted"),
+        ("fisc_reported", "rejected"),
     ])
     def test_valid_transitions(self, current, target):
         validate_transition(current, target, VENDOR_INVOICE_DOC_TRANSITIONS)
 
     @pytest.mark.parametrize("current, target", [
-        ("draft",    "approved"),   # must pass through received
-        ("approved", "received"),   # terminal
-        ("approved", "cancelled"),  # terminal
-        ("cancelled","draft"),      # terminal
+        ("draft",         "approved"),      # must pass through received
+        ("approved",      "received"),      # no back-step
+        ("fisc_reported", "approved"),      # no back-step
+        ("accepted",      "fisc_reported"), # terminal
+        ("rejected",      "approved"),      # terminal
+        ("cancelled",     "draft"),         # terminal
     ])
     def test_invalid_transitions_raise(self, current, target):
         with pytest.raises(InvalidStateTransitionError):
             validate_transition(current, target, VENDOR_INVOICE_DOC_TRANSITIONS)
 
-    def test_approved_is_terminal_for_document_status(self):
-        assert VENDOR_INVOICE_DOC_TRANSITIONS["approved"] == []
+    def test_accepted_is_terminal(self):
+        assert VENDOR_INVOICE_DOC_TRANSITIONS["accepted"] == []
+
+    def test_rejected_is_terminal(self):
+        assert VENDOR_INVOICE_DOC_TRANSITIONS["rejected"] == []
+
+    def test_approved_leads_to_fisc_reported_and_cancelled(self):
+        assert set(VENDOR_INVOICE_DOC_TRANSITIONS["approved"]) == {"fisc_reported", "cancelled"}
 
 
 # ---------------------------------------------------------------------------
@@ -209,3 +224,102 @@ class TestQuoteDocTransitions:
     def test_invalid_transitions(self, current, target):
         with pytest.raises(InvalidStateTransitionError):
             validate_transition(current, target, QUOTE_DOC_TRANSITIONS)
+
+
+# ---------------------------------------------------------------------------
+# OUTGOING_B2B_DOC_TRANSITIONS
+# ---------------------------------------------------------------------------
+
+class TestOutgoingB2BTransitions:
+
+    @pytest.mark.parametrize("current, target", [
+        ("draft",       "approved"),
+        ("draft",       "cancelled"),
+        ("approved",    "issued"),
+        ("approved",    "cancelled"),
+        ("issued",      "eracun_sent"),
+        ("issued",      "cancelled"),
+        ("eracun_sent", "delivered"),
+        ("eracun_sent", "rejected"),
+        ("eracun_sent", "cancelled"),
+        ("delivered",   "accepted"),
+        ("delivered",   "storno_issued"),
+        ("accepted",    "storno_issued"),
+        ("rejected",    "issued"),
+    ])
+    def test_valid_transitions(self, current, target):
+        validate_transition(current, target, OUTGOING_B2B_DOC_TRANSITIONS)
+
+    @pytest.mark.parametrize("current, target", [
+        ("draft",       "issued"),          # must go through approved
+        ("approved",    "eracun_sent"),     # must go through issued
+        ("eracun_sent", "approved"),        # no back-step
+        ("accepted",    "delivered"),       # no back-step
+        ("cancelled",   "draft"),           # terminal
+        ("storno_issued", "draft"),         # terminal
+    ])
+    def test_invalid_transitions_raise(self, current, target):
+        with pytest.raises(InvalidStateTransitionError):
+            validate_transition(current, target, OUTGOING_B2B_DOC_TRANSITIONS)
+
+    def test_no_fiscalization_step(self):
+        # B2B has no 'fiscalized' state — that's B2C only
+        assert "fiscalized" not in OUTGOING_B2B_DOC_TRANSITIONS
+
+
+# ---------------------------------------------------------------------------
+# compute_fiscalization_deadline() and is_fiscalization_overdue()
+# ---------------------------------------------------------------------------
+
+class TestFiscalizationDeadline:
+    import datetime as _dt
+
+    def test_five_weekdays_from_monday(self):
+        # Monday 2026-01-05 + 5 business days = Monday 2026-01-12
+        from datetime import date
+        d = compute_fiscalization_deadline(date(2026, 1, 5))
+        assert d == date(2026, 1, 12)
+
+    def test_five_weekdays_crosses_weekend(self):
+        # Wednesday 2026-01-07 + 5 business days = Wednesday 2026-01-14
+        from datetime import date
+        d = compute_fiscalization_deadline(date(2026, 1, 7))
+        assert d == date(2026, 1, 14)
+
+    def test_friday_crosses_two_weekend_days(self):
+        # Friday 2026-01-09 + 5 business days = Friday 2026-01-16
+        from datetime import date
+        d = compute_fiscalization_deadline(date(2026, 1, 9))
+        assert d == date(2026, 1, 16)
+
+    def test_not_overdue_on_deadline_day(self):
+        from datetime import date
+        received = date(2026, 1, 5)  # Monday
+        deadline = compute_fiscalization_deadline(received)  # 2026-01-12
+        assert is_fiscalization_overdue(received, "approved", as_of=deadline) is False
+
+    def test_overdue_day_after_deadline(self):
+        from datetime import date, timedelta
+        received = date(2026, 1, 5)
+        deadline = compute_fiscalization_deadline(received)
+        assert is_fiscalization_overdue(received, "approved", as_of=deadline + timedelta(days=1)) is True
+
+    def test_not_overdue_if_already_fisc_reported(self):
+        from datetime import date, timedelta
+        received = date(2020, 1, 1)
+        assert is_fiscalization_overdue(received, "fisc_reported") is False
+
+    def test_not_overdue_if_accepted(self):
+        from datetime import date
+        assert is_fiscalization_overdue(date(2020, 1, 1), "accepted") is False
+
+    def test_not_overdue_if_rejected(self):
+        from datetime import date
+        assert is_fiscalization_overdue(date(2020, 1, 1), "rejected") is False
+
+    def test_not_overdue_if_cancelled(self):
+        from datetime import date
+        assert is_fiscalization_overdue(date(2020, 1, 1), "cancelled") is False
+
+    def test_no_received_date_never_overdue(self):
+        assert is_fiscalization_overdue(None, "approved") is False

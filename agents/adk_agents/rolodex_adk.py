@@ -50,8 +50,6 @@ def create_rolodex_agent(
         contacts_delete_contact
     )
 
-    from tools.adk_tools.erp_adk_tools import erp_search_customers, erp_get_customer_balance
-
     # Create list of tools
     tools = [
         contacts_search_people,
@@ -60,10 +58,13 @@ def create_rolodex_agent(
         contacts_create_contact,
         contacts_update_contact,
         contacts_delete_contact,
-        # ERP customer lookup (read-only)
-        erp_search_customers,
-        erp_get_customer_balance,
     ]
+
+    # ERP customer lookup — only on full deployment
+    from config.deployment_config import ENABLE_ERP
+    if ENABLE_ERP:
+        from tools.adk_tools.erp_adk_tools import erp_search_customers, erp_get_customer_balance
+        tools.extend([erp_search_customers, erp_get_customer_balance])
 
     # Create agent using factory
     agent = create_adk_agent(

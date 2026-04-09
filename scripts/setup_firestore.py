@@ -711,34 +711,73 @@ def setup_erp_vendor_invoices(db, dry_run=False):
     """Vendor invoices — ulazni računi od dobavljača."""
     print("\n[17/20] vendor_invoices (ERP)")
     schema_doc = {
-        "_schema_version": "1.0",
-        "_description": "Incoming invoices (URA) from vendors. Separate from outgoing fiscal invoices.",
+        "_schema_version": "2.0",
+        "_description": (
+            "Incoming invoices (URA) from vendors. Separate from outgoing fiscal invoices. "
+            "Extended for eRačun compliance (NN 89/2025): inbound UBL 2.1 support, "
+            "fiscalization lifecycle, buyer acceptance tracking, Drive archive references."
+        ),
         "_fields": {
+            # Core identity
             "vendor_invoice_id": "string - UUID",
             "display_id": "string - URA-2026-000001",
             "company_id": "string",
+            # Vendor
             "vendor_id": "string - FK → customers (party_type=supplier|both)",
             "vendor_name": "string - denormalized",
             "vendor_oib": "string",
+            # Dates
             "issue_date": "date - YYYY-MM-DD",
             "due_date": "date - YYYY-MM-DD",
-            "received_date": "date - when physically received",
+            "received_date": "date - when physically received (triggers 5-day SLA)",
+            "fiscalization_deadline": "date - received_date + 5 business days per NN 89/2025",
+            # Financials
             "items": "array[{description, quantity, unit_price, vat_rate, line_total}]",
             "subtotal_net": "decimal",
             "vat_amount": "decimal",
             "total_gross": "decimal",
             "currency": "string - EUR",
-            "document_status": "string - draft|received|approved|disputed|cancelled",
+            "vat_deductible": "boolean - can we reclaim input VAT?",
+            # Document lifecycle (state machine enforced)
+            "document_status": (
+                "string - draft|received|approved|disputed|cancelled|"
+                "fisc_reported|accepted|rejected"
+            ),
             "payment_status": "string - unpaid|partial|paid (denormalized)",
             "amount_paid": "decimal - running total of payments received",
             "amount_due": "decimal - total_gross - amount_paid",
-            "category": "string - materials|services|utilities|equipment|other",
-            "vat_deductible": "boolean - can we reclaim input VAT?",
-            "scan_file_id": "string - FK → media_service file_id",
-            "ocr_data": "map - raw OCR output if scanned",
-            "notes": "string",
+            # Fiscalization compliance
+            "fiscalization_status": "string - pending|fiscalized|not_required",
+            "fisc_reported_at": "timestamp - when reported to Porezna Uprava",
+            "fisc_reported_by": "string - user_id",
+            "fisc_confirmation_ref": "string - CIS confirmation reference number",
+            # Buyer acceptance (eRačun)
+            "acceptance_status": "string - pending|accepted|rejected",
+            "accepted_at": "timestamp",
+            "accepted_by": "string - user_id",
+            "rejected_at": "timestamp",
+            "rejected_by": "string - user_id",
+            "rejection_reason": "string - mandatory when rejected",
+            # Approval
             "approved_by": "string - user_id",
             "approved_at": "timestamp",
+            # Source tracing
+            "source_type": "string - ubl_xml|ocr_scan|manual",
+            "parsed_from_ubl": "boolean - True if created from UBL 2.1 inbound parser",
+            "source_ubl_xml": "string - original UBL XML content (stored on UBL-sourced invoices)",
+            "scan_file_id": "string - Drive file_id of scanned PDF/image",
+            "ocr_data": "map - raw OCR output if scanned",
+            # Drive archive references
+            "drive_original_file_id": "string - Drive file_id of the original inbound document",
+            "drive_folder_id": "string - Drive folder_id where document is archived",
+            "archive_status": "string - not_archived|pending|archived",
+            "archived_at": "timestamp",
+            # Classification
+            "category": "string - materials|services|utilities|equipment|other",
+            "vendor_invoice_no": "string - supplier's invoice number",
+            "notes": "string",
+            "_dedup_hash": "string - sha256(company_id:vendor_oib:invoice_no:date:amount)",
+            # Audit
             "created_at": "timestamp",
             "updated_at": "timestamp",
             "created_by": "string",
@@ -748,6 +787,8 @@ def setup_erp_vendor_invoices(db, dry_run=False):
             "idempotency_key": "string",
         },
         "_retention": "11 years",
+        "_state_machine": "VENDOR_INVOICE_DOC_TRANSITIONS (services/erp/state_machines.py)",
+        "_sla": "5 business days from received_date for fiscalization (NN 89/2025)",
     }
     if not dry_run:
         db.collection("vendor_invoices").document("_schema").set(schema_doc)

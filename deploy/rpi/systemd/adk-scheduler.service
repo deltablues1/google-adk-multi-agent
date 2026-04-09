@@ -1,0 +1,20 @@
+[Unit]
+Description=Google ADK Scheduler Daemon
+After=network-online.target adk-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/google_claude
+EnvironmentFile=/home/pi/google_claude/.env
+Environment=DEPLOYMENT_PROFILE=rpi-home
+Environment=HITL_INTERFACE=scheduler
+ExecStart=/home/pi/google_claude/.venv/bin/python run_scheduler.py --no-cli
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

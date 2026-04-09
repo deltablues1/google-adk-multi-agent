@@ -42,7 +42,7 @@ class AlertManager:
             "message": message,
             "severity": severity.value,
             "metadata": metadata or {},
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
         logger.log(
@@ -99,4 +99,4 @@ def alert(title: str, message: str, severity: AlertSeverity = AlertSeverity.INFO
     _alert_manager.send_alert(title, message, severity, metadata)
 
 
-from datetime import datetime
+from datetime import datetime, timezone

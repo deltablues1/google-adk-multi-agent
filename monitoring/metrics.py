@@ -12,7 +12,7 @@ import os
 from typing import Dict, Any, Optional
 from functools import wraps
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Import Google Cloud Logging
 try:
@@ -49,7 +49,7 @@ class MetricsCollector:
             try:
                 # Add timestamp and event type
                 payload["event_type"] = event_type
-                payload["timestamp"] = datetime.utcnow().isoformat()
+                payload["timestamp"] = datetime.now(timezone.utc).isoformat()
                 
                 # Log as structured JSON
                 self.cloud_logger.log_struct(payload)
@@ -120,7 +120,7 @@ class MetricsCollector:
                 for k, v in self.timings.items()
             },
             "errors": dict(self.errors),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
     def get_summary(self) -> Dict[str, Any]:
@@ -208,7 +208,7 @@ class AgentMetrics:
             _metrics_collector.cloud_logger.log_struct({
                 "event_type": "agent_request_success",
                 "agent_name": agent_name,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }) if _metrics_collector.cloud_logger else None
             
             _metrics_collector.increment(
@@ -219,7 +219,7 @@ class AgentMetrics:
             _metrics_collector.cloud_logger.log_struct({
                 "event_type": "agent_request_error",
                 "agent_name": agent_name,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }) if _metrics_collector.cloud_logger else None
             
             _metrics_collector.increment(
@@ -235,7 +235,7 @@ class AgentMetrics:
                 "event_type": "tool_execution_success",
                 "agent_name": agent_name,
                 "tool_name": tool_name,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }) if _metrics_collector.cloud_logger else None
 
         _metrics_collector.increment(

@@ -81,13 +81,13 @@ def generate_visual_asset(
 ) -> Dict[str, Any]:
     """
     Generates an image or video using Vertex AI.
-    
+
     Args:
         credentials: OAuth credentials (passed automatically)
         prompt: Description of the asset to generate
         asset_type: 'IMAGE' or 'VIDEO'
         aspect_ratio: Aspect ratio (e.g., '1:1', '16:9')
-        
+
     Returns:
         Dictionary with status and asset URI
     """
@@ -98,9 +98,18 @@ def generate_visual_asset(
         vertexai.init(project=PROJECT_ID, location=LOCATION)
         
         timestamp = int(time.time())
-        
+
+        # Cost tracking
+        try:
+            from web.app import _track_imagen, _track_veo
+            _cost_hooks = {"imagen": _track_imagen, "veo": _track_veo}
+        except Exception:
+            _cost_hooks = {}
+
         if asset_type.upper() == 'IMAGE':
             logger.info(f"Generating image with prompt: {prompt}")
+            if "imagen" in _cost_hooks:
+                _cost_hooks["imagen"]()
             
             # Use Imagen 3
             model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
@@ -189,6 +198,8 @@ def generate_visual_asset(
             for model_id in VEO_MODELS:
                 try:
                     logger.info(f"Generating video with {model_id}: {prompt[:80]}...")
+                    if "veo" in _cost_hooks:
+                        _cost_hooks["veo"]()
 
                     operation = veo_client.models.generate_videos(
                         model=model_id,
