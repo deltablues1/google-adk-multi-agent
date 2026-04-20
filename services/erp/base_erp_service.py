@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 ROLE_PERMISSIONS: dict[str, set] = {
     "owner":       {"*"},
     "accountant":  {
-        "invoice:read", "invoice:create",
+        "invoice:read", "invoice:create", "invoice:fiscalize",
         "payment:record",
         "vendor_invoice:read", "vendor_invoice:approve",
         "customer:read", "customer:create", "customer:update",

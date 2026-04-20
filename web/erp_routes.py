@@ -358,6 +358,43 @@ async def erp_receivables(as_of_date: str = "", ctx: ERPRequestContext = Depends
     return await get_invoice_service().get_open_receivables(ctx, as_of_date or None)
 
 
+# ── B2C Fiscalization (Sprint C1.1) ──────────────────────────────────────────
+
+@router.post("/invoices/b2c/{invoice_id}/fiscalize")
+async def erp_fiscalize_b2c(
+    invoice_id: str,
+    payment_method: str = "T",
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Trigger fiscalization for a B2C invoice (fiscalization_status == pending).
+
+    The API call is the user's explicit confirmation — HITL is skipped.
+    Idempotent: returns cached JIR/ZKI if already fiscalized.
+
+    Query param:
+        payment_method: G=gotovina, K=kartica, T=transakcijski (default T)
+    """
+    from services.erp.fiscalization_bridge_service import fiscalize_b2c_invoice
+    return await fiscalize_b2c_invoice(invoice_id, ctx, payment_method=payment_method)
+
+
+@router.get("/invoices/b2c/{invoice_id}/fiscalization-status")
+async def erp_b2c_fiscalization_status(
+    invoice_id: str,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Return fiscalization tracking fields for a B2C invoice (non-blocking read).
+
+    Returns {} if the invoice does not exist.
+    """
+    from services.erp.base_erp_service import check_permission
+    check_permission(ctx, "invoice:read")
+    from services.erp.fiscalization_bridge_service import get_fiscalization_status
+    return await get_fiscalization_status(invoice_id)
+
+
 # ── Vendor Invoices (URA) ────────────────────────────────────────────────────
 
 @router.get("/vendor-invoices")

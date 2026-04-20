@@ -366,6 +366,21 @@ class QuoteService(BaseERPService):
             "created_at": now,
             "created_by": ctx.user_id,
             "deleted": False,
+            # Fiscalization tracking (Sprint C1 bridge) — populated after CIS call
+            "fiscalization_status":  "pending" if invoice_type == "b2c" else "not_required",
+            "fiscalized_at":         None,
+            "jir":                   None,
+            "zki":                   None,
+            "verification_url":      None,
+            "qr_code_base64":        None,
+            "fiscalization_error":   None,
+            # Fiscal invoice number fields (Sprint C1.2)
+            # fiscal_invoice_number is the FINA-required XXX/PP/NU format.
+            # It is distinct from display_id (RA-...) which is the internal ERP number.
+            # Populated at fiscalization time (POST /invoices/b2c/{id}/fiscalize).
+            "fiscal_invoice_number": None,
+            "business_unit":         None,  # vu_code from company_settings
+            "device_number":         None,  # nu_code from company_settings
         }
 
         batch = db.batch()

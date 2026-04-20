@@ -240,3 +240,148 @@ class TestRolePermissionsAsync:
         ctx_viewer = make_ctx(cid, "viewer")
         with pytest.raises(InsufficientPermissionError):
             await get_company_service().upsert({"oib": "47034854402"}, ctx_viewer)
+
+# ── C1: Fiscalization bridge unit tests ──────────────────────────────────────
+
+@pytest.mark.unit
+class TestFiscalizationBridge:
+
+    @pytest.mark.asyncio
+    async def test_write_back_b2c_success(self):
+        from services.erp.fiscalization_bridge_service import write_back_b2c
+
+        mock_doc_ref = AsyncMock()
+        mock_snap = MagicMock()
+        mock_snap.exists = True
+        mock_snap.to_dict.return_value = {"company_id": "co", "display_id": "RA-001"}
+        mock_doc_ref.get = AsyncMock(return_value=mock_snap)
+
+        mock_col = MagicMock()
+        mock_col.document.return_value = mock_doc_ref
+        mock_db = MagicMock()
+        mock_db.collection.return_value = mock_col
+
+        with patch("services.erp.fiscalization_bridge_service._db", return_value=mock_db), \
+             patch("services.erp.base_erp_service.write_audit", new_callable=AsyncMock):
+            await write_back_b2c(
+                erp_invoice_id="test-inv-id",
+                fiskalizacija_result={
+                    "success": True,
+                    "jir": "aabbccdd-1234-5678-abcd-ef1234567890",
+                    "zki": "ABCDEF1234567890",
+                    "verification_url": "https://porezna.gov.hr/rn?jir=aabb",
+                    "qr_code_base64": "base64data",
+                },
+            )
+
+        update_call = mock_doc_ref.update.call_args[0][0]
+        assert update_call["fiscalization_status"] == "fiscalized"
+        assert update_call["jir"] == "aabbccdd-1234-5678-abcd-ef1234567890"
+        assert update_call["fiscalization_error"] is None
+
+    @pytest.mark.asyncio
+    async def test_write_back_failure_routes_to_failed_status(self):
+        from services.erp.fiscalization_bridge_service import write_back_b2c
+
+        mock_doc_ref = AsyncMock()
+        mock_col = MagicMock()
+        mock_col.document.return_value = mock_doc_ref
+        mock_db = MagicMock()
+        mock_db.collection.return_value = mock_col
+
+        with patch("services.erp.fiscalization_bridge_service._db", return_value=mock_db):
+            await write_back_b2c(
+                erp_invoice_id="inv-fail",
+                fiskalizacija_result={"success": False, "jir": None, "error_message": "FINA timeout"},
+            )
+
+        update_call = mock_doc_ref.update.call_args[0][0]
+        assert update_call["fiscalization_status"] == "fiscalization_failed"
+        assert "FINA timeout" in update_call["fiscalization_error"]
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_empty_invoice_id(self):
+        from services.erp.fiscalization_bridge_service import write_back_b2c
+        with patch("services.erp.fiscalization_bridge_service._db") as mock_db:
+            await write_back_b2c("", {"success": True, "jir": "x", "zki": "y"})
+            mock_db.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_firestore_error_does_not_propagate(self):
+        from services.erp.fiscalization_bridge_service import write_back_b2c
+
+        mock_doc_ref = AsyncMock()
+        mock_doc_ref.update = AsyncMock(side_effect=Exception("Firestore unavailable"))
+        mock_col = MagicMock()
+        mock_col.document.return_value = mock_doc_ref
+        mock_db = MagicMock()
+        mock_db.collection.return_value = mock_col
+
+        with patch("services.erp.fiscalization_bridge_service._db", return_value=mock_db):
+            await write_back_b2c(
+                erp_invoice_id="inv-999",
+                fiskalizacija_result={"success": True, "jir": "jir-val", "zki": "zki-val"},
+            )
+
+
+# ── C1: B2C fiscalization fields at create time ──────────────────────────────
+
+class TestB2CFiscalizationFieldsOnCreate:
+
+    @pytest.mark.asyncio
+    async def test_b2c_invoice_has_pending_fiscalization_status(self, cid):
+        from services.erp.quote_service import QuoteService
+        from services.erp.customer_service import CustomerService
+        from services.erp.base_erp_service import get_firestore_db
+
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+
+        cust = await CustomerService().create_customer(
+            {"name": "Fisc Test", "oib": "33333333330", "party_type": "customer"}, ctx
+        )
+        q = await svc.create_quote({
+            "customer_id": cust["_id"],
+            "customer_name": "Fisc Test", "customer_oib": "33333333330",
+            "valid_until": str(date.today()),
+            "items": [{"name": "X", "quantity": 1, "unit_price": 100.0, "vat_rate": 25}],
+        }, ctx)
+        await svc.mark_sent(q["quote_id"], ctx)
+        await svc.accept_quote(q["quote_id"], ctx)
+        result = await svc.convert_to_invoice(q["quote_id"], "b2c", ctx)
+
+        snap = await get_firestore_db().collection("invoices_b2c").document(result["invoice_id"]).get()
+        doc = snap.to_dict() or {}
+
+        assert doc.get("fiscalization_status") == "pending"
+        assert doc.get("jir") is None
+        assert doc.get("zki") is None
+        assert doc.get("fiscalized_at") is None
+
+    @pytest.mark.asyncio
+    async def test_non_b2c_invoice_has_not_required_status(self, cid):
+        from services.erp.quote_service import QuoteService
+        from services.erp.customer_service import CustomerService
+        from services.erp.base_erp_service import get_firestore_db
+
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+
+        cust = await CustomerService().create_customer(
+            {"name": "EU Test", "oib": "44444444440", "party_type": "customer"}, ctx
+        )
+        q = await svc.create_quote({
+            "customer_id": cust["_id"],
+            "customer_name": "EU Test", "customer_oib": "44444444440",
+            "valid_until": str(date.today()),
+            "items": [{"name": "Y", "quantity": 1, "unit_price": 200.0, "vat_rate": 0}],
+        }, ctx)
+        await svc.mark_sent(q["quote_id"], ctx)
+        await svc.accept_quote(q["quote_id"], ctx)
+        result = await svc.convert_to_invoice(q["quote_id"], "eu", ctx)
+
+        snap = await get_firestore_db().collection("invoices_eu").document(result["invoice_id"]).get()
+        doc = snap.to_dict() or {}
+        assert doc.get("fiscalization_status") == "not_required"
+
+

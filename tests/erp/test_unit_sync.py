@@ -68,3 +68,13 @@ def test_role_employee_lacks_company_write():
     from services.erp.base_erp_service import ROLE_PERMISSIONS
     assert "company:write" not in ROLE_PERMISSIONS["employee"]
 
+
+def test_role_accountant_has_invoice_fiscalize():
+    from services.erp.base_erp_service import ROLE_PERMISSIONS
+    assert "invoice:fiscalize" in ROLE_PERMISSIONS["accountant"]
+
+
+def test_role_viewer_lacks_invoice_fiscalize():
+    from services.erp.base_erp_service import ROLE_PERMISSIONS
+    assert "invoice:fiscalize" not in ROLE_PERMISSIONS["viewer"]
+
