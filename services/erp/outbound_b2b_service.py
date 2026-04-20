@@ -118,6 +118,55 @@ class OutboundB2BService(BaseERPService):
     # Create
     # ------------------------------------------------------------------
 
+    async def _resolve_seller(
+        self,
+        data: dict,
+        ctx: ERPRequestContext,
+    ) -> dict:
+        """
+        Resolve seller identity with three-level precedence (Sprint C0.2):
+
+          1. Explicit override in `data` (non-empty string wins)
+          2. Firestore `company_settings` for ctx.company_id
+          3. Empty string (never raises — downstream validation may catch it)
+
+        Returns a dict with keys: seller_name, seller_oib, seller_iban,
+        seller_address, seller_city, seller_country.
+        """
+        # Try company_settings when ANY seller field is missing/empty
+        cs: dict = {}
+        needs_cs = any(
+            not data.get(k)
+            for k in ("seller_name", "seller_oib", "seller_iban",
+                       "seller_address", "seller_city")
+        )
+        if needs_cs:
+            try:
+                from services.erp.company_service import get_company_settings
+                cs = await get_company_settings(ctx.company_id) or {}
+            except Exception as exc:
+                logger.warning(
+                    f"[OutboundB2B] company_settings lookup failed for "
+                    f"{ctx.company_id}: {exc}. Seller fields may be empty."
+                )
+
+        def _pick(field: str, cs_field: str | None = None) -> str:
+            """data override > company_settings > empty string."""
+            v = (data.get(field) or "").strip()
+            if v:
+                return v
+            cs_key = cs_field or field.replace("seller_", "")
+            return (cs.get(cs_key) or "").strip()
+
+        return {
+            "seller_name":    _pick("seller_name",    "name"),
+            "seller_oib":     _pick("seller_oib",     "oib"),
+            "seller_iban":    _pick("seller_iban",     "iban"),
+            "seller_address": _pick("seller_address",  "address"),
+            "seller_city":    _pick("seller_city",     "city"),
+            "seller_country": _pick("seller_country",  "country") or "HR",
+        }
+
     async def create(self, data: dict, ctx: ERPRequestContext) -> dict:
         check_permission(ctx, "outbound:create")
 
@@ -142,6 +191,9 @@ class OutboundB2BService(BaseERPService):
         if data.get("total_gross") and not data.get("items"):
             total_gross = Decimal(str(data["total_gross"]))
 
+        # Resolve seller identity — override > company_settings > ""
+        seller = await self._resolve_seller(data, ctx)
+
         invoice_id  = str(uuid4())
         display_id  = await generate_display_id(ctx.company_id, _DISPLAY_PREFIX, self._get_db())
         now_iso     = datetime.now(timezone.utc).isoformat()
@@ -158,13 +210,13 @@ class OutboundB2BService(BaseERPService):
             "deleted":          False,
             "document_status":  "draft",
 
-            # Parties
-            "seller_name":      data.get("seller_name", ""),
-            "seller_oib":       data.get("seller_oib", ""),
-            "seller_iban":      data.get("seller_iban", ""),
-            "seller_address":   data.get("seller_address", ""),
-            "seller_city":      data.get("seller_city", ""),
-            "seller_country":   data.get("seller_country", "HR"),
+            # Parties (Sprint C0.2: seller resolved from company_settings when not given)
+            "seller_name":      seller["seller_name"],
+            "seller_oib":       seller["seller_oib"],
+            "seller_iban":      seller["seller_iban"],
+            "seller_address":   seller["seller_address"],
+            "seller_city":      seller["seller_city"],
+            "seller_country":   seller["seller_country"],
             "customer_id":      data.get("customer_id", ""),
             "customer_name":    data["customer_name"],
             "customer_oib":     data["customer_oib"],

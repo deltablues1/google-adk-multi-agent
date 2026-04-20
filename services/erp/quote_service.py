@@ -312,12 +312,38 @@ class QuoteService(BaseERPService):
         }
         collection = INVOICE_TYPE_TO_COLLECTION[invoice_type]
 
+        # Resolve seller identity from company_settings (Sprint C0.2)
+        _seller: dict = {}
+        try:
+            from services.erp.company_service import get_company_settings as _get_cs
+            _cs = await _get_cs(ctx.company_id) or {}
+            _seller = {
+                "seller_name":    _cs.get("name", ""),
+                "seller_oib":     _cs.get("oib", ""),
+                "seller_iban":    _cs.get("iban", ""),
+                "seller_address": _cs.get("address", ""),
+                "seller_city":    _cs.get("city", ""),
+                "seller_country": _cs.get("country", "HR"),
+            }
+        except Exception as _cs_exc:
+            logger.warning(
+                f"[QuoteService] company_settings lookup failed for "
+                f"{ctx.company_id}: {_cs_exc}. Seller fields will be empty."
+            )
+
         now = datetime.now(timezone.utc).isoformat()
         invoice_doc = {
             "invoice_id": invoice_id,
             "display_id": invoice_display_id,
             "invoice_number": invoice_display_id,
             "company_id": ctx.company_id,
+            # Seller identity (Sprint C0.2: from company_settings when available)
+            "seller_name":    _seller.get("seller_name", ""),
+            "seller_oib":     _seller.get("seller_oib", ""),
+            "seller_iban":    _seller.get("seller_iban", ""),
+            "seller_address": _seller.get("seller_address", ""),
+            "seller_city":    _seller.get("seller_city", ""),
+            "seller_country": _seller.get("seller_country", "HR"),
             "customer_id": doc.get("customer_id", ""),
             "customer_name": doc.get("customer_name", ""),
             "customer_oib": doc.get("customer_oib", ""),
@@ -517,6 +543,9 @@ class QuoteService(BaseERPService):
                 datetime.now(timezone.utc).date() + timedelta(days=payment_terms)
             ).isoformat()
 
+        # Seller identity: overrides > company_settings (resolved inside create())
+        # We pass override keys into payload; _resolve_seller() in OutboundB2BService
+        # will fill in any blanks from company_settings automatically.
         payload = {
             "customer_id":       doc.get("customer_id", ""),
             "customer_name":     doc["customer_name"],
@@ -538,6 +567,9 @@ class QuoteService(BaseERPService):
                                  or f"Kreirano iz ponude {doc.get('display_id', quote_id)}.",
             "source_quote_id":   quote_id,
         }
+        # Sprint C0.2: seller fields intentionally left empty/overridden above.
+        # OutboundB2BService.create() will call _resolve_seller() which fills
+        # missing seller fields from company_settings automatically.
 
         from .outbound_b2b_service import get_outbound_b2b_service
         invoice = await get_outbound_b2b_service().create(payload, ctx)
