@@ -203,7 +203,7 @@ GOOGLE_OAUTH_CLIENT_CREDENTIALS=oauth_client_credentials.json
 
 # FINA Fiskalizacija (DEMO)
 FINA_CERT_PATH=47034854402.F1.1.p12
-FINA_CERT_PASSWORD=NinuPiL1903
+FINA_CERT_PASSWORD=<your FINA .p12 password — never commit the real value>
 FINA_SANDBOX=true
 
 # Human-in-the-Loop Confirmation
@@ -713,7 +713,7 @@ Faza 4: ░░░░░░░░░░░░░░░░░░░░   0% ⏸️
 
 **DEMO Certifikat (Trenutno):**
 - File: `47034854402.F1.1.p12`
-- Password: `NinuPiL1903` (u .env)
+- Password: čita se iz `FINA_CERT_PASSWORD` u `.env` — vrijednost nije dokumentirana
 - URL: `https://cistest.apis-it.hr:8449/FiskalizacijaService`
 - Trajanje: Do kraja Web MVP-a
 

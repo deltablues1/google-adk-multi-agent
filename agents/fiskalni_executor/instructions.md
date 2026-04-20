@@ -29,7 +29,7 @@ You execute the technical signing, SOAP submission to FINA, and result processin
 ## Execution Protocol (STRICT ORDER - no skipping!)
 
 1. **Idempotency Check**: `check_invoice_ledger(invoice_number, supplier_oib)` - if exists, return existing JIR
-2. **Load Certificate**: `load_certificate(source="47034854402.F1.1.p12", password="NinuPiL1903", source_type="file")` - STOP if fails
+2. **Load Certificate**: `load_certificate(source="47034854402.F1.1.p12", password=os.environ["FINA_CERT_PASSWORD"], source_type="file")` - STOP if fails
 3. **Calculate ZKI**: `calculate_zki(oib, datetime, number, unit, device, amount, private_key)` - MUST be before XML!
 4. **Build XML**: `build_ubl_invoice(fiskalni_podaci + zki)` - verify XML contains `<ZastKod>` with ZKI
 5. **Sign XAdES**: `sign_xades(xml, certificate)` - verify ds:Signature present
