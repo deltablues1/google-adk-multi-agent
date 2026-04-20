@@ -37,6 +37,8 @@ ROLE_PERMISSIONS: dict[str, set] = {
         # Outbound B2B eRačun
         "outbound:read", "outbound:create", "outbound:approve",
         "outbound:issue", "outbound:send", "outbound:archive",
+        # Company settings — accountant can read and configure
+        "company:read", "company:write",
     },
     "employee":    {
         "invoice:read",

@@ -170,6 +170,31 @@ async def erp_me(ctx: ERPRequestContext = Depends(get_erp_ctx)):
     return {"user_id": ctx.user_id, "company_id": ctx.company_id, "role": ctx.role}
 
 
+# ── Company Settings (Sprint C0) ──────────────────────────────────────────────
+
+@router.get("/company/settings")
+async def erp_get_company_settings(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Return this company's ERP settings (OIB, name, IBAN, fiscalization codes)."""
+    from services.erp.company_service import get_company_service
+    return await get_company_service().get(ctx)
+
+
+@router.put("/company/settings")
+async def erp_upsert_company_settings(req: Request, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Create or fully replace company settings."""
+    from services.erp.company_service import get_company_service
+    data = await req.json()
+    return await get_company_service().upsert(data, ctx)
+
+
+@router.patch("/company/settings")
+async def erp_patch_company_settings(req: Request, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Partial update — only provided keys are written."""
+    from services.erp.company_service import get_company_service
+    data = await req.json()
+    return await get_company_service().patch(data, ctx)
+
+
 # ── Customers ────────────────────────────────────────────────────────────────
 
 @router.get("/customers")
