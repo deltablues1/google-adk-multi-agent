@@ -7,7 +7,16 @@ Supported adapters
 ------------------
   manual   — no transport; records intent only (buyer picks up manually or via portal)
   email    — sends UBL XML as attachment via Gmail API (OAuth2 credentials)
-  peppol   — Peppol AS4 stub (records intent; real AP integration deferred to Faza 2F)
+  peppol   — Peppol AS4 via AP REST endpoint (configured by PEPPOL_AP_ENDPOINT env var)
+             Falls back to stub mode when PEPPOL_AP_ENDPOINT is not set.
+
+Peppol AP configuration (environment variables)
+------------------------------------------------
+  PEPPOL_AP_ENDPOINT   — required for real send; REST URL of the AP
+                         e.g. https://ap.fina.hr/api/v1/send
+  PEPPOL_AP_API_KEY    — Bearer token / API key issued by the AP
+  PEPPOL_AP_SENDER_ID  — Your Peppol sender ID (scheme:identifier)
+                         Falls back to company_settings.peppol_participant_id
 
 Every adapter returns a uniform result dict:
 
@@ -182,21 +191,43 @@ async def _dispatch_email(invoice_doc: dict, to_address: str, ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Peppol adapter (stub — Faza 2F will integrate a real AP)
+# Peppol adapter (Sprint C2.1 — real AP via REST; stub fallback when unconfigured)
 # ---------------------------------------------------------------------------
+
+#: Peppol BIS Billing 3.0 document type identifier (UBL Invoice)
+_PEPPOL_DOC_TYPE = (
+    "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+    "::Invoice"
+    "##urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0"
+    "::2.1"
+)
+#: Peppol BIS Billing 3.0 process identifier
+_PEPPOL_PROCESS = "urn:fdc:peppol.eu:2017:poacc:billing:3.0"
+
 
 async def _dispatch_peppol(invoice_doc: dict, participant_id: str, ref: str) -> dict:
     """
-    Peppol AS4 delivery stub.
+    Peppol AS4 delivery via AP REST endpoint.
 
-    In Faza 2B this records the send intent and returns a synthetic submission ID.
-    Real integration with a Croatian AP (e.g. FINA eRačun) is planned for Faza 2F.
+    When PEPPOL_AP_ENDPOINT is set, POSTs the UBL XML to the AP and returns
+    the real external_submission_id from the AP response.
 
-    When a real AP is integrated, this function will:
-      1. POST the UBL XML to the AP REST/AS4 endpoint
-      2. Receive a submission_id / correlation_id
-      3. Return it so it can be stored as external_submission_id
+    When PEPPOL_AP_ENDPOINT is not set, runs in stub mode and returns a
+    synthetic submission ID with ``_stub: True`` — safe for development.
+
+    AP is called with:
+      POST <PEPPOL_AP_ENDPOINT>
+      Content-Type: application/xml
+      Authorization: Bearer <PEPPOL_AP_API_KEY>
+      ?sender=<PEPPOL_AP_SENDER_ID>&receiver=<participant_id>
+        &documentType=<BIS3>&processType=<BIS3-PROC>
+
+    Expected AP response (any of):
+      {"submission_id": "..."} | {"submissionId": "..."} | {"id": "..."}
+    or Location header.
     """
+    import os
+
     display_id = invoice_doc.get("display_id", invoice_doc.get("invoice_id", "?"))
 
     if not participant_id:
@@ -210,20 +241,105 @@ async def _dispatch_peppol(invoice_doc: dict, participant_id: str, ref: str) -> 
     if not ubl_xml:
         return {"ok": False, "error": "UBL XML nije generiran.", "method": "peppol"}
 
-    # Synthetic submission ID — replace with real AP response in Faza 2F
-    import hashlib
-    synthetic_id = "PEPPOL-STUB-" + hashlib.sha1(
-        f"{display_id}:{participant_id}:{datetime.now(timezone.utc).isoformat()}".encode()
-    ).hexdigest()[:12].upper()
+    ap_endpoint = os.environ.get("PEPPOL_AP_ENDPOINT", "").strip()
 
-    logger.info(
-        f"[Dispatch/peppol] STUB — Invoice {display_id} queued for Peppol delivery "
-        f"to {participant_id!r}. submission_id={synthetic_id}"
-    )
-    return {
-        "ok": True,
-        "external_submission_id": synthetic_id,
-        "sent_at": datetime.now(timezone.utc).isoformat(),
-        "method": "peppol",
-        "_stub": True,   # Callers can check this flag to know it's not a real dispatch
+    # ── Stub mode ────────────────────────────────────────────────────────────
+    if not ap_endpoint:
+        import hashlib
+        synthetic_id = "PEPPOL-STUB-" + hashlib.sha1(
+            f"{display_id}:{participant_id}:{datetime.now(timezone.utc).isoformat()}".encode()
+        ).hexdigest()[:12].upper()
+        logger.warning(
+            f"[Dispatch/peppol] PEPPOL_AP_ENDPOINT not configured — stub mode. "
+            f"Invoice {display_id} NOT actually sent. submission_id={synthetic_id}"
+        )
+        return {
+            "ok": True,
+            "external_submission_id": synthetic_id,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "method": "peppol",
+            "_stub": True,
+        }
+
+    # ── Real AP call ─────────────────────────────────────────────────────────
+    ap_api_key  = os.environ.get("PEPPOL_AP_API_KEY", "").strip()
+    sender_id   = os.environ.get("PEPPOL_AP_SENDER_ID", "").strip()
+
+    # Fallback: derive sender from company_settings if env var not set
+    if not sender_id:
+        company_id = invoice_doc.get("company_id")
+        if company_id:
+            try:
+                from services.erp.company_service import get_company_settings
+                cs = await get_company_settings(company_id) or {}
+                peppol_id = cs.get("peppol_participant_id", "")
+                scheme    = cs.get("peppol_scheme", "0190")
+                if peppol_id:
+                    sender_id = peppol_id  # already scheme:id if stored that way
+                elif cs.get("oib"):
+                    sender_id = f"{scheme}:{cs['oib']}"
+            except Exception as exc:
+                logger.warning(f"[Dispatch/peppol] company_settings lookup failed: {exc}")
+
+    headers = {"Content-Type": "application/xml", "Accept": "application/json"}
+    if ap_api_key:
+        headers["Authorization"] = f"Bearer {ap_api_key}"
+
+    params = {
+        "receiver":     participant_id,
+        "documentType": _PEPPOL_DOC_TYPE,
+        "processType":  _PEPPOL_PROCESS,
     }
+    if sender_id:
+        params["sender"] = sender_id
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                ap_endpoint,
+                content=ubl_xml.encode("utf-8"),
+                headers=headers,
+                params=params,
+            )
+
+        if resp.status_code in (200, 201, 202):
+            submission_id: Optional[str] = None
+            try:
+                body = resp.json()
+                submission_id = (
+                    body.get("submission_id")
+                    or body.get("submissionId")
+                    or body.get("id")
+                )
+            except Exception:
+                pass
+            if not submission_id:
+                loc = resp.headers.get("Location", "")
+                submission_id = loc.rsplit("/", 1)[-1] if loc else None
+
+            logger.info(
+                f"[Dispatch/peppol] Invoice {display_id} accepted by AP "
+                f"for delivery to {participant_id!r}. submission_id={submission_id}"
+            )
+            return {
+                "ok": True,
+                "external_submission_id": submission_id,
+                "sent_at": datetime.now(timezone.utc).isoformat(),
+                "method": "peppol",
+            }
+        else:
+            error_body = resp.text[:500]
+            logger.error(
+                f"[Dispatch/peppol] AP returned HTTP {resp.status_code} "
+                f"for {display_id}: {error_body}"
+            )
+            return {
+                "ok": False,
+                "error": f"AP HTTP {resp.status_code}: {error_body}",
+                "method": "peppol",
+            }
+
+    except Exception as exc:
+        logger.error(f"[Dispatch/peppol] Failed to send {display_id} to AP: {exc}")
+        return {"ok": False, "error": str(exc), "method": "peppol"}

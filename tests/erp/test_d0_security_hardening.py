@@ -242,3 +242,58 @@ class TestPeppolParticipantIdUniqueness:
         assert result["name"] == "Theta updated"
         mock_col.where.assert_not_called()
 
+class TestOutboundWebhookVerifyFailClosed:
+    """peppol_status_service.verify_webhook_request"""
+
+    def test_dev_no_secret_accepts(self):
+        """No secret in development mode → True (backward compat)."""
+        from services.erp.peppol_status_service import verify_webhook_request
+        with patch.dict(os.environ, {"PEPPOL_AP_WEBHOOK_SECRET": "", "ENVIRONMENT": "development"}):
+            assert verify_webhook_request({}, b"body") is True
+
+    def test_prod_no_secret_rejects(self):
+        """No secret in production → False (fail-closed)."""
+        from services.erp.peppol_status_service import verify_webhook_request
+        with patch.dict(os.environ, {"PEPPOL_AP_WEBHOOK_SECRET": "", "ENVIRONMENT": "production"}):
+            assert verify_webhook_request({}, b"body") is False
+
+    def test_staging_no_secret_rejects(self):
+        """No secret in staging → False (fail-closed)."""
+        from services.erp.peppol_status_service import verify_webhook_request
+        with patch.dict(os.environ, {"PEPPOL_AP_WEBHOOK_SECRET": "", "ENVIRONMENT": "staging"}):
+            assert verify_webhook_request({}, b"body") is False
+
+    def test_prod_no_secret_rejects_alias_prod(self):
+        """ENVIRONMENT='prod' (short alias) also fails closed."""
+        from services.erp.peppol_status_service import verify_webhook_request
+        with patch.dict(os.environ, {"PEPPOL_AP_WEBHOOK_SECRET": "", "ENVIRONMENT": "prod"}):
+            assert verify_webhook_request({}, b"body") is False
+
+    def test_prod_valid_hmac_accepts(self):
+        """Valid HMAC in production → True."""
+        from services.erp.peppol_status_service import verify_webhook_request
+        secret = "test-secret-xyz"
+        body = b'{"event":"status_update"}'
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        with patch.dict(os.environ, {"PEPPOL_AP_WEBHOOK_SECRET": secret, "ENVIRONMENT": "production"}):
+            assert verify_webhook_request({"X-Peppol-Signature": sig}, body) is True
+
+    def test_prod_invalid_hmac_rejects(self):
+        """Invalid HMAC in production → False."""
+        from services.erp.peppol_status_service import verify_webhook_request
+        secret = "test-secret-xyz"
+        body = b'{"event":"status_update"}'
+        with patch.dict(os.environ, {"PEPPOL_AP_WEBHOOK_SECRET": secret, "ENVIRONMENT": "production"}):
+            assert verify_webhook_request({"X-Peppol-Signature": "badhash"}, body) is False
+
+    def test_prod_missing_signature_header_rejects(self):
+        """Secret set but no signature header in production → False."""
+        from services.erp.peppol_status_service import verify_webhook_request
+        with patch.dict(os.environ, {"PEPPOL_AP_WEBHOOK_SECRET": "real-secret", "ENVIRONMENT": "production"}):
+            assert verify_webhook_request({}, b"body") is False
+
+
+# ---------------------------------------------------------------------------
+# Inbound webhook verification — fail-closed in prod/staging
+# ---------------------------------------------------------------------------
+

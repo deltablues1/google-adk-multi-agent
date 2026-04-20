@@ -36,6 +36,7 @@ from .base_erp_service import (
 from .errors import ValidationError, NotFoundError
 from .request_context import ERPRequestContext
 from .state_machines import OUTGOING_B2B_DOC_TRANSITIONS, validate_transition
+from .peppol_status_service import fetch_submission_status, needs_poll
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +402,48 @@ class OutboundB2BService(BaseERPService):
 
         if result.get("ok"):
             from .outbound_capabilities import get_capabilities
+            # ap_submission_id — verbatim ID from AP; NEVER mutated.
+            # Used for: AP status polling, webhook lookup, AP cross-reference.
+            ap_sid = result.get("external_submission_id") or None
+
+            # external_submission_key — local unique lookup key.
+            # Normally equals ap_submission_id, but gets a suffix when AP recycles IDs
+            # so that Firestore equality queries remain unambiguous within this company.
+            # The KEY is used for local Firestore queries; the AP_SID is used for AP calls.
+            ext_key = ap_sid
+
+            if (
+                ap_sid
+                and not str(ap_sid).startswith("PEPPOL-STUB-")
+                and delivery_method == "peppol"
+            ):
+                from google.cloud.firestore_v1.base_query import FieldFilter as _FF
+                # Check both ap_submission_id (new) and external_submission_id (legacy)
+                # to catch collisions with docs created before C2.2.3
+                collision_found = False
+                for check_field in ("ap_submission_id", "external_submission_id"):
+                    if collision_found:
+                        break
+                    conflict_query = (
+                        self._get_db().collection(_COL)
+                        .where(filter=_FF("company_id", "==", ctx.company_id))
+                        .where(filter=_FF("deleted",    "==", False))
+                        .where(filter=_FF(check_field,  "==", ap_sid))
+                        .limit(1)
+                    )
+                    async for snap in conflict_query.stream():
+                        existing = snap.to_dict() or {}
+                        if existing.get("invoice_id") != invoice_id:
+                            logger.warning(
+                                f"[OutboundB2B] ap_submission_id={ap_sid!r} already assigned "
+                                f"to {existing.get('invoice_id')} (via {check_field}) — "
+                                f"AP may have recycled the ID. "
+                                f"external_submission_key will be suffixed; ap_submission_id stays verbatim."
+                            )
+                            ext_key = f"{ap_sid}#{invoice_id[:8]}"
+                            collision_found = True
+                        break
+
             return await self._transition(invoice_id, ctx, "eracun_sent", {
                 "delivery_method":            delivery_method,
                 "delivery_target":            delivery_target,
@@ -410,7 +453,10 @@ class OutboundB2BService(BaseERPService):
                 "send_attempts":              attempts,
                 "last_send_attempt_at":       now,
                 "last_send_error":            None,
-                "external_submission_id":     result.get("external_submission_id"),
+                # Two-field AP identity model (C2.2.3):
+                "ap_submission_id":           ap_sid,        # verbatim from AP — use for AP calls
+                "external_submission_key":    ext_key,       # local unique key — use for Firestore lookups
+                "external_submission_id":     ext_key,       # keep for backward compat (old queries/tests)
                 "next_retry_at":              None,
                 "delivery_capabilities":      get_capabilities(delivery_method),
             })
@@ -529,13 +575,49 @@ class OutboundB2BService(BaseERPService):
 
         if result.get("ok"):
             from .outbound_capabilities import get_capabilities
+            # Two-field AP identity model (C2.2.3) — same logic as send()
+            ap_sid  = result.get("external_submission_id") or None
+            ext_key = ap_sid
+
+            if (
+                ap_sid
+                and not str(ap_sid).startswith("PEPPOL-STUB-")
+                and method == "peppol"
+            ):
+                from google.cloud.firestore_v1.base_query import FieldFilter as _FF
+                collision_found = False
+                for check_field in ("ap_submission_id", "external_submission_id"):
+                    if collision_found:
+                        break
+                    conflict_query = (
+                        self._get_db().collection(_COL)
+                        .where(filter=_FF("company_id", "==", ctx.company_id))
+                        .where(filter=_FF("deleted",    "==", False))
+                        .where(filter=_FF(check_field,  "==", ap_sid))
+                        .limit(1)
+                    )
+                    async for snap in conflict_query.stream():
+                        existing = snap.to_dict() or {}
+                        if existing.get("invoice_id") != invoice_id:
+                            logger.warning(
+                                f"[OutboundB2B/resend] ap_submission_id={ap_sid!r} already "
+                                f"assigned to {existing.get('invoice_id')} (via {check_field}) — "
+                                f"AP may have recycled the ID on resend. "
+                                f"external_submission_key will be suffixed; ap_submission_id stays verbatim."
+                            )
+                            ext_key = f"{ap_sid}#{invoice_id[:8]}"
+                            collision_found = True
+                        break
+
             update = {
                 "delivery_method":            method,
                 "delivery_target":            target,
                 "send_attempts":              attempts,
                 "last_send_attempt_at":       now,
                 "last_send_error":            None,
-                "external_submission_id":     result.get("external_submission_id"),
+                "ap_submission_id":           ap_sid,
+                "external_submission_key":    ext_key,
+                "external_submission_id":     ext_key,
                 "next_retry_at":              None,
                 "delivery_capabilities":      get_capabilities(method),
                 "updated_at":                 now,
@@ -772,6 +854,363 @@ class OutboundB2BService(BaseERPService):
         """Retry archiving for all pending-archive invoices. Returns summary dict."""
         from .outbound_archive_service import retry_outbound_archive
         return await retry_outbound_archive(ctx, max_attempts=max_attempts)
+
+    # ------------------------------------------------------------------
+    # Peppol status feedback loop (Sprint C2.2)
+    # ------------------------------------------------------------------
+
+    async def get_by_submission_id(
+        self, submission_id: str, ctx: ERPRequestContext
+    ) -> dict:
+        """
+        Find an outbound B2B invoice by AP submission_id, scoped to ctx.company_id.
+
+        Queries ``ap_submission_id`` first (C2.2.3 field), falls back to legacy
+        ``external_submission_id`` for documents created before C2.2.3.
+
+        Used by the status poller (which always has a company context).
+        For webhook callbacks use get_by_submission_id_global().
+        """
+        check_permission(ctx, "outbound:read")
+        from google.cloud.firestore_v1.base_query import FieldFilter
+        db = self._get_db()
+
+        # Primary: ap_submission_id (new canonical field)
+        for field in ("ap_submission_id", "external_submission_id"):
+            query = (
+                db.collection(_COL)
+                .where(filter=FieldFilter("company_id", "==", ctx.company_id))
+                .where(filter=FieldFilter("deleted",    "==", False))
+                .where(filter=FieldFilter(field,        "==", submission_id))
+                .limit(1)
+            )
+            async for snap in query.stream():
+                doc = snap.to_dict() or {}
+                doc["_id"] = snap.id
+                return doc
+
+        raise NotFoundError(
+            code="NOT_FOUND",
+            message=f"Nema outbound B2B računa s ap_submission_id='{submission_id}'.",
+        )
+
+    async def get_by_submission_id_global(
+        self,
+        submission_id: str,
+        *,
+        receiver_participant_id: Optional[str] = None,
+        sender_participant_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Find an outbound B2B invoice by AP submission_id across ALL companies.
+
+        Used exclusively by the AP webhook handler (no user/company context).
+
+        Lookup strategy (C2.2.3):
+          1. Query ``ap_submission_id`` — the verbatim AP-issued ID (new canonical field)
+          2. Fallback: ``external_submission_id`` — legacy field for docs pre-C2.2.3
+
+        Disambiguation (when AP recycled the same ID for multiple docs):
+          1. receiver_participant_id matches doc.delivery_target  (strongest signal)
+          2. sender_participant_id matches doc's company peppol_participant_id
+          3. First found + WARNING (last resort)
+
+        Raises NotFoundError if no doc is found at all.
+        """
+        from google.cloud.firestore_v1.base_query import FieldFilter
+        db = self._get_db()
+
+        candidates: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for field in ("ap_submission_id", "external_submission_id"):
+            query = (
+                db.collection(_COL)
+                .where(filter=FieldFilter("deleted", "==", False))
+                .where(filter=FieldFilter(field,     "==", submission_id))
+                .limit(10)
+            )
+            async for snap in query.stream():
+                if snap.id not in seen_ids:
+                    doc = snap.to_dict() or {}
+                    doc["_id"] = snap.id
+                    candidates.append(doc)
+                    seen_ids.add(snap.id)
+
+        if not candidates:
+            raise NotFoundError(
+                code="NOT_FOUND",
+                message=f"Nema outbound B2B računa s ap_submission_id='{submission_id}'.",
+            )
+
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Multiple matches — recycled AP submission_id
+        logger.warning(
+            f"[OutboundB2B] ap_submission_id={submission_id!r} matched {len(candidates)} docs — "
+            f"AP may have recycled this ID. Attempting disambiguation."
+        )
+
+        # 1. Match on receiver (delivery_target) — most reliable
+        if receiver_participant_id:
+            for doc in candidates:
+                if doc.get("delivery_target") == receiver_participant_id:
+                    logger.info(f"[OutboundB2B] Disambiguated {submission_id!r} via receiver match")
+                    return doc
+
+        # 2. Match on sender via company_settings.peppol_participant_id
+        if sender_participant_id:
+            for doc in candidates:
+                company_id = doc.get("company_id") or ""
+                if company_id:
+                    try:
+                        from services.erp.company_service import get_company_settings
+                        cs = await get_company_settings(company_id) or {}
+                        peppol_id = cs.get("peppol_participant_id") or ""
+                        if not peppol_id and cs.get("oib"):
+                            peppol_id = f"{cs.get('peppol_scheme','0190')}:{cs['oib']}"
+                        if peppol_id and peppol_id == sender_participant_id:
+                            logger.info(f"[OutboundB2B] Disambiguated {submission_id!r} via sender match")
+                            return doc
+                    except Exception:
+                        pass
+
+        # 3. Last resort: first found
+        logger.warning(
+            f"[OutboundB2B] Could not disambiguate {submission_id!r} — "
+            f"using first match ({candidates[0].get('invoice_id')}). Manual review recommended."
+        )
+        return candidates[0]
+
+    def _make_system_ctx(self, company_id: str) -> ERPRequestContext:
+        """Return a minimal owner-level context for system-to-system operations."""
+        from uuid import uuid4 as _uuid4
+        return ERPRequestContext(
+            user_id="peppol-ap-callback",
+            company_id=company_id,
+            role="owner",
+            grants=set(),
+            denies=set(),
+            request_id=str(_uuid4()),
+        )
+
+    async def apply_peppol_status(
+        self,
+        submission_id: str,
+        ctx: ERPRequestContext,
+        *,
+        status: str,
+        raw_status: str = "",
+        buyer_message: str = "",
+    ) -> dict:
+        """
+        Apply a normalised Peppol status update (from poller) to the matching doc.
+        Uses company-scoped lookup via ctx.  For webhook use apply_peppol_status_from_webhook().
+        """
+        doc = await self.get_by_submission_id(submission_id, ctx)
+        return await self._apply_peppol_status_to_doc(doc, ctx, status, raw_status, buyer_message, submission_id)
+
+    async def apply_peppol_status_from_webhook(
+        self,
+        submission_id: str,
+        *,
+        status: str,
+        raw_status: str = "",
+        buyer_message: str = "",
+        receiver_participant_id: str = "",
+        sender_participant_id: str = "",
+    ) -> dict:
+        """
+        Apply a Peppol status update arriving from the AP webhook.
+
+        Does NOT require a user identity — uses global cross-tenant lookup by
+        submission_id, then derives a system context from the doc's company_id.
+
+        receiver_participant_id / sender_participant_id are disambiguation hints
+        used when an AP recycles submission IDs across multiple documents.
+
+        Returns the updated invoice doc.
+        """
+        doc = await self.get_by_submission_id_global(
+            submission_id,
+            receiver_participant_id=receiver_participant_id or None,
+            sender_participant_id=sender_participant_id or None,
+        )
+        company_id = doc.get("company_id") or ""
+        if not company_id:
+            raise ValidationError(
+                code="MISSING_COMPANY_ID",
+                message=f"Doc for submission {submission_id} has no company_id",
+            )
+        ctx = self._make_system_ctx(company_id)
+        return await self._apply_peppol_status_to_doc(doc, ctx, status, raw_status, buyer_message, submission_id)
+
+    async def _apply_peppol_status_to_doc(
+        self,
+        doc: dict,
+        ctx: ERPRequestContext,
+        status: str,
+        raw_status: str,
+        buyer_message: str,
+        submission_id: str,
+    ) -> dict:
+        """Shared implementation for both webhook and poller paths."""
+        invoice_id = doc["_id"]
+        now = datetime.now(timezone.utc).isoformat()
+        await self._get_db().collection(_COL).document(invoice_id).update({
+            "peppol_raw_status":        raw_status or status,
+            "peppol_status_updated_at": now,
+            "updated_at":               now,
+        })
+
+        if status == "rejected":
+            return await self.reject(
+                invoice_id, ctx,
+                rejection_reason=buyer_message or f"AP reported rejected (raw: {raw_status})",
+            )
+
+        return await self.sync_external_status(
+            invoice_id, ctx,
+            external_status=status,
+            external_ref=submission_id,
+        )
+
+    async def poll_pending_peppol_status(
+        self,
+        ctx: ERPRequestContext,
+        *,
+        max_invoices: int = 50,
+    ) -> dict:
+        """
+        Scheduler-called: poll the AP for status of all outbound Peppol invoices
+        that are still in eracun_sent or delivered state.
+
+        Returns::
+
+            {
+                "polled": N,
+                "updated": N,   # status changed
+                "errors":  N,   # AP call failed
+                "skipped": N,   # terminal / no submission_id
+                "_stub":   True/False
+            }
+        """
+        check_permission(ctx, "outbound:send")
+
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        # Collect Peppol docs in non-terminal states
+        candidates = []
+        for status in ("eracun_sent", "delivered"):
+            query = (
+                self._get_db().collection(_COL)
+                .where(filter=FieldFilter("company_id",      "==", ctx.company_id))
+                .where(filter=FieldFilter("deleted",         "==", False))
+                .where(filter=FieldFilter("document_status", "==", status))
+                .where(filter=FieldFilter("delivery_method", "==", "peppol"))
+                .limit(max_invoices)
+            )
+            async for snap in query.stream():
+                doc = snap.to_dict() or {}
+                doc["_id"] = snap.id
+                candidates.append(doc)
+
+        polled = updated = errors = skipped = 0
+        stub_mode = False
+
+        for doc in candidates:
+            # ap_submission_id is the verbatim AP ID — use it for AP calls.
+            # Fall back to external_submission_id for docs created before C2.2.3.
+            ap_sid = (
+                doc.get("ap_submission_id")
+                or doc.get("external_submission_id")
+                or ""
+            )
+            if not ap_sid or ap_sid.startswith("PEPPOL-STUB-"):
+                skipped += 1
+                continue
+            if not needs_poll(doc.get("external_status") or "pending"):
+                skipped += 1
+                continue
+
+            polled += 1
+            try:
+                result = await fetch_submission_status(ap_sid, company_id=ctx.company_id)
+                if result.get("_stub"):
+                    stub_mode = True
+                    skipped += 1
+                    polled -= 1
+                    continue
+
+                new_status = result["status"]
+                old_status = doc.get("external_status") or "pending"
+                if new_status != old_status:
+                    await self.apply_peppol_status(
+                        ap_sid, ctx,
+                        status=new_status,
+                        raw_status=result.get("raw_status", ""),
+                    )
+                    updated += 1
+                else:
+                    # Still same status — just update checked_at
+                    await self._get_db().collection(_COL).document(doc["_id"]).update({
+                        "peppol_status_updated_at": result["checked_at"],
+                        "updated_at":               result["checked_at"],
+                    })
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    f"[OutboundB2B/poll] {doc.get('display_id')}: {exc}"
+                )
+
+        result = {"polled": polled, "updated": updated, "errors": errors, "skipped": skipped}
+        if stub_mode:
+            result["_stub"] = True
+        return result
+
+    async def list_pending_peppol_sync(
+        self,
+        ctx: ERPRequestContext,
+        *,
+        cutoff_minutes: int = 30,
+    ) -> dict:
+        """
+        Return all outbound Peppol invoices in eracun_sent or delivered state
+        whose last AP status check is older than cutoff_minutes (or never checked).
+
+        PEPPOL-STUB-* submission IDs are excluded.
+        Works across B2B and B2G via self._col.
+
+        Returns: {"count": N, "invoices": [...]}
+        """
+        check_permission(ctx, "outbound:read")
+        from google.cloud.firestore_v1.base_query import FieldFilter
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=cutoff_minutes)).isoformat()
+        docs = []
+        for status in ("eracun_sent", "delivered"):
+            query = (
+                self._get_db().collection(_COL)
+                .where(filter=FieldFilter("company_id",      "==", ctx.company_id))
+                .where(filter=FieldFilter("deleted",         "==", False))
+                .where(filter=FieldFilter("document_status", "==", status))
+                .where(filter=FieldFilter("delivery_method", "==", "peppol"))
+                .limit(100)
+            )
+            async for snap in query.stream():
+                doc = snap.to_dict() or {}
+                sid = doc.get("ap_submission_id") or doc.get("external_submission_id") or ""
+                if sid.startswith("PEPPOL-STUB-"):
+                    continue
+                checked = doc.get("peppol_status_updated_at") or ""
+                if not checked or checked < cutoff:
+                    doc["_id"] = snap.id
+                    doc.pop("ubl_xml", None)
+                    docs.append(doc)
+        docs.sort(key=lambda d: d.get("sent_at") or "", reverse=True)
+        return {"count": len(docs), "invoices": docs}
 
     # ------------------------------------------------------------------
     # Internal helpers

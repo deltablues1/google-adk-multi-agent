@@ -579,6 +579,9 @@ async def erp_payables(ctx: ERPRequestContext = Depends(get_erp_ctx)):
 #   GET    /outbound-b2b/capabilities          — adapter capability map (2D)
 #   GET    /outbound-b2b/pending-archive       — issued/sent/etc not yet archived (2C)
 #   POST   /outbound-b2b/retry-archive         — scheduler archive retry (2C)
+#   POST   /outbound-b2b/peppol/webhook        — AP delivery webhook (C2.2)
+#   POST   /outbound-b2b/poll-peppol-status    — scheduler AP status poll (C2.2)
+#   GET    /outbound-b2b/pending-peppol-sync   — stale AP status dashboard (C2.2)
 #   GET    /outbound-b2b/{id}                  — get single
 #   POST   /outbound-b2b/{id}/approve
 #   POST   /outbound-b2b/{id}/issue            — UBL generated
@@ -646,6 +649,96 @@ async def erp_outbound_b2b_retry_archive(
     from services.erp.outbound_b2b_service import get_outbound_b2b_service
     return await get_outbound_b2b_service().retry_archive(ctx, max_attempts=max_attempts)
 
+
+# ── Peppol feedback loop (C2.2 / C2.2.1) — must be BEFORE /{invoice_id} routes
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/outbound-b2b/peppol/webhook")
+async def erp_peppol_webhook(request: Request):
+    """
+    Receive a delivery/acknowledgement callback from the Peppol AP.
+
+    This endpoint requires NO user identity — it is a system-to-system endpoint
+    called by the AP, not by an ERP user.  Authentication is handled via:
+      1. HMAC-SHA256 signature (``X-Peppol-Signature`` header + ``PEPPOL_AP_WEBHOOK_SECRET``)
+      2. When secret is not set: any call is accepted (dev/sandbox only — log warning)
+
+    The AP posts JSON with at least:
+      { "submissionId": "...", "status": "delivered|accepted|rejected|failed|pending" }
+
+    The endpoint finds the invoice by submission_id within the B2B collection.
+
+    Returns: {"ok": True, "invoice_id": "...", "new_status": "..."} on success.
+    """
+    import json as _json
+    from services.erp.peppol_status_service import verify_webhook_request, parse_webhook_payload
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    from services.erp.errors import NotFoundError
+
+    body_bytes = await request.body()
+    if not verify_webhook_request(dict(request.headers), body_bytes):
+        raise HTTPException(status_code=403, detail="Invalid or missing Peppol webhook signature")
+
+    try:
+        body = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in webhook body")
+
+    parsed = parse_webhook_payload(body)
+    if not parsed:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not parse webhook payload — missing submissionId or status",
+        )
+
+    try:
+        updated = await get_outbound_b2b_service().apply_peppol_status_from_webhook(
+            parsed["submission_id"],
+            status=parsed["status"],
+            raw_status=parsed.get("raw_status", ""),
+            buyer_message=parsed.get("buyer_message", ""),
+            receiver_participant_id=parsed.get("receiver_participant_id", ""),
+            sender_participant_id=parsed.get("sender_participant_id", ""),
+        )
+    except NotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No outbound B2B invoice found for submission_id={parsed['submission_id']!r}",
+        )
+    return {"ok": True, "invoice_id": updated.get("invoice_id"), "new_status": updated.get("document_status")}
+
+
+@router.post("/outbound-b2b/poll-peppol-status")
+async def erp_poll_peppol_status(
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Trigger an immediate AP status poll for all in-flight Peppol invoices.
+
+    Intended for:
+      - Scheduler (periodic job every N minutes)
+      - Operator "sync now" button in the dashboard
+
+    Returns: {"polled": N, "updated": N, "errors": N, "skipped": N, "_stub": bool}
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().poll_pending_peppol_status(ctx)
+
+
+@router.get("/outbound-b2b/pending-peppol-sync")
+async def erp_pending_peppol_sync(
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Return all outbound B2B Peppol invoices in eracun_sent or delivered state
+    whose last AP status check is older than 30 minutes (or never checked).
+    PEPPOL-STUB-* submission IDs are excluded.
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().list_pending_peppol_sync(ctx)
+
+
+# ── End Peppol feedback routes ─────────────────────────────────────────────────
 
 @router.post("/outbound-b2b")
 async def erp_create_outbound_b2b(req: OutboundB2BCreate, ctx: ERPRequestContext = Depends(get_erp_ctx)):

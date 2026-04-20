@@ -41,10 +41,14 @@ ADAPTER_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     },
     "peppol": {
         "can_dispatch":    True,
-        "auto_ack":        True,   # real AP provides AS4 delivery callback
-        "polling":         True,   # AS4 status polling supported (stub in Faza 2B/2F)
-        "ack_expected":    True,   # buyer acknowledgement expected
-        "description":     "Peppol BIS Billing 3.0 / AS4 (stub — zamjena planirana u Fazi 2F)",
+        "auto_ack":        True,   # AP provides AS4 MDN delivery callback / webhook
+        "polling":         True,   # Status polling via GET /submissions/{id}/status
+        "ack_expected":    True,   # Buyer business-level ACK expected
+        "description":     (
+            "Peppol BIS Billing 3.0 / AS4 eRačun. "
+            "Real send when PEPPOL_AP_ENDPOINT is set; stub fallback otherwise. "
+            "Status feedback via webhook (POST /peppol/webhook) or scheduler poll."
+        ),
     },
 }
 
