@@ -30,7 +30,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/erp")
 
 _MAX_LIMIT = 500
+
+# ERP_DEV_MODE grants an owner-role fallback when identity headers are absent.
+# That is a deliberate dev-only shortcut — it must never be active in a
+# production-like environment. Fail fast at import rather than at the first
+# request, so a misconfigured deploy can't come up at all.
+_ENV = os.environ.get("ENVIRONMENT", "development").lower()
 _DEV_MODE = os.environ.get("ERP_DEV_MODE", "").lower() in ("1", "true", "yes")
+if _DEV_MODE and _ENV in ("production", "prod", "staging"):
+    raise RuntimeError(
+        f"ERP_DEV_MODE is enabled in ENVIRONMENT={_ENV!r}. "
+        "Refusing to start — the dev identity fallback grants owner access "
+        "without authentication. Unset ERP_DEV_MODE or change ENVIRONMENT."
+    )
 
 
 def _clamp_limit(limit: int, default: int = 50) -> int:
