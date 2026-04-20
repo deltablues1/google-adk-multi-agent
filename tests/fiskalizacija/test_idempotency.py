@@ -127,7 +127,7 @@ PODACI ZA RACUN (vec validirani):
 
 CERTIFIKAT:
 - Datoteka: 47034854402.F1.1.p12
-- Lozinka: NinuPiL1903
+- Lozinka: <from FINA_CERT_PASSWORD env var>
 
 NAPOMENA: Ovo je IDEMPOTENCY TEST.
 1. Generiraj XML
@@ -201,7 +201,7 @@ PODACI ZA RACUN (vec validirani):
 
 CERTIFIKAT:
 - Datoteka: 47034854402.F1.1.p12
-- Lozinka: NinuPiL1903
+- Lozinka: <from FINA_CERT_PASSWORD env var>
 
 NAPOMENA: Ovo je IDEMPOTENCY TEST - DRUGI POKUSAJ.
 1. OBAVEZNO provjeri ledger PRVO!

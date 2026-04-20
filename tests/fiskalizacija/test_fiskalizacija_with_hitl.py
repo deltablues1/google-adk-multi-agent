@@ -105,7 +105,7 @@ def test_fiskalizacija_with_hitl():
     result = fiscalize_invoice_sync(
         invoice_data=invoice_data,
         cert_path=str(cert_file),
-        cert_password="NinuPiL1903",
+        cert_password=os.environ.get("FINA_CERT_PASSWORD"),
         use_sandbox=True,
         auto_approve=True  # Auto-approve for testing
     )
@@ -206,7 +206,7 @@ def test_fiskalizacija_manual_approval():
     result = fiscalize_invoice_sync(
         invoice_data=invoice_data,
         cert_path=str(cert_file),
-        cert_password="NinuPiL1903",
+        cert_password=os.environ.get("FINA_CERT_PASSWORD"),
         use_sandbox=True,
         auto_approve=False  # Manual approval
     )

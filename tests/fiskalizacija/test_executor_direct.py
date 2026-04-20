@@ -98,7 +98,7 @@ Spremi generirane datoteke:
 - XAdES potpis: invoice_001_URED_1_2026-01-27_signed.xml
 
 Certifikat: 47034854402.F1.1.p12
-Lozinka: NinuPiL1903
+Lozinka: <from FINA_CERT_PASSWORD env var>
 """
 
     try:

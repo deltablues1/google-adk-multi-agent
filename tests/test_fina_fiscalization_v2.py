@@ -19,7 +19,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 CERT_PATH = project_root / "47034854402.F1.1.p12"
-CERT_PASSWORD = "NinuPiL1903"
+CERT_PASSWORD = os.environ.get("FINA_CERT_PASSWORD")
 
 
 def sign_racun_zahtjev(xml_str: str) -> str:
