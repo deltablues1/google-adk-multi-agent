@@ -297,3 +297,76 @@ class TestOutboundWebhookVerifyFailClosed:
 # Inbound webhook verification — fail-closed in prod/staging
 # ---------------------------------------------------------------------------
 
+class TestInboundWebhookVerifyFailClosed:
+    """inbound_peppol_transport_service.verify_inbound_webhook"""
+
+    def test_dev_no_secret_accepts(self):
+        """No secret in development mode → True."""
+        from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+        with patch.dict(os.environ, {
+            "PEPPOL_AP_INBOUND_WEBHOOK_SECRET": "",
+            "PEPPOL_AP_WEBHOOK_SECRET": "",
+            "ENVIRONMENT": "development",
+        }):
+            assert verify_inbound_webhook({}, b"body") is True
+
+    def test_prod_no_secret_rejects(self):
+        """No secret in production → False (fail-closed)."""
+        from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+        with patch.dict(os.environ, {
+            "PEPPOL_AP_INBOUND_WEBHOOK_SECRET": "",
+            "PEPPOL_AP_WEBHOOK_SECRET": "",
+            "ENVIRONMENT": "production",
+        }):
+            assert verify_inbound_webhook({}, b"body") is False
+
+    def test_staging_no_secret_rejects(self):
+        """No secret in staging → False."""
+        from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+        with patch.dict(os.environ, {
+            "PEPPOL_AP_INBOUND_WEBHOOK_SECRET": "",
+            "PEPPOL_AP_WEBHOOK_SECRET": "",
+            "ENVIRONMENT": "staging",
+        }):
+            assert verify_inbound_webhook({}, b"body") is False
+
+    def test_prod_fallback_to_shared_secret(self):
+        """
+        PEPPOL_AP_INBOUND_WEBHOOK_SECRET not set, but PEPPOL_AP_WEBHOOK_SECRET is →
+        use fallback secret for verification.
+        """
+        from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+        secret = "shared-secret-abc"
+        body = b'{"submissionId":"S-001"}'
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        with patch.dict(os.environ, {
+            "PEPPOL_AP_INBOUND_WEBHOOK_SECRET": "",
+            "PEPPOL_AP_WEBHOOK_SECRET": secret,
+            "ENVIRONMENT": "production",
+        }):
+            assert verify_inbound_webhook({"X-Peppol-Signature": sig}, body) is True
+
+    def test_prod_inbound_specific_secret_takes_precedence(self):
+        """PEPPOL_AP_INBOUND_WEBHOOK_SECRET takes precedence over shared secret."""
+        from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+        inbound_secret = "inbound-only-secret"
+        shared_secret = "shared-secret"
+        body = b'{"submissionId":"S-002"}'
+        # Sign with inbound-only secret
+        sig = hmac.new(inbound_secret.encode(), body, hashlib.sha256).hexdigest()
+        with patch.dict(os.environ, {
+            "PEPPOL_AP_INBOUND_WEBHOOK_SECRET": inbound_secret,
+            "PEPPOL_AP_WEBHOOK_SECRET": shared_secret,
+            "ENVIRONMENT": "production",
+        }):
+            assert verify_inbound_webhook({"X-Peppol-Signature": sig}, body) is True
+
+    def test_prod_missing_signature_header_rejects(self):
+        """Secret set, no header in production → False."""
+        from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+        with patch.dict(os.environ, {
+            "PEPPOL_AP_INBOUND_WEBHOOK_SECRET": "real-secret",
+            "PEPPOL_AP_WEBHOOK_SECRET": "",
+            "ENVIRONMENT": "production",
+        }):
+            assert verify_inbound_webhook({}, b"body") is False

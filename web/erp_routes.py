@@ -650,6 +650,103 @@ async def erp_outbound_b2b_retry_archive(
     return await get_outbound_b2b_service().retry_archive(ctx, max_attempts=max_attempts)
 
 
+# ── Inbound Peppol e-račun (Sprint Inbound B) ─────────────────────────────────
+# System-to-system — no ERP user identity required.
+# Same pattern as outbound Peppol webhook but for INCOMING documents from AP.
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/inbound-eracun/peppol/webhook")
+async def erp_peppol_inbound_webhook(request: Request):
+    """
+    Receive an inbound e-račun document from a Peppol AP.
+
+    This is a system-to-system endpoint — no ERP user headers required.
+    The AP pushes UBL/XML documents to this URL when it receives an invoice
+    addressed to one of our registered Peppol participant IDs.
+
+    Authentication:
+      HMAC-SHA256 via PEPPOL_AP_INBOUND_WEBHOOK_SECRET (falls back to
+      PEPPOL_AP_WEBHOOK_SECRET, then no-auth in dev mode).
+
+    Payload (JSON):
+      {
+        "submissionId":   "<AP submission ID>",           required
+        "receiverId":     "0190:<OIB>",                   required for routing
+        "senderId":       "0190:<supplier OIB>",          optional
+        "documentId":     "<invoice ID from sender>",     optional
+        "documentBase64": "<base64 UBL XML>",             one of these
+        "documentUrl":    "<URL to fetch the UBL XML>",   is required
+        "filename":       "invoice.xml",                  optional
+        "receivedAt":     "<ISO timestamp>",              optional
+      }
+
+    Returns:
+      200 {"ok": True, "status": "imported"|"duplicate"|"failed",
+           "vendor_invoice_id": "...", "display_id": "..."}
+      400 on missing/invalid payload
+      403 on signature failure
+      404 if receiver participant_id not registered
+      500 on unexpected error
+    """
+    import json as _json
+    from services.erp.inbound_peppol_transport_service import (
+        verify_inbound_webhook,
+        parse_inbound_payload,
+        resolve_company_from_participant_id,
+        fetch_xml_bytes,
+        _make_system_ctx,
+        InboundPeppolTransportService,
+    )
+
+    body_bytes = await request.body()
+
+    if not verify_inbound_webhook(dict(request.headers), body_bytes):
+        raise HTTPException(status_code=403, detail="Invalid or missing Peppol inbound webhook signature")
+
+    try:
+        body = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in webhook body")
+
+    parsed = parse_inbound_payload(body)
+    if not parsed:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not parse inbound Peppol payload — missing submissionId",
+        )
+
+    # Resolve receiver company
+    receiver_id = parsed.get("receiver_participant_id", "")
+    company_id  = await resolve_company_from_participant_id(receiver_id)
+    if not company_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No registered company for Peppol participant {receiver_id!r}",
+        )
+
+    # Fetch XML bytes
+    xml_bytes = await fetch_xml_bytes(parsed)
+    if not xml_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Inbound Peppol payload contains no XML document (no documentBase64 or documentUrl)",
+        )
+
+    ctx    = _make_system_ctx(company_id)
+    result = await InboundPeppolTransportService().process(
+        parsed, xml_bytes, ctx, archive=True
+    )
+
+    return {
+        "ok":                True,
+        "status":            result.get("status"),
+        "vendor_invoice_id": result.get("vendor_invoice_id", ""),
+        "display_id":        result.get("display_id", ""),
+        "ap_submission_id":  result.get("ap_submission_id", ""),
+        "archive_status":    result.get("archive_status", "skipped"),
+    }
+
+
 # ── Peppol feedback loop (C2.2 / C2.2.1) — must be BEFORE /{invoice_id} routes
 # ──────────────────────────────────────────────────────────────────────────────
 
