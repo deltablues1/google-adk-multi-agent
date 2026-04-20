@@ -16,6 +16,7 @@ Marks: pytest.mark.integration — skip by default:
 
 import pytest
 import asyncio
+from pathlib import Path
 from uuid import uuid4
 from decimal import Decimal
 from datetime import date
@@ -24,6 +25,9 @@ from services.erp.request_context import ERPRequestContext
 from services.erp.errors import (
     ValidationError, NotFoundError, DuplicateError, InvalidStateTransitionError
 )
+
+_FIXTURE_DIR = Path(__file__).parent.parent / "fixtures"
+_SAMPLE_UBL_XML = (_FIXTURE_DIR / "sample_inbound_b2b.xml").read_bytes()
 
 
 def make_ctx(company_id: str, role: str = "owner") -> ERPRequestContext:
@@ -310,3 +314,56 @@ class TestActivityFeed:
 
         assert len(events) >= 1
         assert events[0]["action_type"] == "customer_created"
+
+
+
+# ---------------------------------------------------------------------------
+# Sprint A.1 regression lock — three concrete integration blockers
+# ---------------------------------------------------------------------------
+
+class TestCreateFromUBL:
+    """
+    Regression lock for Sprint A fix:
+    create_from_ubl() must not raise ImportError at runtime (the lazy import of
+    get_company_oib from config.agent_registry is now inside the try/except block).
+    This test exercises the real service-level path end-to-end.
+    """
+
+    @pytest.mark.asyncio
+    async def test_create_from_ubl_does_not_raise_import_error(self, cid):
+        """
+        Calling create_from_ubl() with valid UBL XML must produce a draft vendor invoice.
+        Before the Sprint A fix this raised ImportError on the bare
+        `from config.agent_registry import get_company_oib` import.
+        """
+        from services.erp.vendor_invoice_service import VendorInvoiceService
+        svc = VendorInvoiceService()
+        ctx = make_ctx(cid)
+
+        result = await svc.create_from_ubl(_SAMPLE_UBL_XML, ctx)
+        assert result["document_status"] == "draft"
+
+    @pytest.mark.asyncio
+    async def test_create_from_ubl_produces_vendor_fields(self, cid):
+        """Parsed vendor OIB and name must be present on the created document."""
+        from services.erp.vendor_invoice_service import VendorInvoiceService
+        svc = VendorInvoiceService()
+        ctx = make_ctx(cid)
+
+        result = await svc.create_from_ubl(_SAMPLE_UBL_XML, ctx)
+        assert result.get("vendor_oib"), "vendor_oib must be non-empty"
+        assert result.get("vendor_name"), "vendor_name must be non-empty"
+
+    @pytest.mark.asyncio
+    async def test_create_from_ubl_sets_buyer_validation_status(self, cid):
+        """buyer_validation_status must be set — either 'validated', 'oib_not_resolved', or 'oib_mismatch'."""
+        from services.erp.vendor_invoice_service import VendorInvoiceService
+        svc = VendorInvoiceService()
+        ctx = make_ctx(cid)
+
+        result = await svc.create_from_ubl(_SAMPLE_UBL_XML, ctx)
+        status = result.get("buyer_validation_status")
+        assert status in ("validated", "oib_not_resolved", "oib_mismatch"), (
+            f"Expected a known buyer_validation_status, got {status!r}"
+        )
+

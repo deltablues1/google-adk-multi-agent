@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from tools.google_api_client import create_api_client_auto
-from tools.api_implementations.drive_api import drive_move_file, drive_create_folder, drive_search_files
+from tools.api_implementations.drive_api import drive_move_file, drive_create_folder, drive_search_files, drive_upload_file
 
 logger = logging.getLogger(__name__)
 
@@ -111,4 +111,95 @@ async def archive_inbound_document(
 
     except Exception as exc:
         logger.error(f"archive_inbound_document failed for {drive_file_id}: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+async def archive_inbound_bytes(
+    content: bytes,
+    filename: str,
+    issue_date: Optional[str] = None,
+    mime_type: str = "application/xml",
+    credentials=None,
+) -> dict:
+    """
+    Upload raw bytes into Invoices_Archive/IN/YYYY/MM/ and return archive metadata.
+
+    Used for Gmail/AP inbound where there is no existing Drive file to *move*;
+    instead we upload the bytes directly.
+
+    Args:
+        content:    Raw file bytes (e.g., UBL XML).
+        filename:   Target filename in Drive (e.g., ``eracun_12345.xml``).
+        issue_date: YYYY-MM-DD string used to determine the YYYY/MM subfolder.
+                    Defaults to today's date if absent or invalid.
+        mime_type:  MIME type for the Drive file (default ``application/xml``).
+
+    Returns:
+        {
+            "ok": True,
+            "drive_file_id":   "<Drive file id of the uploaded file>",
+            "drive_folder_id": "<target archive folder id>",
+            "archived_at":     "<ISO timestamp>",
+        }
+        or
+        {
+            "ok": False,
+            "error": "<message>",
+        }
+    """
+    from tools.drive_navigator import get_drive_navigator
+    import base64 as _b64
+
+    try:
+        nav = await get_drive_navigator()
+        archive_in_id = nav.get_folder_id(_ARCHIVE_IN_ALIAS)
+        if not archive_in_id:
+            return {"ok": False, "error": "archive_in folder not resolved — run ensure_structure() first"}
+
+        try:
+            dt = datetime.strptime(issue_date[:10], "%Y-%m-%d") if issue_date else None
+        except (ValueError, TypeError):
+            dt = None
+        if dt is None:
+            dt = datetime.now(timezone.utc)
+
+        year_str  = str(dt.year)
+        month_str = f"{dt.month:02d}"
+
+        if credentials is None:
+            credentials = create_api_client_auto().credentials
+        year_folder_id  = await _get_or_create_folder(credentials, year_str, archive_in_id)
+        month_folder_id = await _get_or_create_folder(credentials, month_str, year_folder_id)
+
+        # drive_upload_file expects text content for non-binary types;
+        # for XML we pass the decoded string.
+        if mime_type in ("application/xml", "text/xml"):
+            content_str = content.decode("utf-8", errors="replace")
+        else:
+            # Binary fallback: pass base64-encoded string (drive_upload_file decodes it)
+            content_str = _b64.b64encode(content).decode("ascii")
+
+        result = await drive_upload_file(
+            credentials,
+            filename,
+            content_str,
+            mime_type,
+            parent_folder_id=month_folder_id,
+        )
+
+        drive_file_id = result.get("id") or result.get("file_id", "")
+        archived_at = datetime.now(timezone.utc).isoformat()
+        logger.info(
+            f"[DriveArchive] Uploaded {filename} ({len(content)} bytes) "
+            f"→ archive_in/{year_str}/{month_str} (folder {month_folder_id}, file {drive_file_id})"
+        )
+        return {
+            "ok":            True,
+            "drive_file_id": drive_file_id,
+            "drive_folder_id": month_folder_id,
+            "archived_at":   archived_at,
+        }
+
+    except Exception as exc:
+        logger.error(f"archive_inbound_bytes failed for {filename!r}: {exc}")
         return {"ok": False, "error": str(exc)}

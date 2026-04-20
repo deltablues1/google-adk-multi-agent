@@ -590,8 +590,343 @@ async def gmail_list_labels(
 
 
 # ============================================================================
+# INBOUND / ATTACHMENT HELPERS  (Sprint Inbound A)
+# ============================================================================
+
+@with_circuit_breaker("gmail")
+@with_rate_limit("gmail", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def gmail_list_messages_with_attachments(
+    credentials: Credentials,
+    query: str = "has:attachment",
+    max_results: int = 50,
+) -> Dict[str, Any]:
+    """
+    List Gmail messages that match *query* and have at least one attachment.
+
+    Args:
+        credentials:  OAuth2 credentials
+        query:        Gmail search expression — default restricts to messages
+                      with attachments.  Caller may add label filters, e.g.
+                      ``has:attachment -label:ERP_IMPORTED``.
+        max_results:  Maximum number of message stubs to return (1-500).
+
+    Returns::
+
+        {
+            "messages": [
+                {"id": "<message_id>", "thread_id": "<thread_id>"},
+                ...
+            ],
+            "result_size_estimate": <int>,
+            "query": "<effective query>",
+        }
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.gmail_service()
+
+        effective_query = query if "has:attachment" in query else f"has:attachment {query}".strip()
+        logger.info(f"[Gmail/inbound] Listing messages: query={effective_query!r}, max={max_results}")
+
+        result = service.users().messages().list(
+            userId="me",
+            q=effective_query,
+            maxResults=min(max_results, 500),
+        ).execute()
+
+        messages = result.get("messages", [])
+        logger.info(f"[Gmail/inbound] Found {len(messages)} message(s)")
+        return {
+            "messages": [{"id": m["id"], "thread_id": m.get("threadId", "")} for m in messages],
+            "result_size_estimate": result.get("resultSizeEstimate", 0),
+            "query": effective_query,
+        }
+
+    except HttpError as exc:
+        logger.error(f"[Gmail/inbound] gmail_list_messages_with_attachments failed: {exc}")
+        raise
+    except Exception as exc:
+        logger.error(f"[Gmail/inbound] Unexpected error: {exc}")
+        raise
+
+
+@with_circuit_breaker("gmail")
+@with_rate_limit("gmail", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def gmail_get_message_full(
+    credentials: Credentials,
+    message_id: str,
+) -> Dict[str, Any]:
+    """
+    Fetch a single Gmail message in full format, returning headers and attachment
+    metadata (but NOT attachment bytes — use gmail_download_attachment for those).
+
+    Returns::
+
+        {
+            "id":          "<message_id>",
+            "thread_id":   "<thread_id>",
+            "from":        "<sender>",
+            "subject":     "<subject>",
+            "date":        "<RFC 2822 date string>",
+            "received_at": "<ISO UTC timestamp>",   # derived from internalDate
+            "snippet":     "<snippet>",
+            "attachments": [
+                {
+                    "attachment_id": "<id>",
+                    "filename":      "<filename>",
+                    "mime_type":     "<mime_type>",
+                    "size":          <int>,
+                },
+                ...
+            ],
+        }
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+        from datetime import datetime, timezone
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.gmail_service()
+
+        msg = service.users().messages().get(
+            userId="me",
+            id=message_id,
+            format="full",
+        ).execute()
+
+        headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
+        internal_date_ms = int(msg.get("internalDate", 0))
+        received_at = (
+            datetime.fromtimestamp(internal_date_ms / 1000, tz=timezone.utc).isoformat()
+            if internal_date_ms else ""
+        )
+
+        attachments = _extract_attachment_metadata(msg.get("payload", {}))
+        logger.info(
+            f"[Gmail/inbound] Message {message_id}: {len(attachments)} attachment(s) found"
+        )
+        return {
+            "id":          message_id,
+            "thread_id":   msg.get("threadId", ""),
+            "from":        headers.get("From", ""),
+            "subject":     headers.get("Subject", ""),
+            "date":        headers.get("Date", ""),
+            "received_at": received_at,
+            "snippet":     msg.get("snippet", ""),
+            "attachments": attachments,
+        }
+
+    except HttpError as exc:
+        logger.error(f"[Gmail/inbound] gmail_get_message_full({message_id}) failed: {exc}")
+        raise
+    except Exception as exc:
+        logger.error(f"[Gmail/inbound] Unexpected error: {exc}")
+        raise
+
+
+@with_circuit_breaker("gmail")
+@with_rate_limit("gmail", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def gmail_download_attachment(
+    credentials: Credentials,
+    message_id: str,
+    attachment_id: str,
+) -> bytes:
+    """
+    Download attachment bytes from a Gmail message.
+
+    Args:
+        credentials:   OAuth2 credentials
+        message_id:    Gmail message ID (from gmail_get_message_full)
+        attachment_id: Attachment ID (from gmail_get_message_full ``attachments`` list)
+
+    Returns:
+        Raw attachment bytes.
+
+    Raises:
+        HttpError: on API error
+        ValueError: if attachment data is missing
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.gmail_service()
+
+        result = service.users().messages().attachments().get(
+            userId="me",
+            messageId=message_id,
+            id=attachment_id,
+        ).execute()
+
+        data = result.get("data")
+        if not data:
+            raise ValueError(f"No data in attachment {attachment_id} of message {message_id}")
+
+        raw = base64.urlsafe_b64decode(data)
+        logger.info(
+            f"[Gmail/inbound] Downloaded attachment {attachment_id} "
+            f"({len(raw)} bytes) from message {message_id}"
+        )
+        return raw
+
+    except HttpError as exc:
+        logger.error(f"[Gmail/inbound] gmail_download_attachment({message_id}, {attachment_id}) failed: {exc}")
+        raise
+    except Exception as exc:
+        logger.error(f"[Gmail/inbound] Unexpected error: {exc}")
+        raise
+
+
+# ============================================================================
+# LABEL HELPERS  (Sprint Inbound A.1)
+# ============================================================================
+
+async def gmail_get_or_create_label(
+    credentials: Credentials,
+    label_name: str,
+) -> str:
+    """
+    Resolve a user-defined label name to its Gmail label ID, creating it if absent.
+
+    Gmail messages.modify() requires label **IDs**, not label names.
+    System labels (INBOX, UNREAD, STARRED …) have IDs equal to their name and
+    do not need resolution.  User labels must be looked up (or created) via the
+    labels API.
+
+    Args:
+        credentials:  OAuth2 credentials
+        label_name:   Display name of the label (e.g. "ERP_IMPORTED")
+
+    Returns:
+        The Gmail label ID string (e.g. "Label_12345678901234567").
+
+    Note: result is NOT cached because labels are rarely created and we want
+    exact-match semantics.  For hot-path use, resolve labels once per poll cycle
+    and pass the resolved IDs directly to gmail_modify_message().
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.gmail_service()
+
+        result = service.users().labels().list(userId="me").execute()
+        for label in result.get("labels", []):
+            if label.get("name") == label_name:
+                return label["id"]
+
+        # Not found — create it
+        created = service.users().labels().create(
+            userId="me",
+            body={
+                "name":                  label_name,
+                "labelListVisibility":   "labelShow",
+                "messageListVisibility": "show",
+            },
+        ).execute()
+        logger.info(f"[Gmail/label] Created label {label_name!r} → {created['id']}")
+        return created["id"]
+
+    except HttpError as exc:
+        logger.error(f"[Gmail/label] gmail_get_or_create_label({label_name!r}) failed: {exc}")
+        raise
+    except Exception as exc:
+        logger.error(f"[Gmail/label] Unexpected error: {exc}")
+        raise
+
+
+@with_circuit_breaker("gmail")
+@with_rate_limit("gmail", user_id_param="credentials")
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def gmail_modify_message(
+    credentials: Credentials,
+    message_id: str,
+    add_label_ids: Optional[List[str]] = None,
+    remove_label_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Add or remove label IDs on a single Gmail **message** (not thread).
+
+    Idempotency is message-scoped: labeling one message in a thread does not
+    affect other messages in the same thread.  This is the correct granularity
+    for e-račun intake — a supplier may send multiple invoices in the same
+    email conversation and each one must be independently tracked.
+
+    Args:
+        credentials:      OAuth2 credentials
+        message_id:       Gmail message ID (NOT thread ID)
+        add_label_ids:    Label IDs to add (resolved via gmail_get_or_create_label)
+        remove_label_ids: Label IDs to remove
+
+    Returns:
+        {"id": "<message_id>", "label_ids": [...], "status": "modified"}
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.gmail_service()
+
+        body: Dict[str, Any] = {}
+        if add_label_ids:
+            body["addLabelIds"]    = add_label_ids
+        if remove_label_ids:
+            body["removeLabelIds"] = remove_label_ids
+
+        modified = service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body=body,
+        ).execute()
+
+        logger.info(
+            f"[Gmail/label] Modified message {message_id}: "
+            f"+{add_label_ids} -{remove_label_ids}"
+        )
+        return {
+            "id":        modified["id"],
+            "label_ids": modified.get("labelIds", []),
+            "status":    "modified",
+        }
+
+    except HttpError as exc:
+        logger.error(f"[Gmail/label] gmail_modify_message({message_id}) failed: {exc}")
+        raise
+    except Exception as exc:
+        logger.error(f"[Gmail/label] Unexpected error: {exc}")
+        raise
+
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+def _extract_attachment_metadata(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Recursively walk a Gmail message payload and collect attachment metadata.
+    Returns list of dicts with keys: attachment_id, filename, mime_type, size.
+    Parts with no attachmentId are body parts — skipped.
+    """
+    attachments: List[Dict[str, Any]] = []
+
+    def _walk(part: Dict[str, Any]) -> None:
+        body = part.get("body", {})
+        attachment_id = body.get("attachmentId")
+        filename = part.get("filename", "")
+        if attachment_id and filename:
+            attachments.append({
+                "attachment_id": attachment_id,
+                "filename":      filename,
+                "mime_type":     part.get("mimeType", ""),
+                "size":          body.get("size", 0),
+            })
+        for sub in part.get("parts", []):
+            _walk(sub)
+
+    _walk(payload)
+    return attachments
+
 
 def _extract_message_body(payload: Dict[str, Any]) -> str:
     """
