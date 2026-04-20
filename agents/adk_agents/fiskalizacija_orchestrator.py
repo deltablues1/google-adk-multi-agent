@@ -845,8 +845,13 @@ if __name__ == "__main__":
 
     # Test configuration
     project_root = Path(__file__).parent.parent.parent
-    CERT_PATH = str(project_root / "47034854402.F1.1.p12")
-    CERT_PASSWORD = "NinuPiL1903"
+    CERT_PATH = os.environ.get("FINA_CERT_PATH") or str(project_root / "47034854402.F1.1.p12")
+    CERT_PASSWORD = os.environ.get("FINA_CERT_PASSWORD")
+    if not CERT_PASSWORD:
+        raise SystemExit(
+            "FINA_CERT_PASSWORD is not set. "
+            "Export it in your shell (or .env) before running this demo."
+        )
 
     # Test invoice
     test_invoice = {
