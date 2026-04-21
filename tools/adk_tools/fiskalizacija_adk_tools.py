@@ -50,15 +50,22 @@ from tools.api_implementations.fiskalizacija_models import (
 # VALIDATION AND PREPARATION TOOLS
 # ============================================================================
 
-async def get_supplier_data() -> dict:
+async def get_supplier_data(company_id: Optional[str] = None) -> dict:
     """
-    Get supplier (issuer) company data from company configuration.
+    Get supplier (issuer) company data.
 
     CRITICAL: This tool MUST be called at the start of fiscalization workflow
     to automatically load the correct supplier OIB, address, and business unit data.
 
-    This eliminates the need to manually pass supplier data and prevents
-    the common error of using default/invalid OIB (00000000000).
+    Source priority (Sprint C1.2):
+      1. Firestore `company_settings` collection (when company_id is provided)
+         → `vu_code` maps to `business_unit`, `nu_code` maps to `device_number`
+      2. `config/company_config.py` fallback (for any missing fields or when
+         company_id is not provided)
+
+    Args:
+        company_id: Optional ERP company ID.  When provided, Firestore
+                    company_settings is tried first.
 
     Returns:
         Dictionary containing:
@@ -71,27 +78,41 @@ async def get_supplier_data() -> dict:
                 - postal_code: str - Postal code
                 - email: str - Contact email
                 - phone: str - Contact phone
-                - business_unit: str - Business premise code (default: "1")
-                - device_number: str - Cash register code (default: "1")
+                - business_unit: str - Business premise code (vu_code, default: "1")
+                - device_number: str - Cash register code (nu_code, default: "1")
+            - source: str - "company_settings" or "company_config"
             - error: Optional[str] - Error message if failed
-
-    Example:
-        result = await get_supplier_data()
-        # Returns: {
-        #     "success": true,
-        #     "supplier": {
-        #         "name": "LUX TECH D.O.O.",
-        #         "oib": "47034854402",
-        #         "address": "Leskovački brijeg 2",
-        #         "city": "Hrvatski Leskovac",
-        #         "postal_code": "10257",
-        #         "email": "tomislav.luxtech@gmail.com",
-        #         "phone": "+385914575757",
-        #         "business_unit": "1",
-        #         "device_number": "1"
-        #     }
-        # }
     """
+    # ── Stage 1: try Firestore company_settings ───────────────────────────
+    if company_id:
+        try:
+            from services.erp.company_service import get_company_settings as _get_cs
+            cs = await _get_cs(company_id)
+            if cs and cs.get("oib") and len(cs.get("oib", "")) == 11:
+                supplier = {
+                    "name":          cs.get("name", ""),
+                    "oib":           cs["oib"],
+                    "address":       cs.get("address", ""),
+                    "city":          cs.get("city", ""),
+                    "postal_code":   cs.get("postal_code", ""),
+                    "email":         cs.get("email", ""),
+                    "phone":         cs.get("phone", ""),
+                    # vu_code / nu_code → FINA business_unit / device_number
+                    "business_unit": cs.get("vu_code") or "1",
+                    "device_number": cs.get("nu_code") or "1",
+                }
+                logger.info(
+                    f"[get_supplier_data] Loaded from company_settings: "
+                    f"company={company_id} OIB=***{supplier['oib'][-4:]}"
+                )
+                return {"success": True, "supplier": supplier, "source": "company_settings"}
+        except Exception as cs_exc:
+            logger.warning(
+                f"[get_supplier_data] company_settings lookup failed for "
+                f"{company_id}: {cs_exc}. Falling back to company_config."
+            )
+
+    # ── Stage 2: fall back to company_config.py ───────────────────────────
     try:
         from config.company_config import get_company_config
 
@@ -136,11 +157,12 @@ async def get_supplier_data() -> dict:
             "device_number": register.code
         }
 
-        logger.info(f"Supplier data loaded: {config.name}, OIB: ***{oib[-4:]}")
+        logger.info(f"Supplier data loaded from company_config: {config.name}, OIB: ***{oib[-4:]}")
 
         return {
             "success": True,
-            "supplier": supplier
+            "supplier": supplier,
+            "source": "company_config",
         }
 
     except ImportError as e:
@@ -3350,7 +3372,9 @@ def _normalize_invoice_for_pdf(invoice_data: dict) -> dict:
 
 
 async def execute_fiscalization(
-    invoice_data: dict
+    invoice_data: dict,
+    *,
+    skip_hitl: bool = False,
 ) -> dict:
     """
     Execute complete fiscalization workflow using the hybrid orchestrator.
@@ -3516,7 +3540,8 @@ async def execute_fiscalization(
             cert_path=cert_path,
             cert_password=cert_password,
             use_sandbox=use_sandbox,
-            skip_llm=True  # Use basic validation (LLM agents for later phase)
+            skip_llm=True,       # Use basic validation (LLM agents for later phase)
+            skip_hitl=skip_hitl, # API-triggered calls skip HITL confirmation
         )
 
         input_data = InvoiceInput(
@@ -3572,6 +3597,26 @@ async def execute_fiscalization(
             logger.info(f"[OK] Fiscalization successful! JIR: {response['jir']}")
         else:
             logger.error(f"[ERROR] Fiscalization failed: {response['error_message']}")
+
+        # ── Sprint C1: ERP write-back ──────────────────────────────────────
+        # If the caller provided an erp_invoice_id in invoice_data, write
+        # JIR/ZKI/status back to the ERP B2C invoice document so that the ERP
+        # document is the single source of truth.  Best-effort: a write-back
+        # failure must NOT affect the returned fiscalization result.
+        erp_invoice_id = invoice_data.get("erp_invoice_id")
+        if erp_invoice_id:
+            try:
+                from services.erp.fiscalization_bridge_service import write_back_b2c
+                await write_back_b2c(
+                    erp_invoice_id=erp_invoice_id,
+                    fiskalizacija_result=response,
+                    company_id=invoice_data.get("company_id"),
+                )
+            except Exception as bridge_exc:
+                logger.error(
+                    f"[execute_fiscalization] ERP bridge write-back failed "
+                    f"for invoice {erp_invoice_id}: {bridge_exc} (non-blocking)"
+                )
 
         return response
 
