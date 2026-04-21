@@ -362,7 +362,9 @@ class QuoteService(BaseERPService):
             "customer_oib": doc.get("customer_oib", ""),
             "buyer_name": doc.get("customer_name", ""),
             "buyer_oib": doc.get("customer_oib", ""),
+            # "date" is the canonical sort/filter field used by invoice_repo + reporting_service.
             "issue_date": now[:10],
+            "date":       now[:10],
             "currency": doc.get("currency", "EUR"),
             "document_status": "draft",
             "erp_payment_status": "unpaid",

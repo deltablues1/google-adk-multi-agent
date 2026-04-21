@@ -112,8 +112,12 @@ class FirestoreInvoiceRepository:
             inv_type = f["invoice_type"]
             return await self.list_by_type(inv_type, ctx, f, limit * 2, 0)
 
+        # When date filters are active, Python-side filtering runs after the Firestore fetch.
+        # Use a large safety cap so we don't silently miss documents.
+        # For a Croatian SME (< 5000 invoices/collection/company lifetime), 5000 is safe.
+        fetch_limit = 5000 if (f.get("date_from") or f.get("date_to")) else limit * 2
         tasks = [
-            self._query_collection(t, col, ctx, f, limit * 2, 0)
+            self._query_collection(t, col, ctx, f, fetch_limit, 0)
             for t, col in INVOICE_TYPE_TO_COLLECTION.items()
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -190,18 +194,27 @@ class FirestoreInvoiceRepository:
                 pass  # handled in post-filter below
             if filters.get("customer_id"):
                 query = query.where(filter=FieldFilter("customer_id", "==", filters["customer_id"]))
-            if filters.get("date_from"):
-                query = query.where(filter=FieldFilter("date", ">=", filters["date_from"]))
-            if filters.get("date_to"):
-                query = query.where(filter=FieldFilter("date", "<=", filters["date_to"]))
+            # Date filters applied in Python after _enrich() normalises "date" from "issue_date".
+            # Firestore-side date filtering is skipped here because different collections
+            # use different field names ("date" vs "issue_date"); Python-side is safe for the
+            # typical batch sizes queried here (limit * 2 docs per collection).
 
             query = query.limit(limit)
             docs = []
+            date_from = filters.get("date_from", "")
+            date_to   = filters.get("date_to", "")
             async for snap in query.stream():
                 doc = snap.to_dict() or {}
                 doc["_id"] = snap.id
                 doc["invoice_type"] = inv_type
-                doc = self._enrich(doc)
+                doc = self._enrich(doc)   # sets doc["date"] from issue_date if needed
+
+                # Post-filter: date range (Python-side, collection-agnostic)
+                doc_date = doc.get("date", "")
+                if date_from and doc_date < date_from:
+                    continue
+                if date_to and doc_date > date_to:
+                    continue
 
                 # Post-filter for payment_status_ne (Firestore != workaround)
                 if filters.get("payment_status_ne") == "paid":
@@ -217,6 +230,11 @@ class FirestoreInvoiceRepository:
 
     def _enrich(self, doc: dict) -> dict:
         """Add computed fields and normalize ERP tracking fields."""
+        # Normalize date field — outbound B2B/B2G write "issue_date"; older collections write "date".
+        # Ensure every doc exposes a canonical "date" key for sorting and Python-side filtering.
+        if not doc.get("date"):
+            doc["date"] = doc.get("issue_date", "")
+
         # Default ERP payment fields if not yet set
         if "erp_amount_paid" not in doc:
             doc["erp_amount_paid"] = 0.0

@@ -316,7 +316,6 @@ class TestActivityFeed:
         assert events[0]["action_type"] == "customer_created"
 
 
-
 # ---------------------------------------------------------------------------
 # Sprint A.1 regression lock — three concrete integration blockers
 # ---------------------------------------------------------------------------
@@ -367,3 +366,136 @@ class TestCreateFromUBL:
             f"Expected a known buyer_validation_status, got {status!r}"
         )
 
+
+class TestUnifiedListingForOutboundB2B:
+    """
+    Regression lock for Sprint A fix:
+    InvoiceService.list_invoices() must return outbound B2B invoices when filtering
+    by date_from/date_to, even though B2B invoices write 'issue_date' not 'date'.
+    Before the fix, invoice_repo filtered on Firestore field "date" which B2B docs don't have.
+    """
+
+    @pytest.mark.asyncio
+    async def test_b2b_invoice_appears_in_unified_list_with_date_filter(self, cid):
+        """B2B invoice created today must appear in list_invoices(date_from=today, date_to=today)."""
+        from services.erp.outbound_b2b_service import OutboundB2BService
+        from services.erp.invoice_service import InvoiceService
+
+        b2b_svc = OutboundB2BService()
+        inv_svc = InvoiceService()
+        ctx = make_ctx(cid)
+
+        today = str(date.today())
+        inv = await b2b_svc.create({
+            "customer_name":  "Regresija d.o.o.",
+            "customer_oib":   "12345678901",
+            "seller_name":    "Prodavač d.o.o.",
+            "seller_oib":     "98765432100",
+            "seller_iban":    "HR1210010051863000160",
+            "issue_date":     today,
+            "due_date":       today,
+            "items": [{
+                "name": "Usluga", "description": "Konzultantske usluge",
+                "quantity": 1, "unit": "kom", "unit_price": 100.0, "vat_rate": 25,
+            }],
+        }, ctx)
+
+        all_invoices = await inv_svc.list_invoices(
+            ctx,
+            filters={"date_from": today, "date_to": today},
+        )
+        ids = [d.get("invoice_id") or d.get("_id") for d in all_invoices]
+        assert inv["invoice_id"] in ids, (
+            "Outbound B2B invoice must appear in unified list when filtered by today's date"
+        )
+
+    @pytest.mark.asyncio
+    async def test_b2b_invoice_excluded_by_date_filter_in_past(self, cid):
+        """B2B invoice created today must NOT appear when date_to is yesterday."""
+        from services.erp.outbound_b2b_service import OutboundB2BService
+        from services.erp.invoice_service import InvoiceService
+        from datetime import timedelta
+
+        b2b_svc = OutboundB2BService()
+        inv_svc = InvoiceService()
+        ctx = make_ctx(cid)
+
+        today = str(date.today())
+        yesterday = str(date.today() - timedelta(days=1))
+
+        inv = await b2b_svc.create({
+            "customer_name":  "Exclusion d.o.o.",
+            "customer_oib":   "11111111110",
+            "seller_name":    "Prodavač d.o.o.",
+            "seller_oib":     "98765432100",
+            "seller_iban":    "HR1210010051863000160",
+            "issue_date":     today,
+            "due_date":       today,
+            "items": [{"name": "X", "description": "X", "quantity": 1, "unit": "kom", "unit_price": 50.0, "vat_rate": 0}],
+        }, ctx)
+
+        old_invoices = await inv_svc.list_invoices(
+            ctx,
+            filters={"date_from": "2020-01-01", "date_to": yesterday},
+        )
+        ids = [d.get("invoice_id") or d.get("_id") for d in old_invoices]
+        assert inv["invoice_id"] not in ids, (
+            "B2B invoice created today must not appear in a past date range"
+        )
+
+
+class TestReportingWithB2BIssueDate:
+    """
+    Regression lock for Sprint A fix:
+    ReportingService must pick up outbound B2B invoices via 'issue_date' field.
+    Before the fix, _COLLECTION_DATE_FIELD was not defined and both
+    _query_vat_for_collection() and _query_revenue_for_collection() queried
+    the 'date' field for all collections, missing all B2B documents.
+    """
+
+    @pytest.mark.asyncio
+    async def test_financial_summary_counts_b2b_invoice(self, cid):
+        """
+        After creating and issuing a B2B invoice (which writes 'issue_date'),
+        get_financial_summary must count it in invoice_count.
+        """
+        from services.erp.outbound_b2b_service import OutboundB2BService
+        from services.erp.reporting_service import ReportingService
+
+        b2b_svc = OutboundB2BService()
+        rep_svc = ReportingService()
+        ctx = make_ctx(cid)
+
+        today = str(date.today())
+        inv = await b2b_svc.create({
+            "customer_name":  "Reporting Test d.o.o.",
+            "customer_oib":   "22222222220",
+            "seller_name":    "Prodavač d.o.o.",
+            "seller_oib":     "98765432100",
+            "seller_iban":    "HR1210010051863000160",
+            "issue_date":     today,
+            "due_date":       today,
+            "items": [{
+                "name": "Usluga", "description": "Konzultantske usluge",
+                "quantity": 2, "unit": "sat", "unit_price": 200.0, "vat_rate": 25,
+            }],
+        }, ctx)
+
+        # Issue the invoice so it has a grand_total and is in an eligible status
+        await b2b_svc.approve(inv["invoice_id"], ctx)
+        await b2b_svc.issue(inv["invoice_id"], ctx)
+
+        today_year  = date.today().year
+        today_month = date.today().month
+
+        summary = await rep_svc.get_financial_summary(
+            ctx,
+            date_from=today,
+            date_to=today,
+        )
+        assert summary["invoice_count"] >= 1, (
+            "get_financial_summary must count the issued B2B invoice via issue_date field"
+        )
+        assert summary["revenue_eur"] > 0, (
+            "Revenue must reflect the B2B invoice grand_total"
+        )

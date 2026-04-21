@@ -95,6 +95,57 @@ class TestCompanySettings:
             await get_company_service().get(ctx)
 
 
+# ── C0: Write-side date normalization ────────────────────────────────────────
+
+class TestWriteSideDateNormalization:
+
+    @pytest.mark.asyncio
+    async def test_outbound_b2b_writes_date_field(self, cid):
+        from services.erp.outbound_b2b_service import OutboundB2BService
+        svc = OutboundB2BService()
+        ctx = make_ctx(cid)
+        today = str(date.today())
+
+        inv = await svc.create({
+            "customer_name": "Date Test d.o.o.", "customer_oib": "11111111110",
+            "seller_name": "Prodavac", "seller_oib": "98765432100",
+            "seller_iban": "HR1210010051863000160",
+            "issue_date": today, "due_date": today,
+            "items": [{"name": "X", "description": "X", "quantity": 1,
+                       "unit": "kom", "unit_price": 100.0, "vat_rate": 25}],
+        }, ctx)
+
+        assert inv.get("date") == today, "date must equal issue_date"
+        assert inv.get("issue_date") == today
+
+    @pytest.mark.asyncio
+    async def test_b2c_convert_writes_date_field(self, cid):
+        from services.erp.quote_service import QuoteService
+        from services.erp.customer_service import CustomerService
+        from services.erp.base_erp_service import get_firestore_db
+
+        svc = QuoteService()
+        ctx = make_ctx(cid)
+        today = str(date.today())
+
+        cust = await CustomerService().create_customer(
+            {"name": "Test Kupac", "oib": "22222222220", "party_type": "customer"}, ctx
+        )
+        q = await svc.create_quote({
+            "customer_id": cust["_id"],
+            "customer_name": "Test Kupac", "customer_oib": "22222222220",
+            "valid_until": str(date.today()),
+            "items": [{"name": "A", "quantity": 1, "unit_price": 50.0, "vat_rate": 25}],
+        }, ctx)
+        await svc.mark_sent(q["quote_id"], ctx)
+        await svc.accept_quote(q["quote_id"], ctx)
+
+        result = await svc.convert_to_invoice(q["quote_id"], "b2c", ctx)
+        snap = await get_firestore_db().collection("invoices_b2c").document(result["invoice_id"]).get()
+        doc = snap.to_dict() or {}
+        assert doc.get("date") == today, "date field must be written by convert_to_invoice"
+
+
 # ── C0: Company Settings API ─────────────────────────────────────────────────
 
 class TestCompanySettingsAPI:

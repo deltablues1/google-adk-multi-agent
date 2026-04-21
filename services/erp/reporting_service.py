@@ -25,6 +25,18 @@ from .repositories.firestore.vendor_invoice_repo import FirestoreVendorInvoiceRe
 
 logger = logging.getLogger(__name__)
 
+# Different collections use different field names for the invoice date.
+# invoices_b2b / invoices_b2g (outbound B2B service) write "issue_date";
+# older collections (b2c, eu, int) write "date".
+_COLLECTION_DATE_FIELD: dict[str, str] = {
+    "invoices_b2c":    "date",
+    "invoices_b2b":    "issue_date",
+    "invoices_b2g":    "issue_date",
+    "invoices_eu":     "date",
+    "invoices_int":    "date",
+    "vendor_invoices": "date",
+}
+
 
 class ReportingService(BaseERPService):
     """All methods are read-only. Returns serializable dicts."""
@@ -66,7 +78,10 @@ class ReportingService(BaseERPService):
 
         # Output VAT — parallel query across all outgoing invoice collections
         output_tasks = [
-            self._query_vat_for_collection(col, ctx.company_id, date_from, date_to, "date")
+            self._query_vat_for_collection(
+                col, ctx.company_id, date_from, date_to,
+                _COLLECTION_DATE_FIELD.get(col, "date"),
+            )
             for col in INVOICE_TYPE_TO_COLLECTION.values()
         ]
         output_results = await asyncio.gather(*output_tasks, return_exceptions=True)
@@ -133,7 +148,10 @@ class ReportingService(BaseERPService):
 
         # Revenue: sum of outgoing invoices (grand_total) in period
         revenue_tasks = [
-            self._query_revenue_for_collection(col, ctx.company_id, date_from, date_to)
+            self._query_revenue_for_collection(
+                col, ctx.company_id, date_from, date_to,
+                _COLLECTION_DATE_FIELD.get(col, "date"),
+            )
             for col in INVOICE_TYPE_TO_COLLECTION.values()
         ]
         revenue_results = await asyncio.gather(*revenue_tasks, return_exceptions=True)
@@ -177,41 +195,75 @@ class ReportingService(BaseERPService):
     async def _query_vat_for_collection(
         self, collection: str, company_id: str, date_from: str, date_to: str, date_field: str
     ) -> List[dict]:
-        """Query VAT breakdown from a single invoice collection."""
+        """
+        Query VAT breakdown from a single invoice collection.
+
+        Date filtering is done in Python rather than Firestore to avoid composite index
+        requirements.  Different collections use different date field names ("date" vs
+        "issue_date"); a single Python filter handles both transparently.
+        """
+        # Safety cap: 5000 docs per collection per company.  For a Croatian SME
+        # this is more than sufficient; add a log warning if the cap is hit.
+        _FETCH_CAP = 5000
         try:
             query = (
                 self._get_db().collection(collection)
                 .where(filter=FieldFilter("company_id", "==", company_id))
-                .where(filter=FieldFilter(date_field, ">=", date_from))
-                .where(filter=FieldFilter(date_field, "<=", date_to))
-                .limit(1000)
+                .limit(_FETCH_CAP)
             )
             docs = []
             async for snap in query.stream():
                 d = snap.to_dict() or {}
+                # Normalize: try the collection's canonical date field, then the other.
+                # New docs write both "date" and "issue_date"; old docs may have only one.
+                doc_date = d.get(date_field) or d.get("issue_date") or d.get("date", "")
+                if date_from and doc_date < date_from:
+                    continue
+                if date_to and doc_date > date_to:
+                    continue
                 docs.append(d)
+            if len(docs) >= _FETCH_CAP:
+                logger.warning(
+                    f"[Reporting] VAT query for {collection} hit safety cap ({_FETCH_CAP}). "
+                    "Some documents may be excluded. Consider a BigQuery read replica."
+                )
             return docs
         except Exception as e:
             logger.warning(f"[Reporting] VAT query error for {collection}: {e}")
             return []
 
     async def _query_revenue_for_collection(
-        self, collection: str, company_id: str, date_from: str, date_to: str
+        self, collection: str, company_id: str, date_from: str, date_to: str,
+        date_field: str = "date",
     ) -> tuple:
+        """
+        Query revenue totals from a single invoice collection.
+
+        Date filtering is Python-side (see _query_vat_for_collection for rationale).
+        Safety cap: 5000 docs per collection — sufficient for any Croatian SME lifetime volume.
+        """
+        _FETCH_CAP = 5000
         try:
             query = (
                 self._get_db().collection(collection)
                 .where(filter=FieldFilter("company_id", "==", company_id))
-                .where(filter=FieldFilter("date", ">=", date_from))
-                .where(filter=FieldFilter("date", "<=", date_to))
-                .limit(1000)
+                .limit(_FETCH_CAP)
             )
             total = 0.0
             count = 0
             async for snap in query.stream():
                 d = snap.to_dict() or {}
+                doc_date = d.get(date_field) or d.get("issue_date") or d.get("date", "")
+                if date_from and doc_date < date_from:
+                    continue
+                if date_to and doc_date > date_to:
+                    continue
                 total += float(d.get("grand_total") or d.get("total_gross") or 0)
                 count += 1
+            if count >= _FETCH_CAP:
+                logger.warning(
+                    f"[Reporting] Revenue query for {collection} hit safety cap ({_FETCH_CAP})."
+                )
             return total, count
         except Exception as e:
             logger.warning(f"[Reporting] Revenue query error for {collection}: {e}")

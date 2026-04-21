@@ -232,7 +232,10 @@ class OutboundB2BService(BaseERPService):
             "customer_country": data.get("customer_country", "HR"),
 
             # Dates / terms
+            # "date" is the canonical sort/filter field used by invoice_repo and reporting_service.
+            # Write both to ensure Firestore-side date queries work alongside issue_date consumers.
             "issue_date":     str(data["issue_date"])[:10],
+            "date":           str(data["issue_date"])[:10],
             "due_date":       str(data["due_date"])[:10] if data.get("due_date") else None,
             "payment_terms":  int(data.get("payment_terms", 30)),
             "currency":       data.get("currency", "EUR"),
