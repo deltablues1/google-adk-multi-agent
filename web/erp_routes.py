@@ -765,7 +765,8 @@ async def erp_peppol_webhook(request: Request):
     The AP posts JSON with at least:
       { "submissionId": "...", "status": "delivered|accepted|rejected|failed|pending" }
 
-    The endpoint finds the invoice by submission_id within the B2B collection.
+    The endpoint finds the invoice by submission_id across all companies (no
+    company_id needed from the caller).
 
     Returns: {"ok": True, "invoice_id": "...", "new_status": "..."} on success.
     """
@@ -773,6 +774,7 @@ async def erp_peppol_webhook(request: Request):
     from services.erp.peppol_status_service import verify_webhook_request, parse_webhook_payload
     from services.erp.outbound_b2b_service import get_outbound_b2b_service
     from services.erp.errors import NotFoundError
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
 
     body_bytes = await request.body()
     if not verify_webhook_request(dict(request.headers), body_bytes):
@@ -790,19 +792,30 @@ async def erp_peppol_webhook(request: Request):
             detail="Could not parse webhook payload — missing submissionId or status",
         )
 
-    try:
-        updated = await get_outbound_b2b_service().apply_peppol_status_from_webhook(
-            parsed["submission_id"],
-            status=parsed["status"],
-            raw_status=parsed.get("raw_status", ""),
-            buyer_message=parsed.get("buyer_message", ""),
-            receiver_participant_id=parsed.get("receiver_participant_id", ""),
-            sender_participant_id=parsed.get("sender_participant_id", ""),
-        )
-    except NotFoundError:
+    # Cross-collection lookup: B2B invoices first, then B2G.
+    # The AP sends a submission_id without knowing the invoice type,
+    # so we try both collections and apply to whichever finds it.
+    kwargs = dict(
+        status=parsed["status"],
+        raw_status=parsed.get("raw_status", ""),
+        buyer_message=parsed.get("buyer_message", ""),
+        receiver_participant_id=parsed.get("receiver_participant_id", ""),
+        sender_participant_id=parsed.get("sender_participant_id", ""),
+    )
+    updated = None
+    for svc in (get_outbound_b2b_service(), get_outbound_b2g_service()):
+        try:
+            updated = await svc.apply_peppol_status_from_webhook(
+                parsed["submission_id"], **kwargs
+            )
+            break
+        except NotFoundError:
+            continue
+
+    if updated is None:
         raise HTTPException(
             status_code=404,
-            detail=f"No outbound B2B invoice found for submission_id={parsed['submission_id']!r}",
+            detail=f"No outbound invoice found for submission_id={parsed['submission_id']!r}",
         )
     return {"ok": True, "invoice_id": updated.get("invoice_id"), "new_status": updated.get("document_status")}
 
