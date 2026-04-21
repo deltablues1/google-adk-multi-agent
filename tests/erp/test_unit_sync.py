@@ -59,9 +59,20 @@ def test_role_accountant_has_company_write():
     from services.erp.base_erp_service import ROLE_PERMISSIONS
     assert "company:write" in ROLE_PERMISSIONS["accountant"]
 
+
+def test_role_accountant_has_invoice_fiscalize():
+    from services.erp.base_erp_service import ROLE_PERMISSIONS
+    assert "invoice:fiscalize" in ROLE_PERMISSIONS["accountant"]
+
+
 def test_role_viewer_lacks_company_write():
     from services.erp.base_erp_service import ROLE_PERMISSIONS
     assert "company:write" not in ROLE_PERMISSIONS["viewer"]
+
+
+def test_role_viewer_lacks_invoice_fiscalize():
+    from services.erp.base_erp_service import ROLE_PERMISSIONS
+    assert "invoice:fiscalize" not in ROLE_PERMISSIONS["viewer"]
 
 
 def test_role_employee_lacks_company_write():
@@ -69,14 +80,12 @@ def test_role_employee_lacks_company_write():
     assert "company:write" not in ROLE_PERMISSIONS["employee"]
 
 
-def test_role_accountant_has_invoice_fiscalize():
+def test_role_owner_has_wildcard():
     from services.erp.base_erp_service import ROLE_PERMISSIONS
-    assert "invoice:fiscalize" in ROLE_PERMISSIONS["accountant"]
+    assert "*" in ROLE_PERMISSIONS["owner"]
 
 
-def test_role_viewer_lacks_invoice_fiscalize():
-    from services.erp.base_erp_service import ROLE_PERMISSIONS
-    assert "invoice:fiscalize" not in ROLE_PERMISSIONS["viewer"]
+# ── C2.2 Peppol status normalisation ─────────────────────────────────────────
 
 def test_peppol_normalise_known_statuses():
     from services.erp.peppol_status_service import normalise_status
@@ -241,3 +250,178 @@ def test_peppol_webhook_no_secret_logs_error_in_production(caplog):
         "Production mode without webhook secret must log a SECURITY error"
     )
 
+
+# ── Sprint Inbound A — attachment filter ─────────────────────────────────────
+
+def test_is_ubl_xml_extension():
+    from services.erp.inbound_eracun_transport_service import _is_ubl_attachment
+    assert _is_ubl_attachment({"filename": "invoice.xml", "mime_type": "application/xml"})
+
+
+def test_is_ubl_ubl_extension():
+    from services.erp.inbound_eracun_transport_service import _is_ubl_attachment
+    assert _is_ubl_attachment({"filename": "eracun.ubl", "mime_type": ""})
+
+
+def test_is_ubl_xml_mime_type():
+    from services.erp.inbound_eracun_transport_service import _is_ubl_attachment
+    assert _is_ubl_attachment({"filename": "doc", "mime_type": "text/xml"})
+
+
+def test_is_ubl_pdf_rejected():
+    from services.erp.inbound_eracun_transport_service import _is_ubl_attachment
+    assert not _is_ubl_attachment({"filename": "invoice.pdf", "mime_type": "application/pdf"})
+
+
+def test_is_ubl_jpg_rejected():
+    from services.erp.inbound_eracun_transport_service import _is_ubl_attachment
+    assert not _is_ubl_attachment({"filename": "scan.jpg", "mime_type": "image/jpeg"})
+
+
+def test_is_ubl_empty_rejected():
+    from services.erp.inbound_eracun_transport_service import _is_ubl_attachment
+    assert not _is_ubl_attachment({"filename": "", "mime_type": ""})
+
+
+# ── Sprint Inbound A — Gmail attachment metadata extraction ──────────────────
+
+def test_extract_attachment_metadata_finds_xml_part():
+    from tools.api_implementations.gmail_api import _extract_attachment_metadata
+
+    payload = {
+        "mimeType": "multipart/mixed",
+        "parts": [
+            {"mimeType": "text/plain", "body": {"data": "aGVsbG8="}, "filename": ""},
+            {
+                "mimeType": "application/xml",
+                "filename": "invoice.xml",
+                "body": {"attachmentId": "att-001", "size": 4096},
+            },
+        ],
+    }
+    result = _extract_attachment_metadata(payload)
+    assert len(result) == 1
+    assert result[0]["attachment_id"] == "att-001"
+    assert result[0]["filename"]      == "invoice.xml"
+    assert result[0]["mime_type"]     == "application/xml"
+
+
+def test_extract_attachment_metadata_skips_body_parts():
+    from tools.api_implementations.gmail_api import _extract_attachment_metadata
+
+    payload = {"mimeType": "text/plain", "body": {"data": "aGVsbG8="}, "filename": "", "parts": []}
+    assert _extract_attachment_metadata(payload) == []
+
+
+def test_extract_attachment_metadata_nested():
+    from tools.api_implementations.gmail_api import _extract_attachment_metadata
+
+    payload = {
+        "mimeType": "multipart/mixed",
+        "parts": [{
+            "mimeType": "multipart/related",
+            "parts": [{
+                "mimeType": "application/xml",
+                "filename": "deep.xml",
+                "body": {"attachmentId": "att-deep", "size": 1024},
+            }],
+        }],
+    }
+    result = _extract_attachment_metadata(payload)
+    assert len(result) == 1
+    assert result[0]["attachment_id"] == "att-deep"
+
+
+# ── Sprint Inbound B — Peppol inbound payload parsing ────────────────────────
+
+def test_peppol_inbound_parse_camelcase():
+    from services.erp.inbound_peppol_transport_service import parse_inbound_payload
+    p = parse_inbound_payload({
+        "submissionId": "SID-1",
+        "receiverId":   "0190:12345678901",
+        "senderId":     "0190:98765432109",
+    })
+    assert p["ap_submission_id"]        == "SID-1"
+    assert p["receiver_participant_id"] == "0190:12345678901"
+    assert p["sender_participant_id"]   == "0190:98765432109"
+
+
+def test_peppol_inbound_parse_snake_case():
+    from services.erp.inbound_peppol_transport_service import parse_inbound_payload
+    p = parse_inbound_payload({"submission_id": "SID-2", "receiver_id": "0190:22222222220"})
+    assert p["ap_submission_id"]        == "SID-2"
+    assert p["receiver_participant_id"] == "0190:22222222220"
+
+
+def test_peppol_inbound_parse_missing_submission_id_returns_empty():
+    from services.erp.inbound_peppol_transport_service import parse_inbound_payload
+    assert parse_inbound_payload({"receiverId": "0190:123"}) == {}
+
+
+def test_peppol_inbound_parse_empty_returns_empty():
+    from services.erp.inbound_peppol_transport_service import parse_inbound_payload
+    assert parse_inbound_payload({})   == {}
+    assert parse_inbound_payload(None) == {}
+
+
+def test_peppol_inbound_parse_base64_and_url_extracted():
+    from services.erp.inbound_peppol_transport_service import parse_inbound_payload
+    p = parse_inbound_payload({
+        "submissionId":   "SID-3",
+        "documentBase64": "BASE64DATA",
+        "documentUrl":    "https://ap.example.hr/doc/1",
+        "filename":       "invoice.xml",
+    })
+    assert p["xml_base64"] == "BASE64DATA"
+    assert p["xml_url"]    == "https://ap.example.hr/doc/1"
+    assert p["filename"]   == "invoice.xml"
+
+
+# ── Sprint Inbound B — verify_inbound_webhook ─────────────────────────────────
+
+def test_peppol_inbound_no_secret_accepts_all():
+    import os
+    from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+    os.environ.pop("PEPPOL_AP_INBOUND_WEBHOOK_SECRET", None)
+    os.environ.pop("PEPPOL_AP_WEBHOOK_SECRET", None)
+    assert verify_inbound_webhook({}, b"body") is True
+
+
+def test_peppol_inbound_valid_hmac_accepted():
+    import hashlib, hmac
+    from unittest.mock import patch
+    from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+    secret = "inbound-secret"
+    body   = b'{"submissionId":"X","receiverId":"0190:123"}'
+    sig    = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    with patch.dict("os.environ", {"PEPPOL_AP_INBOUND_WEBHOOK_SECRET": secret}):
+        assert verify_inbound_webhook({"X-Peppol-Signature": sig}, body) is True
+
+
+def test_peppol_inbound_wrong_hmac_rejected():
+    from unittest.mock import patch
+    from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+    with patch.dict("os.environ", {"PEPPOL_AP_INBOUND_WEBHOOK_SECRET": "secret"}):
+        assert verify_inbound_webhook({"X-Peppol-Signature": "deadbeef"}, b"body") is False
+
+
+def test_peppol_inbound_missing_header_rejected():
+    from unittest.mock import patch
+    from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+    with patch.dict("os.environ", {"PEPPOL_AP_INBOUND_WEBHOOK_SECRET": "s"}):
+        assert verify_inbound_webhook({}, b"body") is False
+
+
+def test_peppol_inbound_falls_back_to_outbound_secret():
+    """PEPPOL_AP_INBOUND_WEBHOOK_SECRET absent → falls back to PEPPOL_AP_WEBHOOK_SECRET."""
+    import hashlib, hmac
+    from unittest.mock import patch
+    from services.erp.inbound_peppol_transport_service import verify_inbound_webhook
+    secret = "shared-secret"
+    body   = b"body"
+    sig    = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    with patch.dict("os.environ",
+                    {"PEPPOL_AP_WEBHOOK_SECRET": secret},
+                    clear=False):
+        import os; os.environ.pop("PEPPOL_AP_INBOUND_WEBHOOK_SECRET", None)
+        assert verify_inbound_webhook({"X-Peppol-Signature": sig}, body) is True
