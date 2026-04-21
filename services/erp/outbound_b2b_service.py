@@ -53,13 +53,19 @@ def get_outbound_b2b_service() -> "OutboundB2BService":
 class OutboundB2BService(BaseERPService):
     """Service for outgoing B2B invoice lifecycle."""
 
+    # Subclass-override points — change these to get a B2G (or other) service:
+    _col            = "invoices_b2b"
+    _display_prefix = "B2B"
+    _invoice_type   = "b2b"
+    _archive_alias  = "archive_out_b2b"
+
     # ------------------------------------------------------------------
     # Queries
     # ------------------------------------------------------------------
 
     async def get(self, invoice_id: str, ctx: ERPRequestContext) -> dict:
         check_permission(ctx, "outbound:read")
-        snap = await self._get_db().collection(_COL).document(invoice_id).get()
+        snap = await self._get_db().collection(self._col).document(invoice_id).get()
         if not snap.exists:
             raise NotFoundError(code="NOT_FOUND",
                                 message=f"Izlazni B2B račun '{invoice_id}' nije pronađen.")
@@ -82,7 +88,7 @@ class OutboundB2BService(BaseERPService):
         # invoice_type filter intentionally absent — all docs in invoices_b2b are b2b.
         # Adding it would require a composite index with no practical benefit.
         query = (
-            self._get_db().collection(_COL)
+            self._get_db().collection(self._col)
             .where(filter=FieldFilter("company_id", "==", ctx.company_id))
             .where(filter=FieldFilter("deleted",    "==", False))
         )
@@ -196,7 +202,7 @@ class OutboundB2BService(BaseERPService):
         seller = await self._resolve_seller(data, ctx)
 
         invoice_id  = str(uuid4())
-        display_id  = await generate_display_id(ctx.company_id, _DISPLAY_PREFIX, self._get_db())
+        display_id  = await generate_display_id(ctx.company_id, self._display_prefix, self._get_db())
         now_iso     = datetime.now(timezone.utc).isoformat()
 
         # invoice_number = user-supplied or default to display_id
@@ -205,7 +211,7 @@ class OutboundB2BService(BaseERPService):
         doc = {
             "invoice_id":       invoice_id,
             "company_id":       ctx.company_id,
-            "invoice_type":     "b2b",
+            "invoice_type":     self._invoice_type,
             "display_id":       display_id,
             "invoice_number":   invoice_number,
             "deleted":          False,
@@ -288,8 +294,8 @@ class OutboundB2BService(BaseERPService):
             "created_by":  ctx.user_id,
         }
 
-        await self._get_db().collection(_COL).document(invoice_id).set(doc)
-        await write_audit("outbound_b2b.created", "outbound_b2b", invoice_id, display_id, ctx,
+        await self._get_db().collection(self._col).document(invoice_id).set(doc)
+        await write_audit(f"outbound_{self._invoice_type}.created", f"outbound_{self._invoice_type}", invoice_id, display_id, ctx,
                           data={"total_gross": float(total_gross)}, db=self._get_db())
         doc["_id"] = invoice_id
         return doc
@@ -394,6 +400,11 @@ class OutboundB2BService(BaseERPService):
         doc = await self.get(invoice_id, ctx)
         validate_transition(doc["document_status"], "eracun_sent", OUTGOING_B2B_DOC_TRANSITIONS)
 
+        # Fallback: if delivery_target is blank, use the value already on the doc
+        # (set at create time from customer_peppol_id for B2G, or from a previous send attempt).
+        if not delivery_target:
+            delivery_target = doc.get("delivery_target") or doc.get("customer_peppol_id") or ""
+
         from .outbound_dispatch_service import dispatch_invoice
         now = datetime.now(timezone.utc).isoformat()
         attempts = int(doc.get("send_attempts") or 0) + 1
@@ -425,7 +436,7 @@ class OutboundB2BService(BaseERPService):
                     if collision_found:
                         break
                     conflict_query = (
-                        self._get_db().collection(_COL)
+                        self._get_db().collection(self._col)
                         .where(filter=_FF("company_id", "==", ctx.company_id))
                         .where(filter=_FF("deleted",    "==", False))
                         .where(filter=_FF(check_field,  "==", ap_sid))
@@ -466,7 +477,7 @@ class OutboundB2BService(BaseERPService):
             next_retry = (
                 datetime.now(timezone.utc) + timedelta(minutes=30)
             ).isoformat()
-            await self._get_db().collection(_COL).document(invoice_id).update({
+            await self._get_db().collection(self._col).document(invoice_id).update({
                 "send_attempts":        attempts,
                 "last_send_attempt_at": now,
                 "last_send_error":      result.get("error", "unknown"),
@@ -590,7 +601,7 @@ class OutboundB2BService(BaseERPService):
                     if collision_found:
                         break
                     conflict_query = (
-                        self._get_db().collection(_COL)
+                        self._get_db().collection(self._col)
                         .where(filter=_FF("company_id", "==", ctx.company_id))
                         .where(filter=_FF("deleted",    "==", False))
                         .where(filter=_FF(check_field,  "==", ap_sid))
@@ -630,15 +641,15 @@ class OutboundB2BService(BaseERPService):
             else:
                 # Re-sent from eracun_sent — update sent_at
                 update["sent_at"] = result.get("sent_at", now)
-            await self._get_db().collection(_COL).document(invoice_id).update(update)
-            await write_audit("outbound_b2b.resent", "outbound_b2b", invoice_id,
+            await self._get_db().collection(self._col).document(invoice_id).update(update)
+            await write_audit(f"outbound_{self._invoice_type}.resent", f"outbound_{self._invoice_type}", invoice_id,
                               doc.get("display_id", invoice_id), ctx,
                               data={"method": method, "attempt": attempts}, db=self._get_db())
             return await self.get(invoice_id, ctx)
         else:
             from datetime import timedelta
             next_retry = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
-            await self._get_db().collection(_COL).document(invoice_id).update({
+            await self._get_db().collection(self._col).document(invoice_id).update({
                 "send_attempts":        attempts,
                 "last_send_attempt_at": now,
                 "last_send_error":      result.get("error", "unknown"),
@@ -692,7 +703,7 @@ class OutboundB2BService(BaseERPService):
             update["next_retry_at"]  = next_retry
             update["send_attempts"]  = int(doc.get("send_attempts") or 0) + 1
 
-        await self._get_db().collection(_COL).document(invoice_id).update(update)
+        await self._get_db().collection(self._col).document(invoice_id).update(update)
 
         # Auto-transition for unambiguous statuses
         if external_status == "delivered" and doc["document_status"] == "eracun_sent":
@@ -737,7 +748,7 @@ class OutboundB2BService(BaseERPService):
         docs = []
         for status in ("eracun_sent", "delivered"):
             query = (
-                self._get_db().collection(_COL)
+                self._get_db().collection(self._col)
                 .where(filter=FieldFilter("company_id", "==", ctx.company_id))
                 .where(filter=FieldFilter("deleted",    "==", False))
                 .where(filter=FieldFilter("document_status", "==", status))
@@ -781,7 +792,7 @@ class OutboundB2BService(BaseERPService):
         check_permission(ctx, "outbound:read")
         from google.cloud.firestore_v1.base_query import FieldFilter
         query = (
-            self._get_db().collection(_COL)
+            self._get_db().collection(self._col)
             .where(filter=FieldFilter("company_id",     "==", ctx.company_id))
             .where(filter=FieldFilter("deleted",        "==", False))
             .where(filter=FieldFilter("document_status", "==", "issued"))
@@ -836,24 +847,30 @@ class OutboundB2BService(BaseERPService):
 
     async def archive_outbound(self, invoice_id: str, ctx: ERPRequestContext) -> dict:
         """
-        Upload UBL XML + meta JSON to Drive (Invoices_Archive/OUT/b2b/YYYY/MM/).
+        Upload UBL XML + meta JSON to Drive (Invoices_Archive/OUT/{type}/YYYY/MM/).
         Delegates to outbound_archive_service.archive_outbound_document().
         Idempotent: if already archived, returns current doc state.
         """
         from .outbound_archive_service import archive_outbound_document
-        return await archive_outbound_document(invoice_id, ctx)
+        return await archive_outbound_document(
+            invoice_id, ctx, col=self._col, archive_alias=self._archive_alias,
+            invoice_type=self._invoice_type,
+        )
 
     async def list_pending_archive(self, ctx: ERPRequestContext) -> List[dict]:
         """Return issued/sent/delivered/accepted/rejected invoices not yet archived."""
         from .outbound_archive_service import list_pending_outbound_archive
-        return await list_pending_outbound_archive(ctx)
+        return await list_pending_outbound_archive(ctx, col=self._col)
 
     async def retry_archive(
         self, ctx: ERPRequestContext, max_attempts: int = 3
     ) -> dict:
         """Retry archiving for all pending-archive invoices. Returns summary dict."""
         from .outbound_archive_service import retry_outbound_archive
-        return await retry_outbound_archive(ctx, max_attempts=max_attempts)
+        return await retry_outbound_archive(
+            ctx, max_attempts=max_attempts, col=self._col,
+            archive_alias=self._archive_alias, invoice_type=self._invoice_type,
+        )
 
     # ------------------------------------------------------------------
     # Peppol status feedback loop (Sprint C2.2)
@@ -878,7 +895,7 @@ class OutboundB2BService(BaseERPService):
         # Primary: ap_submission_id (new canonical field)
         for field in ("ap_submission_id", "external_submission_id"):
             query = (
-                db.collection(_COL)
+                db.collection(self._col)
                 .where(filter=FieldFilter("company_id", "==", ctx.company_id))
                 .where(filter=FieldFilter("deleted",    "==", False))
                 .where(filter=FieldFilter(field,        "==", submission_id))
@@ -925,7 +942,7 @@ class OutboundB2BService(BaseERPService):
 
         for field in ("ap_submission_id", "external_submission_id"):
             query = (
-                db.collection(_COL)
+                db.collection(self._col)
                 .where(filter=FieldFilter("deleted", "==", False))
                 .where(filter=FieldFilter(field,     "==", submission_id))
                 .limit(10)
@@ -1058,7 +1075,7 @@ class OutboundB2BService(BaseERPService):
         """Shared implementation for both webhook and poller paths."""
         invoice_id = doc["_id"]
         now = datetime.now(timezone.utc).isoformat()
-        await self._get_db().collection(_COL).document(invoice_id).update({
+        await self._get_db().collection(self._col).document(invoice_id).update({
             "peppol_raw_status":        raw_status or status,
             "peppol_status_updated_at": now,
             "updated_at":               now,
@@ -1104,7 +1121,7 @@ class OutboundB2BService(BaseERPService):
         candidates = []
         for status in ("eracun_sent", "delivered"):
             query = (
-                self._get_db().collection(_COL)
+                self._get_db().collection(self._col)
                 .where(filter=FieldFilter("company_id",      "==", ctx.company_id))
                 .where(filter=FieldFilter("deleted",         "==", False))
                 .where(filter=FieldFilter("document_status", "==", status))
@@ -1154,7 +1171,7 @@ class OutboundB2BService(BaseERPService):
                     updated += 1
                 else:
                     # Still same status — just update checked_at
-                    await self._get_db().collection(_COL).document(doc["_id"]).update({
+                    await self._get_db().collection(self._col).document(doc["_id"]).update({
                         "peppol_status_updated_at": result["checked_at"],
                         "updated_at":               result["checked_at"],
                     })
@@ -1192,7 +1209,7 @@ class OutboundB2BService(BaseERPService):
         docs = []
         for status in ("eracun_sent", "delivered"):
             query = (
-                self._get_db().collection(_COL)
+                self._get_db().collection(self._col)
                 .where(filter=FieldFilter("company_id",      "==", ctx.company_id))
                 .where(filter=FieldFilter("deleted",         "==", False))
                 .where(filter=FieldFilter("document_status", "==", status))
@@ -1222,8 +1239,8 @@ class OutboundB2BService(BaseERPService):
         """Write status transition + extra fields atomically."""
         now = datetime.now(timezone.utc).isoformat()
         update = {"document_status": new_status, "updated_at": now, **extra}
-        await self._get_db().collection(_COL).document(invoice_id).update(update)
-        await write_audit(f"outbound_b2b.{new_status}", "outbound_b2b", invoice_id, invoice_id,
+        await self._get_db().collection(self._col).document(invoice_id).update(update)
+        await write_audit(f"outbound_{self._invoice_type}.{new_status}", f"outbound_{self._invoice_type}", invoice_id, invoice_id,
                           ctx, data={"new_status": new_status}, db=self._get_db())
         return await self.get(invoice_id, ctx)
 

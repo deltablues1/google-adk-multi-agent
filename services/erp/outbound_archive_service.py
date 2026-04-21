@@ -33,7 +33,8 @@ from services.erp.request_context import ERPRequestContext
 
 logger = logging.getLogger(__name__)
 
-_COL = "invoices_b2b"
+_COL           = "invoices_b2b"   # backward-compat — not used inside public functions
+_ARCHIVE_ALIAS = "archive_out_b2b"
 
 # Statuses that are eligible for archiving (must have a generated UBL)
 _ARCHIVE_ELIGIBLE_STATUSES = {"issued", "eracun_sent", "delivered", "accepted", "rejected"}
@@ -122,15 +123,22 @@ async def _upload_bytes_to_drive(
 async def archive_outbound_document(
     invoice_id: str,
     ctx: ERPRequestContext,
+    *,
+    col: str = "invoices_b2b",
+    archive_alias: str = "archive_out_b2b",
+    invoice_type: str = "b2b",
 ) -> dict:
     """
-    Archive an outbound B2B invoice to Google Drive.
+    Archive an outbound invoice to Google Drive.
+
+    Works for both B2B (col="invoices_b2b", archive_alias="archive_out_b2b")
+    and B2G (col="invoices_b2g", archive_alias="archive_out_b2g").
 
     Steps:
       1. Load doc from Firestore.
       2. Idempotent: if already archived, return current doc.
       3. Validate ubl_xml present.
-      4. Resolve Drive folder Invoices_Archive/OUT/b2b/YYYY/MM/.
+      4. Resolve Drive folder Invoices_Archive/OUT/{type}/YYYY/MM/.
       5. Upload {display_id}_ubl.xml and {display_id}_meta.json.
       6. Update Firestore with archive tracking fields.
       7. Write audit.
@@ -140,7 +148,7 @@ async def archive_outbound_document(
     check_permission(ctx, "outbound:archive")
     db = get_firestore_db()
 
-    snap = await db.collection(_COL).document(invoice_id).get()
+    snap = await db.collection(col).document(invoice_id).get()
     if not snap.exists:
         raise NotFoundError(f"Invoice {invoice_id} not found")
 
@@ -175,10 +183,10 @@ async def archive_outbound_document(
         from tools.google_api_client import create_api_client_auto
 
         nav = await get_drive_navigator()
-        b2b_root_id = nav.get_folder_id("archive_out_b2b")
-        if not b2b_root_id:
+        root_id = nav.get_folder_id(archive_alias)
+        if not root_id:
             raise RuntimeError(
-                "archive_out_b2b folder not resolved — run ensure_structure() first"
+                f"{archive_alias} folder not resolved — run ensure_structure() first"
             )
 
         # YYYY/MM subfolder from issue_date
@@ -193,7 +201,7 @@ async def archive_outbound_document(
 
         credentials = create_api_client_auto().credentials
 
-        year_folder_id  = await _get_or_create_folder(credentials, year_str,  b2b_root_id)
+        year_folder_id  = await _get_or_create_folder(credentials, year_str,  root_id)
         month_folder_id = await _get_or_create_folder(credentials, month_str, year_folder_id)
 
         ubl_file  = await _upload_bytes_to_drive(
@@ -241,9 +249,9 @@ async def archive_outbound_document(
             "updated_at":              now,
         }
 
-        await db.collection(_COL).document(invoice_id).update(update)
+        await db.collection(col).document(invoice_id).update(update)
         await write_audit(
-            "outbound_b2b.archived", "outbound_b2b", invoice_id, display_id, ctx,
+            f"outbound_{invoice_type}.archived", f"outbound_{invoice_type}", invoice_id, display_id, ctx,
             data={
                 "archive_folder_id": month_folder_id,
                 "ubl_file_id":       ubl_file_id,
@@ -255,7 +263,7 @@ async def archive_outbound_document(
 
         logger.info(
             f"[OutboundArchive] Archived {display_id} → "
-            f"archive_out_b2b/{year_str}/{month_str} "
+            f"{archive_alias}/{year_str}/{month_str} "
             f"(ubl={ubl_file_id}, meta={meta_file_id}, pdf={pdf_file_id or 'none'})"
         )
 
@@ -277,7 +285,7 @@ async def archive_outbound_document(
             "archive_error":           error_msg,
             "updated_at":              now,
         }
-        await db.collection(_COL).document(invoice_id).update(fail_update)
+        await db.collection(col).document(invoice_id).update(fail_update)
 
         raise ValidationError(
             code="ARCHIVE_FAILED",
@@ -288,13 +296,16 @@ async def archive_outbound_document(
 async def list_pending_outbound_archive(
     ctx: ERPRequestContext,
     limit: int = 200,
+    *,
+    col: str = "invoices_b2b",
 ) -> List[dict]:
     """
-    Return outbound B2B invoices that:
+    Return outbound invoices that:
       - are in an archive-eligible status (issued/eracun_sent/delivered/accepted/rejected)
       - have ubl_xml present
       - have archive_status != "archived"
 
+    Works for B2B (col="invoices_b2b") and B2G (col="invoices_b2g").
     ubl_xml is stripped from the response.
     """
     check_permission(ctx, "outbound:read")
@@ -302,7 +313,7 @@ async def list_pending_outbound_archive(
 
     db = get_firestore_db()
     query = (
-        db.collection(_COL)
+        db.collection(col)
         .where(filter=FieldFilter("company_id", "==", ctx.company_id))
         .where(filter=FieldFilter("deleted",    "==", False))
         .limit(limit)
@@ -329,15 +340,20 @@ async def list_pending_outbound_archive(
 async def retry_outbound_archive(
     ctx: ERPRequestContext,
     max_attempts: int = 3,
+    *,
+    col: str = "invoices_b2b",
+    archive_alias: str = "archive_out_b2b",
+    invoice_type: str = "b2b",
 ) -> dict:
     """
     Retry archiving for all pending-archive invoices where
     archive_attempts < max_attempts.
 
+    Works for B2B and B2G via col/archive_alias/invoice_type.
     Returns {"attempted": N, "succeeded": N, "failed": N, "skipped": N}.
     """
     check_permission(ctx, "outbound:archive")
-    candidates = await list_pending_outbound_archive(ctx)
+    candidates = await list_pending_outbound_archive(ctx, col=col)
 
     attempted = succeeded = failed = skipped = 0
     for doc in candidates:
@@ -348,7 +364,9 @@ async def retry_outbound_archive(
         attempted += 1
         invoice_id = doc.get("invoice_id") or doc.get("_id")
         try:
-            await archive_outbound_document(invoice_id, ctx)
+            await archive_outbound_document(
+                invoice_id, ctx, col=col, archive_alias=archive_alias, invoice_type=invoice_type,
+            )
             succeeded += 1
         except Exception as exc:
             failed += 1

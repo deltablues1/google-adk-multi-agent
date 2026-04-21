@@ -10,6 +10,7 @@ import os
 import logging
 import uuid as _uuid
 from decimal import Decimal
+from datetime import datetime, timezone
 from html import escape as esc
 from typing import Tuple
 
@@ -23,6 +24,7 @@ from web.models import (
     CustomerCreate, ProductCreate,
     QuoteCreate, QuoteUpdate, QuoteConvertRequest, QuoteCreateInvoiceRequest,
     OutboundB2BCreate, OutboundB2BSendRequest, OutboundB2BRejectRequest,
+    OutboundB2GCreate,
 )
 
 logger = logging.getLogger(__name__)
@@ -991,6 +993,238 @@ async def erp_sync_status_outbound_b2b(
     )
 
 
+# ── Outbound B2G eRačun (javna nabava — FINA Peppol) ─────────────────────────
+#
+# Full lifecycle mirrors B2B but targets the public-sector via FINA Peppol.
+# Collection: invoices_b2g  |  Archive: Invoices_Archive/OUT/b2g/YYYY/MM/
+#
+#   POST   /outbound-b2g                       — create (draft)
+#   GET    /outbound-b2g                       — list
+#   GET    /outbound-b2g/pending-ack           — awaiting buyer ack
+#   GET    /outbound-b2g/send-failures         — issued with failed sends
+#   POST   /outbound-b2g/retry-send-failures   — scheduler retry
+#   GET    /outbound-b2g/pending-archive       — not yet archived
+#   POST   /outbound-b2g/retry-archive         — scheduler archive retry
+#   POST   /outbound-b2g/poll-peppol-status    — AP status poll (scheduler)
+#   GET    /outbound-b2g/pending-peppol-sync   — stale AP status dashboard
+#   GET    /outbound-b2g/{id}
+#   POST   /outbound-b2g/{id}/approve
+#   POST   /outbound-b2g/{id}/issue            — UBL + BuyerReference generated
+#   POST   /outbound-b2g/{id}/send             — real transport dispatch (Peppol/email/manual)
+#   POST   /outbound-b2g/{id}/resend
+#   POST   /outbound-b2g/{id}/sync-status
+#   POST   /outbound-b2g/{id}/delivered
+#   POST   /outbound-b2g/{id}/accept
+#   POST   /outbound-b2g/{id}/reject
+#   POST   /outbound-b2g/{id}/cancel
+#   POST   /outbound-b2g/{id}/archive
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/outbound-b2g/poll-peppol-status")
+async def erp_b2g_poll_peppol_status(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """
+    Poll the AP for status of all in-flight B2G Peppol invoices (eracun_sent/delivered).
+    Intended for the scheduler and the operator 'sync now' button.
+    Returns {"polled": N, "updated": N, "errors": N, "skipped": N}.
+    """
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().poll_pending_peppol_status(ctx)
+
+
+@router.get("/outbound-b2g/pending-peppol-sync")
+async def erp_b2g_pending_peppol_sync(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """
+    Return B2G Peppol invoices in eracun_sent/delivered whose last AP status check
+    is older than 30 minutes (or never checked). PEPPOL-STUB-* excluded.
+    """
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().list_pending_peppol_sync(ctx)
+
+
+@router.get("/outbound-b2g/pending-ack")
+async def erp_outbound_b2g_pending_ack(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """B2G invoices in eracun_sent/delivered awaiting buyer acknowledgement."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().list_pending_ack(ctx)
+
+
+@router.get("/outbound-b2g/send-failures")
+async def erp_outbound_b2g_send_failures(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """B2G invoices in issued status with a failed send attempt."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().list_send_failures(ctx)
+
+
+@router.post("/outbound-b2g/retry-send-failures")
+async def erp_outbound_b2g_retry_send_failures(
+    max_attempts: int = 5, ctx: ERPRequestContext = Depends(get_erp_ctx)
+):
+    """Retry B2G send failures (scheduler). Returns {attempted, succeeded, failed, skipped}."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().retry_send_failures(ctx, max_attempts=max_attempts)
+
+
+@router.get("/outbound-b2g/pending-archive")
+async def erp_outbound_b2g_pending_archive(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """B2G invoices with UBL not yet archived to Drive."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().list_pending_archive(ctx)
+
+
+@router.post("/outbound-b2g/retry-archive")
+async def erp_outbound_b2g_retry_archive(
+    max_attempts: int = 3, ctx: ERPRequestContext = Depends(get_erp_ctx)
+):
+    """Retry Drive archiving for B2G pending-archive invoices."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().retry_archive(ctx, max_attempts=max_attempts)
+
+
+@router.post("/outbound-b2g")
+async def erp_create_outbound_b2g(req: OutboundB2GCreate, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Create a new outgoing B2G invoice (eRačun for public sector) in draft status."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    data = req.model_dump()
+    for field in ("issue_date", "due_date"):
+        if data.get(field):
+            data[field] = data[field].isoformat()
+    data["items"] = [
+        {**item, "unit_price": float(item["unit_price"]), "quantity": float(item["quantity"])}
+        for item in data.get("items", [])
+    ]
+    return await get_outbound_b2g_service().create(data, ctx)
+
+
+@router.get("/outbound-b2g")
+async def erp_list_outbound_b2g(
+    document_status: str = "", customer_id: str = "",
+    date_from: str = "", date_to: str = "",
+    limit: int = 50, offset: int = 0,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """List outgoing B2G invoices with optional filters."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    filters = {}
+    if document_status:
+        filters["document_status"] = document_status
+    if customer_id:
+        filters["customer_id"] = customer_id
+    if date_from:
+        filters["date_from"] = date_from
+    if date_to:
+        filters["date_to"] = date_to
+    return await get_outbound_b2g_service().list(ctx, filters, _clamp_limit(limit), offset)
+
+
+@router.get("/outbound-b2g/{invoice_id}")
+async def erp_get_outbound_b2g(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Fetch a single outgoing B2G invoice by ID."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().get(invoice_id, ctx)
+
+
+@router.post("/outbound-b2g/{invoice_id}/approve")
+async def erp_approve_outbound_b2g(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Approve a draft B2G invoice (draft → approved)."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().approve(invoice_id, ctx)
+
+
+@router.post("/outbound-b2g/{invoice_id}/issue")
+async def erp_issue_outbound_b2g(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """
+    Issue a B2G invoice (approved → issued).
+    Generates UBL 2.1 XML with BuyerReference (EN 16931 BT-10) if provided.
+    """
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().issue(invoice_id, ctx)
+
+
+@router.post("/outbound-b2g/{invoice_id}/send")
+async def erp_send_outbound_b2g(
+    invoice_id: str, req: OutboundB2BSendRequest,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Send an issued B2G invoice to the buyer (issued → eracun_sent).
+    Recommended delivery method: peppol (FINA Peppol network).
+    """
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().send(
+        invoice_id, ctx,
+        delivery_method=req.delivery_method,
+        delivery_target=req.delivery_target,
+        delivery_ref=req.delivery_ref,
+    )
+
+
+@router.post("/outbound-b2g/{invoice_id}/delivered")
+async def erp_delivered_outbound_b2g(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Confirm delivery (eracun_sent → delivered)."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().mark_delivered(invoice_id, ctx)
+
+
+@router.post("/outbound-b2g/{invoice_id}/accept")
+async def erp_accept_outbound_b2g(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Buyer (public sector) confirmed receipt (delivered → accepted)."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().accept(invoice_id, ctx)
+
+
+@router.post("/outbound-b2g/{invoice_id}/reject")
+async def erp_reject_outbound_b2g(
+    invoice_id: str, req: OutboundB2BRejectRequest,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """Buyer (public sector) rejected the invoice. Mandatory rejection_reason required."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().reject(invoice_id, ctx, req.rejection_reason)
+
+
+@router.post("/outbound-b2g/{invoice_id}/cancel")
+async def erp_cancel_outbound_b2g(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Cancel a B2G invoice (allowed from draft/approved/issued/eracun_sent)."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().cancel(invoice_id, ctx)
+
+
+@router.post("/outbound-b2g/{invoice_id}/archive")
+async def erp_archive_outbound_b2g(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """
+    Upload UBL XML to Drive (Invoices_Archive/OUT/b2g/YYYY/MM/).
+    Requires UBL to have been generated (document_status >= issued).
+    """
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().archive_outbound(invoice_id, ctx)
+
+
+@router.post("/outbound-b2g/{invoice_id}/resend")
+async def erp_resend_outbound_b2g(
+    invoice_id: str, req: OutboundB2BSendRequest = None,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """Retry dispatch or re-send a B2G invoice."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    method = (req.delivery_method if req else None) or None
+    target = (req.delivery_target if req else None) or None
+    return await get_outbound_b2g_service().resend(invoice_id, ctx, method, target)
+
+
+@router.post("/outbound-b2g/{invoice_id}/sync-status")
+async def erp_sync_status_outbound_b2g(
+    invoice_id: str, req: dict, ctx: ERPRequestContext = Depends(get_erp_ctx)
+):
+    """Record an external delivery/acknowledgement status update for a B2G invoice."""
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
+    return await get_outbound_b2g_service().sync_external_status(
+        invoice_id, ctx,
+        external_status=req.get("external_status", ""),
+        external_ref=req.get("external_ref", ""),
+    )
+
+
+
 # ── Payments ─────────────────────────────────────────────────────────────────
 
 @router.get("/payments")
@@ -1190,21 +1424,35 @@ async def erp_create_invoice_from_quote(
     ctx: ERPRequestContext = Depends(get_erp_ctx),
 ):
     """
-    Create a fully-structured outbound B2B invoice from an accepted quote (Faza 2E).
+    Create a fully-structured outbound invoice from an accepted quote.
+
+    invoice_type (default "b2b"):
+      "b2b" — domestic B2B eRačun via OutboundB2BService
+      "b2g" — public-sector B2G eRačun via FINA Peppol / OutboundB2GService
 
     The quote must be in 'accepted' status.
     Idempotent: a second call returns the already-created invoice without creating a duplicate.
     Returns 201 for new invoices, 200 for already-existing ones.
-
-    Body fields are all optional overrides on top of quote data:
-      seller_name, seller_oib, seller_iban, seller_address, seller_city, due_date, notes
     """
     from fastapi.responses import JSONResponse
     from services.erp.quote_service import get_quote_service
+
     overrides = req.model_dump(exclude_none=True)
+    # Remove invoice_type from overrides dict; it's routing metadata, not a payload field
+    invoice_type = overrides.pop("invoice_type", "b2b")
     if "due_date" in overrides and overrides["due_date"]:
         overrides["due_date"] = str(overrides["due_date"])
-    invoice = await get_quote_service().create_outbound_b2b_from_quote(quote_id, ctx, overrides)
+
+    svc = get_quote_service()
+    if invoice_type == "b2b":
+        invoice = await svc.create_outbound_b2b_from_quote(quote_id, ctx, overrides)
+    elif invoice_type == "b2g":
+        invoice = await svc.create_outbound_b2g_from_quote(quote_id, ctx, overrides)
+    else:
+        # Pydantic pattern validation should catch this first; belt-and-suspenders.
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=f"Unsupported invoice_type: {invoice_type!r}")
+
     already_exists = invoice.pop("_already_exists", False)
     status_code = 200 if already_exists else 201
     return JSONResponse(content=invoice, status_code=status_code)
