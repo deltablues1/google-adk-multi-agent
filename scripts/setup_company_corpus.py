@@ -15,6 +15,15 @@ After running, add the returned CORPUS_ID to your .env file:
     COMPANY_CORPUS_ID=projects/.../ragCorpora/...
 """
 
+import sys
+# Windows console (CP1250) can't print emojis - force UTF-8 with replacement
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
+
+
 import os
 import sys
 import vertexai

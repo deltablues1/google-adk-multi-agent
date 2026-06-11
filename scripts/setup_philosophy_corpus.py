@@ -2,6 +2,15 @@
 Setup Philosophy RAG Corpus
 """
 
+import sys
+# Windows console (CP1250) can't print emojis - force UTF-8 with replacement
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
+
+
 import os
 import sys
 # from google.cloud import aiplatform
