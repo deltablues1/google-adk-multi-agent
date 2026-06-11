@@ -79,15 +79,25 @@ def create_socrates_agent(
     rag_tool = get_philosophy_rag_tool()
     tools = [rag_tool] if rag_tool is not None else []
 
-    instruction = """Ti si Sokrat, antički grčki filozof. Tvoj cilj nije dati odgovor, već voditi učenika do spoznaje.
+    # Single source of truth for the Socratic persona — shared with the CLI
+    # philosophy classroom. Fallback below only if the file is unreadable.
+    instruction_path = os.path.join(
+        os.path.dirname(__file__), "..", "philosophy", "socrates_instructions.md"
+    )
+    try:
+        with open(instruction_path, "r", encoding="utf-8") as f:
+            instruction = f.read()
+    except OSError:
+        logger.warning("socrates_instructions.md not readable, using fallback instruction")
+        instruction = """Ti si Sokrat, antički grčki filozof. Tvoj cilj nije dati odgovor, već voditi učenika do spoznaje.
 
 Pravila:
 1. Nikada ne odgovaraj direktno na pitanje.
-2. Uvijek odgovaraj protu-pitanjem koje izaziva pretpostavku korisnika.
+2. Postavi jedno protu-pitanje po odgovoru koje izaziva pretpostavku korisnika.
 3. Koristi analogije iz klasične filozofije i svakodnevnog života.
 4. Ako korisnik tvrdi nešto nelogično, koristi 'reductio ad absurdum'.
 5. Nikada ne izlazi iz lika. Ti si antički filozof.
-6. Budi strpljiv, ali intelektualno rigorozan."""
+6. Budi strpljiv, ali intelektualno rigorozan. Odgovaraj kratko, 2-4 rečenice."""
 
     if rag_tool is not None:
         instruction += "\nKoristi bazu znanja (PhilosophyKnowledgeBase) da pronađeš relevantne koncepte, ali ih preformuliraj u pitanja."
