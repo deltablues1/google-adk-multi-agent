@@ -14,6 +14,7 @@ from tools.resilience.retry_handler import with_retry, RetryConfig, with_quota_r
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache
+from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ async def calendar_list_events(
             request_params['timeMax'] = time_max
 
         # List events
-        events_result = service.events().list(**request_params).execute()
+        events_result = await aexecute(service.events().list(**request_params))
         events = events_result.get('items', [])
 
         # Format events
@@ -139,10 +140,10 @@ async def calendar_get_event(
         logger.info(f"Getting Calendar event: {event_id}")
 
         # Get event
-        event = service.events().get(
+        event = await aexecute(service.events().get(
             calendarId=calendar_id,
             eventId=event_id
-        ).execute()
+        ))
 
         # Format event
         start = event['start'].get('dateTime', event['start'].get('date'))
@@ -240,10 +241,10 @@ async def calendar_create_event(
             event['attendees'] = [{'email': email} for email in attendees]
 
         # Create event
-        created_event = service.events().insert(
+        created_event = await aexecute(service.events().insert(
             calendarId=calendar_id,
             body=event
-        ).execute()
+        ))
 
         logger.info(f"Event created successfully: {created_event['id']}")
 
@@ -304,10 +305,10 @@ async def calendar_update_event(
         logger.info(f"Updating Calendar event: {event_id}")
 
         # Get current event
-        event = service.events().get(
+        event = await aexecute(service.events().get(
             calendarId=calendar_id,
             eventId=event_id
-        ).execute()
+        ))
 
         # Update fields
         if summary:
@@ -322,11 +323,11 @@ async def calendar_update_event(
             event['location'] = location
 
         # Update event
-        updated_event = service.events().update(
+        updated_event = await aexecute(service.events().update(
             calendarId=calendar_id,
             eventId=event_id,
             body=event
-        ).execute()
+        ))
 
         logger.info(f"Event updated successfully: {event_id}")
 
@@ -377,10 +378,10 @@ async def calendar_delete_event(
         logger.info(f"Deleting Calendar event: {event_id}")
 
         # Delete event
-        service.events().delete(
+        await aexecute(service.events().delete(
             calendarId=calendar_id,
             eventId=event_id
-        ).execute()
+        ))
 
         logger.info(f"Event deleted successfully: {event_id}")
 

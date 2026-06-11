@@ -17,8 +17,54 @@ from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache
+from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_markdown(text: str) -> bool:
+    """Return True if text appears to contain Markdown formatting."""
+    import re
+    patterns = [
+        r'^#{1,6}\s',          # headings
+        r'\*\*.+?\*\*',        # bold
+        r'^\s*[-*]\s',         # bullet lists
+        r'^\d+\.\s',           # numbered lists
+        r'\[.+?\]\(.+?\)',     # links
+        r'^\s*\|.+\|',        # tables
+    ]
+    return any(re.search(p, text, re.MULTILINE) for p in patterns)
+
+
+def _markdown_to_html(text: str) -> str:
+    """Convert Markdown text to HTML. Falls back to plain text wrapped in <pre> if markdown not available."""
+    try:
+        import markdown as md_lib
+        html_body = md_lib.markdown(text, extensions=['tables', 'fenced_code'])
+        return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>
+  body {{ font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }}
+  h1, h2, h3 {{ color: #1a1a1a; margin-top: 1.4em; }}
+  code {{ background: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-family: monospace; }}
+  pre {{ background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
+  th {{ background: #f0f0f0; }}
+  a {{ color: #1a73e8; }}
+</style></head><body>{html_body}</body></html>"""
+    except ImportError:
+        import html
+        return f"<pre>{html.escape(text)}</pre>"
+
+
+def _plain_from_markdown(text: str) -> str:
+    """Strip basic markdown syntax for plain-text fallback."""
+    import re
+    clean = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    clean = re.sub(r'\*\*(.+?)\*\*', r'\1', clean)
+    clean = re.sub(r'\*(.+?)\*', r'\1', clean)
+    clean = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', clean)
+    return clean
 
 
 # ============================================================================
@@ -60,11 +106,11 @@ async def gmail_search_threads(
         # Search threads
         logger.info(f"Searching Gmail threads: query='{query}', max_results={max_results}")
 
-        results = service.users().threads().list(
+        results = await aexecute(service.users().threads().list(
             userId='me',
             q=query,
             maxResults=max_results
-        ).execute()
+        ))
 
         threads = results.get('threads', [])
         result_size = results.get('resultSizeEstimate', 0)
@@ -73,26 +119,29 @@ async def gmail_search_threads(
         thread_details = []
         for thread in threads:
             thread_id = thread['id']
-            thread_data = service.users().threads().get(
+            thread_data = await aexecute(service.users().threads().get(
                 userId='me',
                 id=thread_id,
                 format='metadata',
                 metadataHeaders=['From', 'To', 'Subject', 'Date']
-            ).execute()
+            ))
 
             # Extract snippet and basic info
             messages = thread_data.get('messages', [])
             if messages:
+                # Use last message for From/Date (shows latest sender, not original)
+                latest_msg = messages[-1]
                 first_msg = messages[0]
-                headers = {h['name']: h['value'] for h in first_msg.get('payload', {}).get('headers', [])}
+                latest_headers = {h['name']: h['value'] for h in latest_msg.get('payload', {}).get('headers', [])}
+                first_headers = {h['name']: h['value'] for h in first_msg.get('payload', {}).get('headers', [])}
 
                 thread_details.append({
                     'id': thread_id,
                     'snippet': thread_data.get('snippet', ''),
-                    'from': headers.get('From', ''),
-                    'to': headers.get('To', ''),
-                    'subject': headers.get('Subject', ''),
-                    'date': headers.get('Date', ''),
+                    'from': latest_headers.get('From', ''),
+                    'to': latest_headers.get('To', ''),
+                    'subject': first_headers.get('Subject', ''),
+                    'date': latest_headers.get('Date', ''),
                     'message_count': len(messages)
                 })
 
@@ -142,11 +191,11 @@ async def gmail_get_thread(
         logger.info(f"Getting Gmail thread: {thread_id}")
 
         # Get full thread
-        thread = service.users().threads().get(
+        thread = await aexecute(service.users().threads().get(
             userId='me',
             id=thread_id,
             format='full'
-        ).execute()
+        ))
 
         # Parse messages
         messages = []
@@ -228,12 +277,12 @@ async def gmail_send_message(
         references = None
         if thread_id:
             try:
-                thread_data = service.users().threads().get(
+                thread_data = await aexecute(service.users().threads().get(
                     userId='me',
                     id=thread_id,
                     format='metadata',
                     metadataHeaders=['Message-ID', 'References', 'Subject']
-                ).execute()
+                ))
                 thread_messages = thread_data.get('messages', [])
                 if thread_messages:
                     last_msg = thread_messages[-1]
@@ -266,9 +315,16 @@ async def gmail_send_message(
         if bcc:
             message['bcc'] = bcc
 
-        # Add body
-        msg_body = MIMEText(body, 'plain')
-        message.attach(msg_body)
+        # Add body — convert Markdown to HTML if detected
+        if _detect_markdown(body):
+            html_content = _markdown_to_html(body)
+            plain_content = _plain_from_markdown(body)
+            alt = MIMEMultipart('alternative')
+            alt.attach(MIMEText(plain_content, 'plain', 'utf-8'))
+            alt.attach(MIMEText(html_content, 'html', 'utf-8'))
+            message.attach(alt)
+        else:
+            message.attach(MIMEText(body, 'plain', 'utf-8'))
 
         # Add attachment if provided
         if attachment_path:
@@ -292,7 +348,14 @@ async def gmail_send_message(
                 message.attach(file_attachment)
                 logger.info(f"Attached file: {filename} ({os.path.getsize(attachment_path)} bytes)")
             else:
-                logger.warning(f"Attachment file not found: {attachment_path}")
+                # Caller explicitly requested an attachment but the file is
+                # missing. Fail loudly instead of silently sending an email
+                # without the attachment the user expects.
+                logger.error(f"Attachment file not found: {attachment_path} — aborting send")
+                return {
+                    "error": f"Attachment not found: {attachment_path}. Email NOT sent.",
+                    "status": "failed",
+                }
 
         # Encode message
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
@@ -306,10 +369,10 @@ async def gmail_send_message(
             logger.info(f"Replying to thread: {thread_id}")
 
         # Send message
-        sent_message = service.users().messages().send(
+        sent_message = await aexecute(service.users().messages().send(
             userId='me',
             body=send_request
-        ).execute()
+        ))
 
         logger.info(f"Message sent successfully: id={sent_message['id']}")
 
@@ -370,18 +433,25 @@ async def gmail_create_draft(
         if cc:
             message['cc'] = cc
 
-        # Add body
-        msg_body = MIMEText(body, 'plain')
-        message.attach(msg_body)
+        # Add body — convert Markdown to HTML if detected
+        if _detect_markdown(body):
+            html_content = _markdown_to_html(body)
+            plain_content = _plain_from_markdown(body)
+            alt = MIMEMultipart('alternative')
+            alt.attach(MIMEText(plain_content, 'plain', 'utf-8'))
+            alt.attach(MIMEText(html_content, 'html', 'utf-8'))
+            message.attach(alt)
+        else:
+            message.attach(MIMEText(body, 'plain', 'utf-8'))
 
         # Encode message
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
 
         # Create draft
-        draft = service.users().drafts().create(
+        draft = await aexecute(service.users().drafts().create(
             userId='me',
             body={'message': {'raw': raw_message}}
-        ).execute()
+        ))
 
         logger.info(f"Draft created successfully: id={draft['id']}")
 
@@ -441,11 +511,11 @@ async def gmail_modify_thread(
             logger.info(f"Removing labels: {remove_labels}")
 
         # Modify thread
-        modified_thread = service.users().threads().modify(
+        modified_thread = await aexecute(service.users().threads().modify(
             userId='me',
             id=thread_id,
             body=modify_request
-        ).execute()
+        ))
 
         logger.info(f"Thread modified successfully: {thread_id}")
 
@@ -491,7 +561,7 @@ async def gmail_list_labels(
         logger.info("Listing Gmail labels")
 
         # Get labels
-        results = service.users().labels().list(userId='me').execute()
+        results = await aexecute(service.users().labels().list(userId='me'))
         labels = results.get('labels', [])
 
         # Organize labels by type

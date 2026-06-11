@@ -13,6 +13,7 @@ from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache
+from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +58,12 @@ async def contacts_list_contacts(
         logger.info(f"Listing contacts: page_size={page_size}, sort={sort_order}")
 
         # List contacts (connections)
-        results = service.people().connections().list(
+        results = await aexecute(service.people().connections().list(
             resourceName='people/me',
             pageSize=page_size,
             personFields='names,emailAddresses,phoneNumbers,organizations,photos',
             sortOrder=sort_order
-        ).execute()
+        ))
 
         connections = results.get('connections', [])
 
@@ -119,10 +120,10 @@ async def contacts_get_contact(
         logger.info(f"Getting contact: {resource_name}")
 
         # Get contact
-        person = service.people().get(
+        person = await aexecute(service.people().get(
             resourceName=resource_name,
             personFields='names,emailAddresses,phoneNumbers,addresses,organizations,birthdays,photos,biographies'
-        ).execute()
+        ))
 
         contact = _parse_contact(person, detailed=True)
 
@@ -200,9 +201,9 @@ async def contacts_create_contact(
             }]
 
         # Create contact
-        person = service.people().createContact(
+        person = await aexecute(service.people().createContact(
             body=contact_body
-        ).execute()
+        ))
 
         contact = _parse_contact(person, detailed=True)
 
@@ -260,10 +261,10 @@ async def contacts_update_contact(
         logger.info(f"Updating contact: {resource_name}")
 
         # Get current contact first (etag is returned automatically, not as personField)
-        current_person = service.people().get(
+        current_person = await aexecute(service.people().get(
             resourceName=resource_name,
             personFields='names,emailAddresses,phoneNumbers,organizations'
-        ).execute()
+        ))
 
         # Build update body
         update_body = {
@@ -301,11 +302,11 @@ async def contacts_update_contact(
             update_body['organizations'] = current_person.get('organizations', [])
 
         # Update contact
-        person = service.people().updateContact(
+        person = await aexecute(service.people().updateContact(
             resourceName=resource_name,
             updatePersonFields='names,emailAddresses,phoneNumbers,organizations',
             body=update_body
-        ).execute()
+        ))
 
         contact = _parse_contact(person, detailed=True)
 
@@ -353,9 +354,9 @@ async def contacts_delete_contact(
         logger.info(f"Deleting contact: {resource_name}")
 
         # Delete contact
-        service.people().deleteContact(
+        await aexecute(service.people().deleteContact(
             resourceName=resource_name
-        ).execute()
+        ))
 
         logger.info(f"Contact deleted: {resource_name}")
 
@@ -407,11 +408,11 @@ async def contacts_search_contacts(
         logger.info(f"Searching contacts: query='{query}', page_size={page_size}")
 
         # First try: searchContacts API (faster but has propagation delay)
-        results = service.people().searchContacts(
+        results = await aexecute(service.people().searchContacts(
             query=query,
             pageSize=page_size,
             readMask='names,emailAddresses,phoneNumbers,photos'
-        ).execute()
+        ))
 
         search_results = results.get('results', [])
 
@@ -428,11 +429,11 @@ async def contacts_search_contacts(
             logger.info(f"searchContacts returned 0 results, trying connections.list fallback for '{query}'")
 
             # Get all connections and filter locally
-            connections_result = service.people().connections().list(
+            connections_result = await aexecute(service.people().connections().list(
                 resourceName='people/me',
                 pageSize=200,  # Get more to search through
                 personFields='names,emailAddresses,phoneNumbers,organizations,photos'
-            ).execute()
+            ))
 
             connections = connections_result.get('connections', [])
             query_lower = query.lower()
@@ -500,10 +501,10 @@ async def contacts_batch_get(
         logger.info(f"Batch getting {len(resource_names)} contacts")
 
         # Batch get
-        results = service.people().getBatchGet(
+        results = await aexecute(service.people().getBatchGet(
             resourceNames=resource_names,
             personFields='names,emailAddresses,phoneNumbers,organizations,photos'
-        ).execute()
+        ))
 
         responses = results.get('responses', [])
 
@@ -561,11 +562,11 @@ async def contacts_resolve_email(
         logger.info(f"Resolving email for: {name}")
 
         # Search contacts
-        results = service.people().searchContacts(
+        results = await aexecute(service.people().searchContacts(
             query=name,
             pageSize=10,
             readMask='names,emailAddresses,phoneNumbers,photos'
-        ).execute()
+        ))
 
         search_results = results.get('results', [])
 

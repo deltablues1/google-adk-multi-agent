@@ -13,6 +13,7 @@ from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache
+from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +67,10 @@ async def sheets_create_spreadsheet(
             ]
 
         # Create spreadsheet
-        spreadsheet = service.spreadsheets().create(
+        spreadsheet = await aexecute(service.spreadsheets().create(
             body=spreadsheet_body,
             fields='spreadsheetId,spreadsheetUrl,sheets.properties'
-        ).execute()
+        ))
 
         logger.info(f"Spreadsheet created: {spreadsheet['spreadsheetId']}")
 
@@ -131,11 +132,11 @@ async def sheets_get_values(
         logger.info(f"Getting values from spreadsheet: {spreadsheet_id}, range: {range}")
 
         # Get values
-        result = service.spreadsheets().values().get(
+        result = await aexecute(service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
             range=range,
             valueRenderOption=value_render_option
-        ).execute()
+        ))
 
         values = result.get('values', [])
 
@@ -199,12 +200,12 @@ async def sheets_update_values(
             'values': values
         }
 
-        result = service.spreadsheets().values().update(
+        result = await aexecute(service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range=range,
             valueInputOption=value_input_option,
             body=body
-        ).execute()
+        ))
 
         updated_cells = result.get('updatedCells', 0)
         updated_rows = result.get('updatedRows', 0)
@@ -268,13 +269,13 @@ async def sheets_append_values(
             'values': values
         }
 
-        result = service.spreadsheets().values().append(
+        result = await aexecute(service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
             range=range,
             valueInputOption=value_input_option,
             insertDataOption='INSERT_ROWS',
             body=body
-        ).execute()
+        ))
 
         updated_cells = result.get('updates', {}).get('updatedCells', 0)
         updated_rows = result.get('updates', {}).get('updatedRows', 0)
@@ -329,11 +330,11 @@ async def sheets_clear_values(
         logger.info(f"Clearing values from spreadsheet: {spreadsheet_id}, range: {range}")
 
         # Clear values
-        result = service.spreadsheets().values().clear(
+        result = await aexecute(service.spreadsheets().values().clear(
             spreadsheetId=spreadsheet_id,
             range=range,
             body={}
-        ).execute()
+        ))
 
         logger.info(f"Cleared range: {result.get('clearedRange')}")
 
@@ -387,10 +388,10 @@ async def sheets_batch_update(
             'requests': requests
         }
 
-        result = service.spreadsheets().batchUpdate(
+        result = await aexecute(service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id,
             body=body
-        ).execute()
+        ))
 
         logger.info(f"Batch update completed: {spreadsheet_id}")
 
@@ -441,10 +442,10 @@ async def sheets_get_spreadsheet(
         logger.info(f"Getting spreadsheet metadata: {spreadsheet_id}")
 
         # Get spreadsheet
-        result = service.spreadsheets().get(
+        result = await aexecute(service.spreadsheets().get(
             spreadsheetId=spreadsheet_id,
             includeGridData=include_grid_data
-        ).execute()
+        ))
 
         sheets_info = [
             {

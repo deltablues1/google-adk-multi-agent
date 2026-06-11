@@ -15,6 +15,7 @@ from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache
+from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ async def drive_search_files(
                 request_params['pageToken'] = page_token
 
             # Execute search
-            results = service.files().list(**request_params).execute()
+            results = await aexecute(service.files().list(**request_params))
             files = results.get('files', [])
             all_files.extend(files)
 
@@ -146,10 +147,10 @@ async def drive_get_file(
         logger.info(f"Getting Drive file: {file_id}, include_content={include_content}")
 
         # Get file metadata
-        file_metadata = service.files().get(
+        file_metadata = await aexecute(service.files().get(
             fileId=file_id,
             fields='id, name, mimeType, size, createdTime, modifiedTime, webViewLink, owners, permissions, parents, trashed'
-        ).execute()
+        ))
 
         result = {
             'metadata': file_metadata
@@ -172,7 +173,7 @@ async def drive_get_file(
 
             # Download to bytes
             file_content = io.BytesIO()
-            downloader = request.execute()
+            downloader = await aexecute(request)
 
             # Handle content based on type
             if isinstance(downloader, bytes):
@@ -292,11 +293,11 @@ async def drive_upload_file(
         )
 
         # Upload file
-        uploaded_file = service.files().create(
+        uploaded_file = await aexecute(service.files().create(
             body=file_metadata,
             media_body=media,
             fields='id, name, mimeType, webViewLink'
-        ).execute()
+        ))
 
         logger.info(f"File uploaded successfully: {uploaded_file['id']}")
 
@@ -356,7 +357,7 @@ async def drive_update_file(
         media = None
         if content:
             # Get current mime type
-            current_file = service.files().get(fileId=file_id, fields='mimeType').execute()
+            current_file = await aexecute(service.files().get(fileId=file_id, fields='mimeType'))
             mime_type = current_file.get('mimeType', 'text/plain')
 
             media = MediaIoBaseUpload(
@@ -366,12 +367,12 @@ async def drive_update_file(
             )
 
         # Update file
-        updated_file = service.files().update(
+        updated_file = await aexecute(service.files().update(
             fileId=file_id,
             body=file_metadata if file_metadata else None,
             media_body=media,
             fields='id, name, mimeType, modifiedTime'
-        ).execute()
+        ))
 
         logger.info(f"File updated successfully: {file_id}")
 
@@ -420,7 +421,7 @@ async def drive_delete_file(
         logger.info(f"Deleting Drive file: {file_id}")
 
         # Move to trash
-        service.files().delete(fileId=file_id).execute()
+        await aexecute(service.files().delete(fileId=file_id))
 
         logger.info(f"File deleted successfully: {file_id}")
 
@@ -481,11 +482,11 @@ async def drive_share_file(
             permission['emailAddress'] = email
 
         # Create permission
-        created_permission = service.permissions().create(
+        created_permission = await aexecute(service.permissions().create(
             fileId=file_id,
             body=permission,
             fields='id, type, role, emailAddress'
-        ).execute()
+        ))
 
         logger.info(f"File shared successfully: {file_id}")
 
@@ -546,10 +547,10 @@ async def drive_create_folder(
             folder_metadata['parents'] = [parent_folder_id]
 
         # Create folder
-        folder = service.files().create(
+        folder = await aexecute(service.files().create(
             body=folder_metadata,
             fields='id, name, webViewLink'
-        ).execute()
+        ))
 
         logger.info(f"Folder created successfully: {folder['id']}")
 
@@ -599,16 +600,16 @@ async def drive_move_file(
         logger.info(f"Moving Drive file: {file_id} to {new_parent_id}")
 
         # Get current parents
-        file = service.files().get(fileId=file_id, fields='parents').execute()
+        file = await aexecute(service.files().get(fileId=file_id, fields='parents'))
         previous_parents = ",".join(file.get('parents', []))
 
         # Move file
-        moved_file = service.files().update(
+        moved_file = await aexecute(service.files().update(
             fileId=file_id,
             addParents=new_parent_id,
             removeParents=previous_parents,
             fields='id, parents'
-        ).execute()
+        ))
 
         logger.info(f"File moved successfully: {file_id}")
 

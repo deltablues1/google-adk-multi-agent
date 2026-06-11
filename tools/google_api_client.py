@@ -20,6 +20,19 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+async def aexecute(request: Any) -> Any:
+    """Execute a googleapiclient HttpRequest without blocking the event loop.
+
+    googleapiclient is synchronous — calling .execute() directly inside an
+    async function freezes the whole asyncio loop (web server, SSE, voice
+    websocket) for the duration of the HTTP call. Always await this instead:
+
+        result = await aexecute(service.files().list(...))
+    """
+    import asyncio
+    return await asyncio.to_thread(request.execute)
+
+
 def get_vertex_ai_config() -> Dict[str, str]:
     """
     Get Vertex AI configuration from environment variables

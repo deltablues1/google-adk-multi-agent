@@ -14,6 +14,7 @@ from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache
+from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +53,9 @@ async def tasks_list_task_lists(
         logger.info(f"Listing task lists: max_results={max_results}")
 
         # List task lists
-        results = service.tasklists().list(
+        results = await aexecute(service.tasklists().list(
             maxResults=max_results
-        ).execute()
+        ))
 
         task_lists = results.get('items', [])
 
@@ -117,12 +118,12 @@ async def tasks_list_tasks(
         logger.info(f"Listing tasks: tasklist={tasklist_id}, max={max_results}")
 
         # List tasks
-        results = service.tasks().list(
+        results = await aexecute(service.tasks().list(
             tasklist=tasklist_id,
             maxResults=max_results,
             showCompleted=show_completed,
             showHidden=show_hidden
-        ).execute()
+        ))
 
         tasks = results.get('items', [])
 
@@ -189,10 +190,10 @@ async def tasks_get_task(
         logger.info(f"Getting task: tasklist={tasklist_id}, task={task_id}")
 
         # Get task
-        task = service.tasks().get(
+        task = await aexecute(service.tasks().get(
             tasklist=tasklist_id,
             task=task_id
-        ).execute()
+        ))
 
         result = {
             'id': task['id'],
@@ -267,11 +268,11 @@ async def tasks_create_task(
             task_body['due'] = due
 
         # Create task
-        task = service.tasks().insert(
+        task = await aexecute(service.tasks().insert(
             tasklist=tasklist_id,
             body=task_body,
             parent=parent if parent else None
-        ).execute()
+        ))
 
         result = {
             'id': task['id'],
@@ -335,10 +336,10 @@ async def tasks_update_task(
         logger.info(f"Updating task: tasklist={tasklist_id}, task={task_id}")
 
         # Get current task
-        current_task = service.tasks().get(
+        current_task = await aexecute(service.tasks().get(
             tasklist=tasklist_id,
             task=task_id
-        ).execute()
+        ))
 
         # Build clean update body with only mutable fields
         # Google Tasks API rejects unknown/read-only fields in update body
@@ -374,11 +375,11 @@ async def tasks_update_task(
             update_body['due'] = due
 
         # Update task
-        updated_task = service.tasks().update(
+        updated_task = await aexecute(service.tasks().update(
             tasklist=tasklist_id,
             task=task_id,
             body=update_body
-        ).execute()
+        ))
 
         result = {
             'id': updated_task['id'],
@@ -434,10 +435,10 @@ async def tasks_delete_task(
         logger.info(f"Deleting task: tasklist={tasklist_id}, task={task_id}")
 
         # Delete task
-        service.tasks().delete(
+        await aexecute(service.tasks().delete(
             tasklist=tasklist_id,
             task=task_id
-        ).execute()
+        ))
 
         logger.info(f"Task deleted: {task_id}")
 

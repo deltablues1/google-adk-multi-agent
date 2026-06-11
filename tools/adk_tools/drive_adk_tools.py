@@ -27,7 +27,7 @@ Usage:
     # Create agent with Drive tools
     agent = LlmAgent(
         name="librarian",
-        model="gemini-2.5-flash",
+        model="gemini-3.5-flash",
         tools=drive_tools
     )
 """
@@ -705,11 +705,12 @@ async def drive_convert_to_sheets(
 
     try:
         from googleapiclient.discovery import build
+        from tools.google_api_client import aexecute
 
         service = build('drive', 'v3', credentials=creds)
 
         # Get original file name
-        original = service.files().get(fileId=file_id, fields='name').execute()
+        original = await aexecute(service.files().get(fileId=file_id, fields='name'))
         original_name = original.get('name', 'Untitled')
 
         # Copy file with conversion to Google Sheets
@@ -717,7 +718,7 @@ async def drive_convert_to_sheets(
             'name': f"{original_name} (Google Sheets)",
             'mimeType': 'application/vnd.google-apps.spreadsheet'
         }
-        copied = service.files().copy(fileId=file_id, body=copy_body).execute()
+        copied = await aexecute(service.files().copy(fileId=file_id, body=copy_body))
 
         new_id = copied['id']
         new_name = copied.get('name', copy_body['name'])
@@ -853,7 +854,7 @@ def get_drive_adk_tools(credentials: Optional[Credentials] = None) -> list:
         >>> drive_tools = get_drive_adk_tools()
         >>> agent = LlmAgent(
         ...     name="librarian",
-        ...     model="gemini-2.5-flash",
+        ...     model="gemini-3.5-flash",
         ...     tools=drive_tools
         ... )
     """

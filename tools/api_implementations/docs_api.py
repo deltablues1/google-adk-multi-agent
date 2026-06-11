@@ -13,6 +13,7 @@ from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache
+from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ async def docs_create_document(
         logger.info(f"Creating Google Doc: {title}")
 
         # Create document
-        doc = service.documents().create(body={'title': title}).execute()
+        doc = await aexecute(service.documents().create(body={'title': title}))
         doc_id = doc['documentId']
 
         logger.info(f"Document created: {doc_id}")
@@ -67,10 +68,10 @@ async def docs_create_document(
                 }
             }]
 
-            service.documents().batchUpdate(
+            await aexecute(service.documents().batchUpdate(
                 documentId=doc_id,
                 body={'requests': requests}
-            ).execute()
+            ))
 
         return {
             'document_id': doc_id,
@@ -124,7 +125,7 @@ async def docs_get_document(
         if include_suggestions:
             params['suggestionsViewMode'] = 'SUGGESTIONS_INLINE'
 
-        doc = service.documents().get(**params).execute()
+        doc = await aexecute(service.documents().get(**params))
 
         # Extract text content
         text_content = _extract_text_from_document(doc)
@@ -193,10 +194,10 @@ async def docs_insert_text(
             }
         }]
 
-        result = service.documents().batchUpdate(
+        result = await aexecute(service.documents().batchUpdate(
             documentId=document_id,
             body={'requests': requests}
-        ).execute()
+        ))
 
         logger.info(f"Text inserted successfully: {len(text)} chars")
 
@@ -261,10 +262,10 @@ async def docs_replace_text(
             }
         }]
 
-        result = service.documents().batchUpdate(
+        result = await aexecute(service.documents().batchUpdate(
             documentId=document_id,
             body={'requests': requests}
-        ).execute()
+        ))
 
         # Count occurrences replaced
         occurrences_changed = result.get('replies', [{}])[0].get('replaceAllText', {}).get('occurrencesChanged', 0)
@@ -318,7 +319,7 @@ async def docs_append_text(
         logger.info(f"Appending text to Google Doc: {document_id}")
 
         # Get current document to find end index
-        doc = service.documents().get(documentId=document_id).execute()
+        doc = await aexecute(service.documents().get(documentId=document_id))
         content = doc.get('body', {}).get('content', [])
 
         # Find the end index (last element's endIndex - 1)
@@ -334,10 +335,10 @@ async def docs_append_text(
             }
         }]
 
-        result = service.documents().batchUpdate(
+        result = await aexecute(service.documents().batchUpdate(
             documentId=document_id,
             body={'requests': requests}
-        ).execute()
+        ))
 
         logger.info(f"Text appended successfully: {len(text)} chars")
 
@@ -388,10 +389,10 @@ async def docs_batch_update(
         logger.info(f"Number of requests: {len(requests)}")
 
         # Execute batch update
-        result = service.documents().batchUpdate(
+        result = await aexecute(service.documents().batchUpdate(
             documentId=document_id,
             body={'requests': requests}
-        ).execute()
+        ))
 
         logger.info(f"Batch update completed: {document_id}")
 
@@ -495,10 +496,10 @@ async def docs_format_text(
         }]
 
         # Execute batch update
-        result = service.documents().batchUpdate(
+        result = await aexecute(service.documents().batchUpdate(
             documentId=document_id,
             body={'requests': requests}
-        ).execute()
+        ))
 
         logger.info(f"Text formatting applied successfully")
 
@@ -563,7 +564,7 @@ async def docs_export_document(
             mimeType=mime_type
         )
 
-        content = request.execute()
+        content = await aexecute(request)
 
         # Encode binary content
         if isinstance(content, bytes):
