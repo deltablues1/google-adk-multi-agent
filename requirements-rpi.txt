@@ -1,0 +1,75 @@
+# ==========================================
+# RPi 5 Smart Home Deployment
+# ==========================================
+# Subset of requirements.txt for rpi-home profile.
+# Excludes: weasyprint, playwright, google-ads, datasets
+
+# Google AI Development Kit
+google-adk>=0.1.0
+google-genai>=0.3.0
+
+# Google API Clients
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+google-api-python-client>=2.100.0
+
+# Google Cloud
+google-cloud-secret-manager>=2.16.0
+google-cloud-firestore>=2.13.0
+google-cloud-logging>=3.5.0
+google-cloud-aiplatform>=1.43.0
+google-cloud-storage>=2.14.0
+
+# MCP (Model Context Protocol)
+mcp>=0.1.0
+
+# Web Scraping (lightweight only)
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# Async Support
+aiohttp>=3.9.0
+
+# Database
+sqlalchemy>=2.0.0
+
+# Scheduling
+APScheduler>=3.10.0
+
+# MQTT (Smart Home)
+paho-mqtt>=2.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pytz>=2023.3
+markdown>=3.5.0
+
+# Web Interface
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+sse-starlette>=1.8.0
+
+# Telegram Bot
+python-telegram-bot>=21.0
+
+# PDF Processing (basic)
+pypdf>=3.17.0
+reportlab>=4.0.0
+
+# XML Processing & Signing
+lxml>=5.0.0
+cryptography>=41.0.0
+
+# QR Code Generation
+qrcode[pil]>=7.4.0
+Pillow>=10.0.0
+
+# ==========================================
+# RPi-specific: Wake Word & Audio
+# ==========================================
+openwakeword>=0.6.0
+pyaudio>=0.2.14
+webrtcvad>=2.0.10
+numpy>=1.24.0

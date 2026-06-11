@@ -450,6 +450,9 @@ def get_agent_config(agent_name: str) -> Optional[AgentConfig]:
     Returns:
         AgentConfig objekt ili None ako agent ne postoji
     """
+    # Block ERP agents on non-ERP deployments
+    if not ENABLE_ERP and agent_name in ERP_AGENTS:
+        return None
     return AGENT_REGISTRY.get(agent_name)
 
 

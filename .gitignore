@@ -85,6 +85,7 @@ logs/
 *.txt
 !requirements.txt
 !requirements-dev.txt
+!requirements-rpi.txt
 tests/test_results*.json
 tests/pts_results/
 
@@ -153,3 +154,6 @@ Thumbs.db
 # Stale Directories
 # ============================================================================
 deploy_clean/
+
+# RPi deployment secrets
+deploy/rpi/*.env

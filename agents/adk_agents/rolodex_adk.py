@@ -70,6 +70,12 @@ def create_rolodex_agent(
         ])
         description += ", plus ERP customer lookup"
 
+    # ERP customer lookup — only on full deployment
+    from config.deployment_config import ENABLE_ERP
+    if ENABLE_ERP:
+        from tools.adk_tools.erp_adk_tools import erp_search_customers, erp_get_customer_balance
+        tools.extend([erp_search_customers, erp_get_customer_balance])
+
     # Create agent using factory
     agent = create_adk_agent(
         name="rolodex",
