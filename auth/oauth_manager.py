@@ -80,15 +80,11 @@ class OAuthManager:
         os.makedirs(os.path.dirname(self.token_storage_path), exist_ok=True)
 
         self._credentials: Optional[Credentials] = None
+        self._pending_flow: Optional[Flow] = None
 
-    def get_authorization_url(self) -> str:
-        """
-        Generira OAuth 2.0 authorization URL
-
-        Returns:
-            Authorization URL za korisničku autorizaciju
-        """
-        client_config = {
+    def _get_client_config(self) -> Dict[str, Dict[str, Any]]:
+        """Build OAuth client config for google-auth-oauthlib."""
+        return {
             'web': {
                 'client_id': self.client_id,
                 'client_secret': self.client_secret,
@@ -98,11 +94,24 @@ class OAuthManager:
             }
         }
 
-        flow = Flow.from_client_config(
-            client_config,
+    def _build_flow(self) -> Flow:
+        """Create a configured OAuth flow instance."""
+        return Flow.from_client_config(
+            self._get_client_config(),
             scopes=self.SCOPES,
             redirect_uri=self.redirect_uri
         )
+
+    def get_authorization_url(self) -> str:
+        """
+        Generira OAuth 2.0 authorization URL
+
+        Returns:
+            Authorization URL za korisničku autorizaciju
+        """
+        flow = self._build_flow()
+        # Reuse the same flow during token exchange so the PKCE code_verifier survives.
+        self._pending_flow = flow
 
         auth_url, _ = flow.authorization_url(
             access_type='offline',
@@ -122,24 +131,18 @@ class OAuthManager:
         Returns:
             Google OAuth2 Credentials objekt
         """
-        client_config = {
-            'web': {
-                'client_id': self.client_id,
-                'client_secret': self.client_secret,
-                'redirect_uris': [self.redirect_uri],
-                'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
-                'token_uri': 'https://oauth2.googleapis.com/token',
-            }
-        }
+        flow = self._pending_flow
+        if flow is None:
+            raise RuntimeError(
+                "OAuth authorization flow state is missing. Start authorization and "
+                "exchange the callback code in the same process."
+            )
 
-        flow = Flow.from_client_config(
-            client_config,
-            scopes=self.SCOPES,
-            redirect_uri=self.redirect_uri
-        )
-
-        flow.fetch_token(code=authorization_code)
-        self._credentials = flow.credentials
+        try:
+            flow.fetch_token(code=authorization_code)
+            self._credentials = flow.credentials
+        finally:
+            self._pending_flow = None
 
         # Spremi token
         self._save_token()

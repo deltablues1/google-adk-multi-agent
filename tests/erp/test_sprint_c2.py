@@ -126,6 +126,7 @@ class TestPeppolCompanySettings:
         assert patched["peppol_participant_id"] == peppol_id
         assert patched["name"] == "Patch Firma d.o.o.", "Unrelated fields must survive patch"
 
+
 # ── C2.1: Peppol dispatch — stub mode ─────────────────────────────────────────
 
 class TestPeppolDispatchStub:

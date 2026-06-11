@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import logging
 from dotenv import load_dotenv
+from config.google_runtime import get_gemini_location
 
 # Load environment variables
 load_dotenv()
@@ -27,13 +28,13 @@ def get_vertex_ai_config() -> Dict[str, str]:
     Returns:
         Dictionary with Vertex AI configuration:
         - project_id: Google Cloud Project ID
-        - location: Vertex AI location (default: us-central1)
+        - location: Gemini runtime location (default: global)
     """
     project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
     if not project_id:
         raise ValueError("GOOGLE_CLOUD_PROJECT environment variable not set")
 
-    location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    location = get_gemini_location(default="global")
 
     return {
         "project_id": project_id,

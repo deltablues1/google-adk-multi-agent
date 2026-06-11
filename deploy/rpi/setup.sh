@@ -28,7 +28,8 @@ sudo apt install -y \
     ffmpeg \
     libopenblas-dev \
     git \
-    alsa-utils
+    alsa-utils \
+    mosquitto-clients
 
 # Create venv
 echo "[2/5] Creating Python virtual environment..."
@@ -64,7 +65,9 @@ echo "  3. Verify MQTT broker is reachable:"
 echo "     ping \$(grep MQTT_BROKER .env | cut -d= -f2)"
 echo "  4. Test mic HAT:"
 echo "     arecord -d 3 -f S16_LE -r 16000 /tmp/test.wav && aplay /tmp/test.wav"
-echo "  5. Start services:"
+echo "  5. Run Pi smoke check:"
+echo "     .venv/bin/python scripts/rpi_smoke_check.py"
+echo "  6. Start services:"
 echo "     sudo systemctl enable --now adk-web adk-telegram adk-wakeword adk-scheduler"
-echo "  6. Check status:"
+echo "  7. Check status:"
 echo "     sudo systemctl status adk-web adk-telegram adk-wakeword adk-scheduler"

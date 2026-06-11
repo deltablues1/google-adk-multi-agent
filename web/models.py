@@ -17,6 +17,8 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
     user_id: str = Field(default="web-user")
     session_id: Optional[str] = None
+    route_hint: Optional[str] = None
+    response_mode: Optional[str] = None
     attachments: Optional[List[FileAttachment]] = None
 
 

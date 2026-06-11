@@ -63,7 +63,7 @@ async def google_search_grounding(
         client = genai.Client(
             vertexai=True,
             project=config.get("project_id"),
-            location=config.get("location", "us-central1")
+            location=config.get("location", "global")
         )
 
         # Create grounding tool configuration

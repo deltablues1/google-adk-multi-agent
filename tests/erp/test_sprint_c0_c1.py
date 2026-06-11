@@ -233,64 +233,6 @@ class TestCompanySettingsAPI:
             r = await client.get("/api/erp/company/settings")
         assert r.status_code == 404
 
-# ── C0.1: IBAN validation ─────────────────────────────────────────────────────
-
-@pytest.mark.unit
-class TestIBANValidationAsync:
-    """Async IBAN tests (Firestore required). Sync logic tests are in test_unit_sync.py."""
-
-    @pytest.mark.asyncio
-    async def test_upsert_rejects_invalid_iban(self, cid):
-        from services.erp.company_service import get_company_service
-        from services.erp.errors import ValidationError
-        with pytest.raises(ValidationError) as exc_info:
-            await get_company_service().upsert(
-                {"oib": "47034854402", "iban": "HR00000"}, make_ctx(cid)
-            )
-        assert exc_info.value.code == "INVALID_IBAN"
-
-    @pytest.mark.asyncio
-    async def test_upsert_accepts_valid_iban(self, cid):
-        from services.erp.company_service import get_company_service
-        doc = await get_company_service().upsert(
-            {"oib": "47034854402", "iban": "HR1210010051863000160"}, make_ctx(cid)
-        )
-        assert doc["iban"] == "HR1210010051863000160"
-
-    @pytest.mark.asyncio
-    async def test_patch_rejects_invalid_iban(self, cid):
-        from services.erp.company_service import get_company_service
-        from services.erp.errors import ValidationError
-        svc = get_company_service()
-        ctx = make_ctx(cid)
-        await svc.upsert({"oib": "47034854402"}, ctx)
-        with pytest.raises(ValidationError) as exc_info:
-            await svc.patch({"iban": "NOTANIBAN"}, ctx)
-        assert exc_info.value.code == "INVALID_IBAN"
-
-
-# ── C0.1: Role permissions ────────────────────────────────────────────────────
-
-@pytest.mark.unit
-class TestRolePermissionsAsync:
-    """Async role tests (Firestore required). Sync table checks are in test_unit_sync.py."""
-
-    @pytest.mark.asyncio
-    async def test_accountant_can_get_company_settings(self, cid):
-        from services.erp.company_service import get_company_service
-        ctx_owner = make_ctx(cid, "owner")
-        ctx_acc   = make_ctx(cid, "accountant")
-        await get_company_service().upsert({"oib": "47034854402", "name": "Acc Test"}, ctx_owner)
-        doc = await get_company_service().get(ctx_acc)
-        assert doc["oib"] == "47034854402"
-
-    @pytest.mark.asyncio
-    async def test_viewer_cannot_write_company_settings(self, cid):
-        from services.erp.company_service import get_company_service
-        from services.erp.errors import InsufficientPermissionError
-        ctx_viewer = make_ctx(cid, "viewer")
-        with pytest.raises(InsufficientPermissionError):
-            await get_company_service().upsert({"oib": "47034854402"}, ctx_viewer)
 
 # ── C1: Fiscalization bridge unit tests ──────────────────────────────────────
 
@@ -435,6 +377,68 @@ class TestB2CFiscalizationFieldsOnCreate:
         doc = snap.to_dict() or {}
         assert doc.get("fiscalization_status") == "not_required"
 
+
+# ── C0.1: IBAN validation ─────────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestIBANValidationAsync:
+    """Async IBAN tests (Firestore required). Sync logic tests are in test_unit_sync.py."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_rejects_invalid_iban(self, cid):
+        from services.erp.company_service import get_company_service
+        from services.erp.errors import ValidationError
+        with pytest.raises(ValidationError) as exc_info:
+            await get_company_service().upsert(
+                {"oib": "47034854402", "iban": "HR00000"}, make_ctx(cid)
+            )
+        assert exc_info.value.code == "INVALID_IBAN"
+
+    @pytest.mark.asyncio
+    async def test_upsert_accepts_valid_iban(self, cid):
+        from services.erp.company_service import get_company_service
+        doc = await get_company_service().upsert(
+            {"oib": "47034854402", "iban": "HR1210010051863000160"}, make_ctx(cid)
+        )
+        assert doc["iban"] == "HR1210010051863000160"
+
+    @pytest.mark.asyncio
+    async def test_patch_rejects_invalid_iban(self, cid):
+        from services.erp.company_service import get_company_service
+        from services.erp.errors import ValidationError
+        svc = get_company_service()
+        ctx = make_ctx(cid)
+        await svc.upsert({"oib": "47034854402"}, ctx)
+        with pytest.raises(ValidationError) as exc_info:
+            await svc.patch({"iban": "NOTANIBAN"}, ctx)
+        assert exc_info.value.code == "INVALID_IBAN"
+
+
+# ── C0.1: Role permissions ────────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestRolePermissionsAsync:
+    """Async role tests (Firestore required). Sync table checks are in test_unit_sync.py."""
+
+    @pytest.mark.asyncio
+    async def test_accountant_can_get_company_settings(self, cid):
+        from services.erp.company_service import get_company_service
+        ctx_owner = make_ctx(cid, "owner")
+        ctx_acc   = make_ctx(cid, "accountant")
+        await get_company_service().upsert({"oib": "47034854402", "name": "Acc Test"}, ctx_owner)
+        doc = await get_company_service().get(ctx_acc)
+        assert doc["oib"] == "47034854402"
+
+    @pytest.mark.asyncio
+    async def test_viewer_cannot_write_company_settings(self, cid):
+        from services.erp.company_service import get_company_service
+        from services.erp.errors import InsufficientPermissionError
+        ctx_viewer = make_ctx(cid, "viewer")
+        with pytest.raises(InsufficientPermissionError):
+            await get_company_service().upsert({"oib": "47034854402"}, ctx_viewer)
+
+
+# ── C1.1: fiscalize_b2c_invoice() unit tests ─────────────────────────────────
 
 @pytest.mark.unit
 class TestFiscalizeB2CService:

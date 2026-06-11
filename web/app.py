@@ -15,7 +15,7 @@ from typing import List
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, WebSocket
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from sse_starlette.sse import EventSourceResponse
@@ -25,9 +25,19 @@ from web.models import (
     AgentInfo, TraceEvent,
 )
 from config.agent_registry import get_agent_config, get_worker_agent_names
+from config.google_runtime import (
+    genai_vertex_env_keys,
+    get_gemini_location,
+    get_google_api_key,
+    get_google_cloud_project,
+)
+from monitoring.metrics import get_metrics_collector
 from services.erp.errors import BusinessError
+from services.google_retry import classify_google_runtime_error, run_with_bounded_retry
+from tools.resilience.retry_handler import RetryConfig
 
 logger = logging.getLogger(__name__)
+_metrics = get_metrics_collector()
 
 # Will be set by create_app()
 _web_interface = None
@@ -110,15 +120,171 @@ def _track_quota_error(service: str):
     _cost_tracker["quota_errors"][service] += 1
     _cost_tracker["quota_errors_last"][service] = _time.time()
 
-LIVE_SYSTEM_PROMPT = (
-    "Ti si glasovna asistentica integrirana u Google Workspace poslovnu platformu. "
-    "Odgovaraj kratko i jasno — razgovaramo glasom, ne pišemo. "
-    "Ako te pitaju o emailovima, kalendarima, dokumentima ili zadacima, reci da to nije dostupno "
-    "u glasovnom načinu rada — korisnik mora upisati poruku za agente. "
-    "Govori prirodno, u jednoj ili dvije rečenice. Izbjegavaj nabrajanje i dugačke liste. "
-    "Uvijek govori o sebi u ženskom rodu."
-)
 
+def _default_tts_voice_name() -> str:
+    return "Charon" if os.environ.get("DEPLOYMENT_PROFILE") == "rpi-home" else "Aoede"
+
+
+def _voice_assistant_gender() -> str:
+    gender = os.environ.get("VOICE_ASSISTANT_GENDER", "").strip().lower()
+    if gender in {"male", "muski", "muški"}:
+        return "male"
+    if gender in {"female", "zenski", "ženski"}:
+        return "female"
+    return "male" if os.environ.get("DEPLOYMENT_PROFILE") == "rpi-home" else "female"
+
+
+def _default_tts_model() -> str:
+    return os.environ.get("TTS_MODEL", "gemini-2.5-flash-tts").strip()
+
+
+def _tts_language_code() -> str:
+    return os.environ.get("TTS_LANGUAGE_CODE", "").strip()
+
+
+def _tts_use_vertex() -> bool:
+    override = os.environ.get("TTS_USE_VERTEXAI", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _get_tts_api_key() -> str:
+    return get_google_api_key()
+
+
+def _sanitize_tts_text(text: str) -> str:
+    import re
+
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    text = re.sub(r"`[^`]+`", "", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
+    text = re.sub(r"\n{2,}", ". ", text)
+    text = re.sub(r"\n", " ", text)
+    return text.strip()[:4000]
+
+
+def _create_tts_client():
+    from google import genai as _genai
+
+    use_vertex = _tts_use_vertex()
+    project = get_google_cloud_project(required=False)
+    location = get_gemini_location(default="global")
+
+    if use_vertex and project:
+        return _genai.Client(vertexai=True, project=project, location=location)
+
+    api_key = _get_tts_api_key()
+    if not api_key:
+        raise RuntimeError("Neither Vertex AI config nor GEMINI_API_KEY/GOOGLE_API_KEY is set")
+
+    _vkeys = genai_vertex_env_keys()
+    _backup = {k: os.environ.pop(k) for k in _vkeys if k in os.environ}
+    try:
+        return _genai.Client(api_key=api_key)
+    finally:
+        os.environ.update(_backup)
+
+
+def _build_tts_config(voice_name: str):
+    from google.genai import types as _types
+
+    speech_config = _types.SpeechConfig(
+        voice_config=_types.VoiceConfig(
+            prebuilt_voice_config=_types.PrebuiltVoiceConfig(voice_name=voice_name)
+        )
+    )
+    language_code = _tts_language_code()
+    if language_code:
+        speech_config.language_code = language_code
+
+    return _types.GenerateContentConfig(
+        response_modalities=["AUDIO"],
+        speech_config=speech_config,
+    )
+
+
+def _extract_pcm_from_tts_response(response) -> bytes:
+    return response.candidates[0].content.parts[0].inline_data.data
+
+
+def _iter_tts_stream_chunks(text: str, voice_name: str, model_name: str):
+    config = _build_tts_config(voice_name)
+    retry_config = RetryConfig(max_retries=1, base_delay=1.0, max_delay=4.0)
+    last_error = None
+
+    for attempt in range(retry_config.max_retries + 1):
+        client = _create_tts_client()
+        yielded_any = False
+        try:
+            for chunk in client.models.generate_content_stream(
+                model=model_name,
+                contents=text,
+                config=config,
+            ):
+                if (
+                    chunk.candidates is None
+                    or not chunk.candidates
+                    or chunk.candidates[0].content is None
+                    or not chunk.candidates[0].content.parts
+                ):
+                    continue
+
+                part = chunk.candidates[0].content.parts[0]
+                inline = getattr(part, "inline_data", None)
+                if inline and getattr(inline, "data", None):
+                    yielded_any = True
+                    yield inline.data
+            return
+        except Exception as exc:
+            last_error = exc
+            error_type, retryable, is_quota = classify_google_runtime_error(exc)
+            if yielded_any or attempt >= retry_config.max_retries or not retryable:
+                raise
+            delay = min(4.0, (retry_config.base_delay * (2 ** attempt)))
+            logger.warning(
+                "tts_stream_init failed (%s, quota=%s) attempt %s/%s; retrying in %.2fs",
+                error_type,
+                is_quota,
+                attempt + 1,
+                retry_config.max_retries + 1,
+                delay,
+            )
+            _time.sleep(delay)
+
+    if last_error is not None:
+        raise last_error
+
+
+def _build_live_system_prompt() -> str:
+    if _voice_assistant_gender() == "male":
+        return (
+            "Ti si glasovni asistent integriran u Google Workspace poslovnu platformu. "
+            "Odgovaraj kratko i jasno — razgovaramo glasom, ne pišemo. "
+            "Ako te pitaju o emailovima, kalendarima, dokumentima ili zadacima, reci da to nije dostupno "
+            "u glasovnom načinu rada — korisnik mora upisati poruku za agente. "
+            "Govori prirodno, u jednoj ili dvije rečenice. Izbjegavaj nabrajanje i dugačke liste. "
+            "Uvijek govori o sebi u muškom rodu."
+        )
+    return (
+        "Ti si glasovna asistentica integrirana u Google Workspace poslovnu platformu. "
+        "Odgovaraj kratko i jasno — razgovaramo glasom, ne pišemo. "
+        "Ako te pitaju o emailovima, kalendarima, dokumentima ili zadacima, reci da to nije dostupno "
+        "u glasovnom načinu rada — korisnik mora upisati poruku za agente. "
+        "Govori prirodno, u jednoj ili dvije rečenice. Izbjegavaj nabrajanje i dugačke liste. "
+        "Uvijek govori o sebi u ženskom rodu."
+    )
 
 class TokenAuthMiddleware(BaseHTTPMiddleware):
     """Simple bearer token auth for /api/* routes (except /api/media/).
@@ -198,11 +364,62 @@ def create_app(interface) -> FastAPI:
     # --- Chat endpoints ---
     @app.post("/api/chat", response_model=ChatResponse)
     async def chat(req: ChatRequest):
-        result = await _web_interface.chat(
-            user_id=req.user_id,
-            message=req.message
-        )
-        return ChatResponse(**result)
+        started_at = _time.time()
+        try:
+            result = await _web_interface.chat(
+                user_id=req.user_id,
+                message=req.message,
+                route_hint=req.route_hint,
+                response_mode=req.response_mode,
+            )
+            duration_s = _time.time() - started_at
+            _metrics.record_timing(
+                "web_chat_latency",
+                duration_s,
+                labels={
+                    "route": req.route_hint or "auto",
+                    "channel": "voice" if req.user_id.startswith(("rpi-voice", "live-voice", "telegram-voice")) else "text",
+                },
+            )
+            _metrics.log_event(
+                "web_chat_request",
+                {
+                    "user_id": req.user_id,
+                    "route_hint": req.route_hint,
+                    "response_mode": req.response_mode,
+                    "message_chars": len(req.message),
+                    "response_chars": len(result.get("response", "")),
+                    "duration_ms": int(duration_s * 1000),
+                    "session_id": result.get("session_id"),
+                    "success": True,
+                },
+            )
+            return ChatResponse(**result)
+        except Exception as exc:
+            duration_s = _time.time() - started_at
+            error_text = str(exc)
+            error_type, _, is_quota = classify_google_runtime_error(exc)
+            if is_quota:
+                _track_quota_error("chat")
+            _metrics.record_error(
+                "web_chat_error",
+                labels={"route": req.route_hint or "auto", "error_type": error_type},
+            )
+            _metrics.log_event(
+                "web_chat_request",
+                {
+                    "user_id": req.user_id,
+                    "route_hint": req.route_hint,
+                    "response_mode": req.response_mode,
+                    "message_chars": len(req.message),
+                    "duration_ms": int(duration_s * 1000),
+                    "success": False,
+                    "error_type": error_type,
+                    "quota_error": is_quota,
+                    "error": error_text[:300],
+                },
+            )
+            raise
 
     @app.post("/api/chat/stream")
     async def chat_stream(req: ChatRequest):
@@ -232,62 +449,152 @@ def create_app(interface) -> FastAPI:
     @app.post("/api/tts")
     async def tts(request: Request):
         """Convert text to speech using Gemini 2.5 Flash TTS. Returns PCM16 audio @ 24kHz."""
-        api_key = os.environ.get("GEMINI_API_KEY", "")
-        if not api_key:
-            raise HTTPException(status_code=503, detail="GEMINI_API_KEY not set")
-
+        started_at = _time.time()
         body = await request.json()
         text = body.get("text", "").strip()
+        voice_name = (body.get("voice_name") or os.environ.get("TTS_VOICE_NAME") or _default_tts_voice_name()).strip()
+        stream_audio = bool(body.get("stream"))
+        model_name = (body.get("model") or _default_tts_model()).strip()
         if not text:
             raise HTTPException(status_code=400, detail="No text provided")
 
-        # Strip markdown before TTS
-        import re
-        text = re.sub(r'```[\s\S]*?```', '', text)
-        text = re.sub(r'`[^`]+`', '', text)
-        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-        text = re.sub(r'\*(.+?)\*', r'\1', text)
-        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-        text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-        text = re.sub(r'https?://\S+', '', text)
-        text = re.sub(r'\n{2,}', '. ', text)
-        text = re.sub(r'\n', ' ', text)
-        text = text.strip()[:4000]  # Gemini TTS limit
+        text = _sanitize_tts_text(text)
 
         if not text:
             raise HTTPException(status_code=400, detail="Text is empty after cleanup")
 
         try:
-            from google import genai as _genai
-            from google.genai import types as _types
-            _vkeys = ['GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION']
-            _backup = {k: os.environ.pop(k) for k in _vkeys if k in os.environ}
-            try:
-                _client = _genai.Client(api_key=api_key)
-            finally:
-                os.environ.update(_backup)
+            _ = _create_tts_client()
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=str(e))
 
-            response = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: _client.models.generate_content(
-                    model='gemini-2.5-flash-preview-tts',
-                    contents=text,
-                    config=_types.GenerateContentConfig(
-                        response_modalities=['AUDIO'],
-                        speech_config=_types.SpeechConfig(
-                            voice_config=_types.VoiceConfig(
-                                prebuilt_voice_config=_types.PrebuiltVoiceConfig(voice_name='Aoede')
-                            )
-                        )
-                    )
-                )
-            )
-            pcm_data = response.candidates[0].content.parts[0].inline_data.data
+        try:
             _track_tts(len(text))
-            from fastapi.responses import Response
-            return Response(content=pcm_data, media_type="audio/L16;codec=pcm;rate=24000")
+
+            if stream_audio:
+                def stream_generator():
+                    stream_started_at = _time.time()
+                    try:
+                        yield from _iter_tts_stream_chunks(text, voice_name, model_name)
+                        duration_s = _time.time() - stream_started_at
+                        _metrics.record_timing(
+                            "web_tts_latency",
+                            duration_s,
+                            labels={"mode": "stream", "vertex": str(_tts_use_vertex())},
+                        )
+                        _metrics.log_event(
+                            "web_tts_request",
+                            {
+                                "voice_name": voice_name,
+                                "model": model_name,
+                                "stream": True,
+                                "vertex": _tts_use_vertex(),
+                                "text_chars": len(text),
+                                "duration_ms": int(duration_s * 1000),
+                                "success": True,
+                            },
+                        )
+                    except Exception as exc:
+                        logger.error(f"TTS streaming error: {exc}")
+                        duration_s = _time.time() - stream_started_at
+                        error_type, _, is_quota = classify_google_runtime_error(exc)
+                        if is_quota:
+                            _track_quota_error("tts")
+                        _metrics.record_error(
+                            "web_tts_error",
+                            labels={"mode": "stream", "error_type": error_type},
+                        )
+                        _metrics.log_event(
+                            "web_tts_request",
+                            {
+                                "voice_name": voice_name,
+                                "model": model_name,
+                                "stream": True,
+                                "vertex": _tts_use_vertex(),
+                                "text_chars": len(text),
+                                "duration_ms": int(duration_s * 1000),
+                                "success": False,
+                                "error_type": error_type,
+                                "quota_error": is_quota,
+                                "error": str(exc)[:300],
+                            },
+                        )
+                        raise
+
+                return StreamingResponse(
+                    stream_generator(),
+                    media_type="audio/L16;codec=pcm;rate=24000",
+                    headers={"X-TTS-Mode": "stream"},
+                )
+
+            def synthesize_once():
+                client = _create_tts_client()
+                config = _build_tts_config(voice_name)
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=text,
+                    config=config,
+                )
+                return _extract_pcm_from_tts_response(response)
+
+            async def synthesize_with_retry():
+                return await asyncio.get_event_loop().run_in_executor(None, synthesize_once)
+
+            pcm_data = await run_with_bounded_retry(
+                "tts_unary",
+                synthesize_with_retry,
+                config=RetryConfig(max_retries=1, base_delay=1.0, max_delay=4.0),
+                log=logger,
+            )
+            duration_s = _time.time() - started_at
+            _metrics.record_timing(
+                "web_tts_latency",
+                duration_s,
+                labels={"mode": "unary", "vertex": str(_tts_use_vertex())},
+            )
+            _metrics.log_event(
+                "web_tts_request",
+                {
+                    "voice_name": voice_name,
+                    "model": model_name,
+                    "stream": False,
+                    "vertex": _tts_use_vertex(),
+                    "text_chars": len(text),
+                    "duration_ms": int(duration_s * 1000),
+                    "success": True,
+                },
+            )
+            return Response(
+                content=pcm_data,
+                media_type="audio/L16;codec=pcm;rate=24000",
+                headers={"X-TTS-Mode": "unary"},
+            )
         except Exception as e:
             logger.error(f"TTS error: {e}")
+            duration_s = _time.time() - started_at
+            error_text = str(e)
+            error_type, _, is_quota = classify_google_runtime_error(e)
+            if is_quota:
+                _track_quota_error("tts")
+            _metrics.record_error(
+                "web_tts_error",
+                labels={"mode": "stream" if stream_audio else "unary", "error_type": error_type},
+            )
+            _metrics.log_event(
+                "web_tts_request",
+                {
+                    "voice_name": voice_name,
+                    "model": model_name,
+                    "stream": stream_audio,
+                    "vertex": _tts_use_vertex(),
+                    "text_chars": len(text),
+                    "duration_ms": int(duration_s * 1000),
+                    "success": False,
+                    "error_type": error_type,
+                    "quota_error": is_quota,
+                    "error": error_text[:300],
+                },
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
     # --- Gemini Live Voice WebSocket ---
@@ -324,7 +631,7 @@ def create_app(interface) -> FastAPI:
             # Gemini Live API requires Gemini API endpoint (not Vertex AI).
             # Temporarily remove Vertex AI env vars for client creation only.
             # Safe in single-threaded asyncio — no await between pop and restore.
-            _vertex_keys = ['GOOGLE_GENAI_USE_VERTEXAI', 'GOOGLE_CLOUD_PROJECT', 'GOOGLE_CLOUD_LOCATION']
+            _vertex_keys = genai_vertex_env_keys()
             _vertex_backup = {k: os.environ.pop(k) for k in _vertex_keys if k in os.environ}
             try:
                 client = genai.Client(api_key=api_key)
@@ -333,16 +640,18 @@ def create_app(interface) -> FastAPI:
 
             config = LiveConnectConfig(
                 response_modalities=["AUDIO"],
-                system_instruction=Content(parts=[Part(text=LIVE_SYSTEM_PROMPT)]),
+                system_instruction=Content(parts=[Part(text=_build_live_system_prompt())]),
                 speech_config=SpeechConfig(
                     voice_config=VoiceConfig(
-                        prebuilt_voice_config=PrebuiltVoiceConfig(voice_name="Aoede")
+                        prebuilt_voice_config=PrebuiltVoiceConfig(
+                            voice_name=os.environ.get("TTS_VOICE_NAME", _default_tts_voice_name())
+                        )
                     )
                 )
             )
 
             async with client.aio.live.connect(
-                model="gemini-3.1-flash-live-preview",
+                model=os.environ.get("LIVE_VOICE_MODEL", "gemini-3.1-flash-live-preview"),
                 config=config
             ) as session:
 
@@ -558,6 +867,13 @@ def create_app(interface) -> FastAPI:
             "quota_errors": quota_errors,
             "quota_errors_last": last_errors,
             "total_quota_errors": sum(quota_errors.values()),
+        }
+
+    @app.get("/api/monitoring/summary")
+    async def monitoring_summary(limit: int = 40):
+        return {
+            "metrics": _metrics.get_metrics(),
+            "recent_events": _metrics.get_recent_events(limit=limit),
         }
 
     # --- Trace endpoint ---

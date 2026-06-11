@@ -10,6 +10,7 @@ WorkingDirectory=/home/pi/google_claude
 EnvironmentFile=/home/pi/google_claude/.env
 Environment=DEPLOYMENT_PROFILE=rpi-home
 Environment=HITL_INTERFACE=web
+Environment=REQUIRE_OAUTH_HEALTHCHECK=false
 ExecStartPre=/home/pi/google_claude/.venv/bin/python scripts/check_oauth_health.py
 ExecStart=/home/pi/google_claude/.venv/bin/python run_web.py --host 0.0.0.0 --port 8000
 Restart=always

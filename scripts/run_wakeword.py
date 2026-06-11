@@ -12,7 +12,7 @@ Prerequisites:
 Usage:
   python scripts/run_wakeword.py
   python scripts/run_wakeword.py --api-url http://localhost:8000
-  python scripts/run_wakeword.py --wake-word hey_jarvis --threshold 0.5
+  python scripts/run_wakeword.py --wake-word hey_jarvis --threshold 0.4
 """
 
 import sys
@@ -28,11 +28,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
+from config.google_runtime import env_flag
+
+
+def _env_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
 
 def main():
     parser = argparse.ArgumentParser(description="Wake Word Listener")
     parser.add_argument(
-        "--api-url", default=os.getenv("WAKEWORD_API_URL", "http://localhost:8000"),
+        "--api-url", default=os.getenv("WAKEWORD_API_URL") or os.getenv("WAKEWORD_API_BASE_URL") or "http://localhost:8000",
         help="Web server URL (default: http://localhost:8000)"
     )
     parser.add_argument(
@@ -41,16 +53,20 @@ def main():
     )
     parser.add_argument(
         "--threshold", type=float,
-        default=float(os.getenv("WAKEWORD_THRESHOLD", "0.5")),
-        help="Detection confidence threshold (default: 0.5)"
+        default=float(os.getenv("WAKEWORD_THRESHOLD", "0.4")),
+        help="Detection confidence threshold (default: 0.4)"
     )
     parser.add_argument(
-        "--mic-device", type=int, default=None,
+        "--mic-device", type=int, default=_env_int("WAKEWORD_INPUT_DEVICE"),
         help="ALSA mic device index (default: system default)"
     )
     parser.add_argument(
-        "--speaker-device", type=int, default=None,
+        "--speaker-device", type=int, default=_env_int("WAKEWORD_OUTPUT_DEVICE"),
         help="ALSA speaker device index (default: system default)"
+    )
+    parser.add_argument(
+        "--no-listening-cue", action="store_true",
+        help="Disable local audio cue after wake word detection"
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",
@@ -60,10 +76,12 @@ def main():
 
     # Setup logging
     level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
+    from monitoring.logging_config import setup_logging
+
+    setup_logging(
+        level="DEBUG" if args.verbose else "INFO",
+        use_cloud_logging=env_flag("USE_CLOUD_LOGGING", bool(os.getenv("GOOGLE_CLOUD_PROJECT"))),
+        project_id=os.getenv("GOOGLE_CLOUD_PROJECT"),
     )
 
     # API token from env (if web server requires auth)
@@ -78,11 +96,14 @@ def main():
         mic_device=args.mic_device,
         speaker_device=args.speaker_device,
         api_token=api_token,
+        user_id=os.getenv("WAKEWORD_USER_ID", "rpi-voice").strip() or "rpi-voice",
+        listening_cue=not args.no_listening_cue and os.getenv("WAKEWORD_LISTENING_CUE", "true").lower() in ("1", "true", "yes", "on"),
     )
 
     print(f"Starting wake word listener...")
     print(f"  API: {args.api_url}")
     print(f"  Wake word: {args.wake_word} (threshold: {args.threshold})")
+    print(f"  Listening cue: {'ON' if interface.listening_cue else 'OFF'}")
     print(f"  Say '{args.wake_word.replace('_', ' ')}' to activate")
     print()
 

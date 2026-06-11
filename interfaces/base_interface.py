@@ -9,13 +9,104 @@ import os
 import logging
 import time
 import uuid
+import unicodedata
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Optional, Dict, Any
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+from services.voice_fast_path import (
+    execute_fast_smart_home_command,
+    resolve_voice_smart_home_response,
+)
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+SMART_HOME_KEYWORDS = {
+    "svjetlo", "upal", "ugas", "ukljuc", "uključi", "iskljuc", "isključi",
+    "utič", "utic", "bojler", "fotelja", "terasa", "boravak", "hodnik",
+    "kuhinja", "kupaona", "soba", "film", "nocno", "noćno", "dolazak",
+    "odlazak", "pametna kuća", "pametna kuca", "smart home", "scene", "scena",
+}
+
+CHRISTIAN_KEYWORDS = {
+    "krsc", "kršć", "biblij", "katekiz", "molitv", "duhovn", "augustin",
+    "ignacije", "razluc", "razluč", "ispit savjesti", "examen", "egzamen",
+}
+
+TIME_DATE_KEYWORDS = {
+    "koliko je sati", "koji je datum", "koji je dan", "koji dan", "koliko je ura",
+    "datum", "vrijeme", "koliko sati"
+}
+
+BUSINESS_ORCHESTRATOR_KEYWORDS = {
+    "mail", "email", "gmail", "kalendar", "calendar", "drive", "docs",
+    "dokument", "dokumenti", "sheet", "sheets", "tablica", "tablice",
+    "zadatak", "zadaci", "contacts", "kontakt", "kontakti",
+}
+
+GENERAL_VOICE_PREFIXES = (
+    "sto ",
+    "što ",
+    "tko ",
+    "ko je ",
+    "objasni",
+    "reci mi",
+    "reci nesto",
+    "reci nešto",
+    "kako ",
+    "zasto ",
+    "zašto ",
+)
+
+VOICE_ROUTING_USER_PREFIXES = (
+    "rpi-voice",
+    "live-voice",
+    "telegram-voice",
+)
+
+LOCAL_VOICE_ROUTE = "local_voice_response"
+ORCHESTRATOR_VOICE_ROUTE = "orchestrator"
+VOICE_SMART_HOME_RESPONSE_MODE = os.getenv(
+    "VOICE_SMART_HOME_RESPONSE_MODE",
+    "none",
+).strip().lower()
+
+SMART_HOME_ROOM_ALIASES = {
+    "svjetlo_boravak": ("boravak", "dnevni", "dnevni boravak", "dnevnom boravku"),
+    "svjetlo_kuhinja": ("kuhinja", "kuhinji"),
+    "svjetlo_hodnik": ("hodnik", "hodniku"),
+    "svjetlo_kupaona": ("kupaona", "kupaonici", "kupatilo", "kupatilu"),
+    "svjetlo_blagavaona": ("blagavaona", "blagovaona", "blagavaonici", "blagovaonici"),
+    "svjetlo_ulaz": ("ulaz",),
+    "svjetlo_terasa1": ("terasa", "terasi"),
+    "svjetlo_vani": ("vani", "dvoriste", "dvoristu"),
+    "svjetlo_soba1": ("soba 1", "soba1"),
+    "svjetlo_soba2": ("soba 2", "soba2"),
+}
+
+SMART_HOME_SPOKEN_NAMES = {
+    "svjetlo_boravak": "svjetlo u dnevnom boravku",
+    "svjetlo_kuhinja": "svjetlo u kuhinji",
+    "svjetlo_hodnik": "svjetlo u hodniku",
+    "svjetlo_kupaona": "svjetlo u kupaoni",
+    "svjetlo_blagavaona": "svjetlo u blagovaonici",
+    "svjetlo_ulaz": "svjetlo na ulazu",
+    "svjetlo_terasa1": "svjetlo na terasi",
+    "svjetlo_vani": "vanjsko svjetlo",
+    "svjetlo_soba1": "svjetlo u sobi 1",
+    "svjetlo_soba2": "svjetlo u sobi 2",
+}
+
+SMART_HOME_SCENE_ALIASES = {
+    "nocno": ("nocno", "noćno"),
+    "film": ("film", "kino"),
+    "dolazak": ("dolazak", "dosao sam", "došao sam"),
+    "odlazak": ("odlazak", "idem van", "izlazim"),
+    "kuhanje": ("kuhanje", "kuham", "kuhaj"),
+}
 
 
 class BaseInterface(ABC):
@@ -77,11 +168,250 @@ class BaseInterface(ABC):
 
         logger.info(f"System initialized for {self.session_prefix} interface")
 
+    def _get_worker_agent(self, agent_name: str):
+        """Return a loaded worker agent by name, if present."""
+        if not self.system:
+            return None
+        for agent in self.system.worker_agents:
+            if getattr(agent, "name", "") == agent_name:
+                return agent
+        return None
+
+    @staticmethod
+    def _normalize_voice_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKD", text.lower())
+        return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+    def _should_use_voice_direct_routing(self, user_id: str) -> bool:
+        """Enable direct routing only for voice-tagged users when the feature is on."""
+        direct_enabled = os.getenv("VOICE_DIRECT_ROUTING", "false").lower() in (
+            "1", "true", "yes", "on"
+        )
+        if not direct_enabled:
+            return False
+        return user_id.startswith(VOICE_ROUTING_USER_PREFIXES)
+
+    def _match_direct_voice_agent(self, message: str) -> Optional[str]:
+        """Pick direct voice target before orchestrator fallback."""
+        msg_lower = message.lower()
+        if any(kw in msg_lower for kw in self.system.philosophy_keywords):
+            return "socrates"
+        if any(kw in msg_lower for kw in SMART_HOME_KEYWORDS):
+            return "smart_home"
+        if any(kw in msg_lower for kw in CHRISTIAN_KEYWORDS):
+            return "christian_guide"
+        if any(kw in msg_lower for kw in TIME_DATE_KEYWORDS):
+            return "secretary"
+        if msg_lower.startswith(GENERAL_VOICE_PREFIXES):
+            return "voice_qa"
+        return None
+
+    def _looks_like_business_orchestrator_task(self, message: str) -> bool:
+        msg_lower = self._normalize_voice_text(message)
+        return any(kw in msg_lower for kw in BUSINESS_ORCHESTRATOR_KEYWORDS)
+
+    def _is_time_or_date_request(self, message: str) -> bool:
+        msg_lower = self._normalize_voice_text(message)
+        return any(kw in msg_lower for kw in TIME_DATE_KEYWORDS)
+
+    def _build_time_or_date_response(self, message: str) -> str:
+        tz_name = os.getenv("USER_TIMEZONE", "Europe/Zagreb")
+        now = datetime.now(ZoneInfo(tz_name))
+        msg_lower = message.lower()
+
+        if "datum" in msg_lower or "koji je dan" in msg_lower or "koji dan" in msg_lower:
+            return now.strftime("Danas je %A, %d. %m. %Y.")
+
+        return now.strftime("Trenutno je %H:%M.")
+
+    def _classify_voice_route(self, message: str) -> tuple[str, Optional[str]]:
+        """
+        Lightweight voice pre-router.
+
+        Returns:
+            (route_type, route_target)
+            route_type:
+              - LOCAL_VOICE_ROUTE
+              - ORCHESTRATOR_VOICE_ROUTE
+              - "agent"
+        """
+        if self._is_time_or_date_request(message):
+            return LOCAL_VOICE_ROUTE, None
+
+        if self._looks_like_business_orchestrator_task(message):
+            return ORCHESTRATOR_VOICE_ROUTE, None
+
+        direct_agent = self._match_direct_voice_agent(message)
+        if direct_agent in {"socrates", "smart_home", "christian_guide", "secretary"}:
+            return "agent", direct_agent
+
+        if direct_agent == "voice_qa":
+            return "agent", "voice_qa"
+
+        return ORCHESTRATOR_VOICE_ROUTE, None
+
+    def _resolve_voice_smart_home_response(
+        self,
+        base_response: str,
+        response_mode: Optional[str],
+    ) -> str:
+        return resolve_voice_smart_home_response(base_response, response_mode)
+
+    async def _try_fast_smart_home_response(
+        self,
+        message: str,
+        response_mode: Optional[str] = None,
+    ) -> Optional[str]:
+        fast_response = await execute_fast_smart_home_command(
+            message,
+            response_mode=response_mode,
+        )
+        if fast_response is not None:
+            return fast_response
+
+        normalized = self._normalize_voice_text(message)
+
+        if "ugasi sve" in normalized or "sve ugasi" in normalized:
+            from tools.adk_tools.mqtt_adk_tools import mqtt_scene_control
+
+            result = await mqtt_scene_control("sve_ugasi")
+            if result.get("status") == "ok":
+                return self._resolve_voice_smart_home_response(
+                    "Ugasio sam sve sto se smije ugasiti.",
+                    response_mode,
+                )
+            return None
+
+        for scene, aliases in SMART_HOME_SCENE_ALIASES.items():
+            if any(alias in normalized for alias in aliases):
+                from tools.adk_tools.mqtt_adk_tools import mqtt_scene_control
+
+                result = await mqtt_scene_control(scene)
+                if result.get("status") == "ok":
+                    description = str(result.get("description") or scene).strip()
+                    return self._resolve_voice_smart_home_response(
+                        f"Uključio sam scenu {description}.",
+                        response_mode,
+                    )
+                return None
+
+        state = None
+        if any(token in normalized for token in ("upal", "ukljuc")):
+            state = "ON"
+        elif any(token in normalized for token in ("ugas", "iskljuc")):
+            state = "OFF"
+
+        if state is None:
+            return None
+
+        matched_devices = []
+        for device_name, aliases in SMART_HOME_ROOM_ALIASES.items():
+            if any(alias in normalized for alias in aliases):
+                matched_devices.append(device_name)
+
+        if len(matched_devices) != 1:
+            return None
+
+        from tools.adk_tools.mqtt_adk_tools import mqtt_switch_control
+
+        device_name = matched_devices[0]
+        result = await mqtt_switch_control(device_name, state)
+        if result.get("status") != "ok":
+            return None
+
+        spoken_name = SMART_HOME_SPOKEN_NAMES.get(device_name, device_name)
+        if state == "ON":
+            return self._resolve_voice_smart_home_response(
+                f"Uključio sam {spoken_name}.",
+                response_mode,
+            )
+        return self._resolve_voice_smart_home_response(
+            f"Ugasio sam {spoken_name}.",
+            response_mode,
+        )
+
+    async def _run_direct_worker_agent(
+        self,
+        agent_name: str,
+        user_id: str,
+        session_id: str,
+        message: str,
+        route_hint: Optional[str] = None,
+        response_mode: Optional[str] = None,
+    ) -> str:
+        """Run a selected worker agent directly, bypassing orchestrator."""
+        if agent_name == "smart_home":
+            fast_response = await self._try_fast_smart_home_response(
+                message,
+                response_mode=response_mode,
+            )
+            if fast_response is not None:
+                logger.info("Direct voice route -> smart_home_fast")
+                return fast_response
+
+        agent = self._get_worker_agent(agent_name)
+        if agent is None:
+            logger.warning(
+                "Direct voice routing target '%s' not loaded; falling back to orchestrator",
+                agent_name,
+            )
+            return await self.system.orchestrator_helper.run(message)
+
+        from agents.adk_agents.runner_utils import run_agent_simple
+
+        session_service = None
+        if self.system.orchestrator_helper:
+            session_service = getattr(
+                self.system.orchestrator_helper, "session_service", None
+            )
+
+        # Keep per-agent ADK sessions isolated. Voice follow-up continuity is
+        # handled at the wakeword/router layer; sharing one ADK session across
+        # different direct worker agents produced hung runs and unknown-agent
+        # events when switching lanes.
+        worker_session_id = f"{session_id}-{agent_name}"
+
+        logger.info("Direct voice route -> %s", agent_name)
+        worker_message = message
+        if agent_name == "smart_home":
+            worker_message = (
+                "Voice smart-home mode. Interpret the request, execute the home action if the "
+                "tools allow it, and answer in one short Croatian sentence suitable for spoken output only when a spoken confirmation is necessary. "
+                "If clarification is required, ask only one concise follow-up question.\n\n"
+                f"User request: {message}"
+            )
+        elif agent_name == "secretary":
+            worker_message = (
+                "Voice utility mode. Answer in Croatian with a short spoken-friendly response. "
+                "Prefer one sentence unless the user explicitly asks for more detail.\n\n"
+                f"User request: {message}"
+            )
+        elif agent_name == "voice_qa":
+            worker_message = (
+                "Voice Q&A mode. Answer the user's question directly in Croatian. "
+                "Keep it concise, useful, and suitable for spoken output. "
+                "Prefer one short paragraph or at most two short sentences unless the user explicitly asks for depth.\n\n"
+                f"User question: {message}"
+            )
+        response = await run_agent_simple(
+            agent,
+            worker_message,
+            session_id=worker_session_id,
+            user_id=user_id,
+            session_service=session_service,
+            app_name="agents",
+        )
+        if agent_name == "smart_home" and user_id.startswith(VOICE_ROUTING_USER_PREFIXES):
+            return self._resolve_voice_smart_home_response(response, response_mode)
+        return response
+
     async def process_message(
         self,
         user_id: str,
         message: str,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        route_hint: Optional[str] = None,
+        response_mode: Optional[str] = None,
     ) -> str:
         """
         Process a user message through the agent system.
@@ -124,17 +454,38 @@ class BaseInterface(ABC):
 
         try:
             # Check for mode routing (CLASSROOM vs LEGACY)
-            if self.system.active_mode == "CLASSROOM":
+            if self.system.active_mode == "CLASSROOM" and not self._should_use_voice_direct_routing(user_id):
                 result = await self._process_classroom_mode(message)
             else:
-                # Check if we should switch to CLASSROOM using keyword-based routing
-                # (master_router replaced with inline keyword check - same logic as CLI)
-                msg_lower = message.lower()
-                if any(kw in msg_lower for kw in self.system.philosophy_keywords):
+                msg_lower = self._normalize_voice_text(message)
+                direct_agent = "socrates" if any(
+                    kw in msg_lower for kw in self.system.philosophy_keywords
+                ) else None
+
+                if self._should_use_voice_direct_routing(user_id):
+                    if route_hint in {"smart_home", "voice_qa", "christian_guide", "socrates", "secretary"}:
+                        route_type, route_target = "agent", route_hint
+                        logger.info("Pinned voice route -> %s", route_target)
+                    else:
+                        route_type, route_target = self._classify_voice_route(message)
+
+                    if route_type == LOCAL_VOICE_ROUTE:
+                        result = self._build_time_or_date_response(message)
+                    elif route_type == "agent" and route_target:
+                        result = await self._run_direct_worker_agent(
+                            route_target,
+                            user_id=user_id,
+                            session_id=session_id,
+                            message=message,
+                            route_hint=route_hint,
+                            response_mode=response_mode,
+                        )
+                    else:
+                        result = await self.system.orchestrator_helper.run(message)
+                elif direct_agent == "socrates":
                     self.system.active_mode = "CLASSROOM"
                     result = await self._process_classroom_mode(message, first_entry=True)
                 else:
-                    # Use Smart Orchestrator
                     result = await self.system.orchestrator_helper.run(message)
 
             return result

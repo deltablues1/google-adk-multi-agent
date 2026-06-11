@@ -34,6 +34,7 @@ from google.genai import types
 # Monitoring imports
 from monitoring.logging_config import setup_logging, get_logger_with_context
 from monitoring.metrics import AgentMetrics, get_metrics_collector
+from config.google_runtime import get_gemini_location
 
 # Error Handling imports
 from tools.error_handling.error_classifier import classify_error, ErrorSeverity, ErrorCategory
@@ -248,7 +249,7 @@ class BaseAgent:
                 client = genai.Client(
                     vertexai=True,
                     project=project_id,
-                    location=os.getenv('GOOGLE_CLOUD_LOCATION', 'us-central1')
+                    location=get_gemini_location(default="global")
                 )
             elif api_key:
                 # Fallback to API key mode

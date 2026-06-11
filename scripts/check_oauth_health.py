@@ -39,6 +39,18 @@ def check_token_health(verbose: bool = False) -> bool:
     else:
         logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
+    deployment_profile = os.getenv("DEPLOYMENT_PROFILE", "full")
+    require_healthcheck = os.getenv(
+        "REQUIRE_OAUTH_HEALTHCHECK",
+        "false" if deployment_profile == "rpi-home" else "true",
+    ).lower() in ("1", "true", "yes", "on")
+
+    if not require_healthcheck:
+        logger.warning(
+            "OAuth health check skipped (REQUIRE_OAUTH_HEALTHCHECK=false)"
+        )
+        return True
+
     # Determine token path
     token_path = (
         os.getenv('OAUTH_TOKEN_STORAGE_PATH')

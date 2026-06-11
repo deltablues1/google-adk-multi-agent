@@ -462,7 +462,7 @@ Koristi /classroom za ulazak.
                 logger.info(f"Voice message from {chat_id}: {transcript[:80]}...")
 
                 response = await self.process_message(
-                    user_id=user_id,
+                    user_id=f"telegram-voice-{user_id}",
                     message=transcript,
                     session_id=session_id
                 )

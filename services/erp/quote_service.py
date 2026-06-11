@@ -441,10 +441,12 @@ class QuoteService(BaseERPService):
         """
         check_permission(ctx, "quote:convert")
 
+        # Load quote to check idempotency before delegating
         doc = await self._get_repo().get(quote_id, ctx)
         if doc is None:
             raise NotFoundError(code="NOT_FOUND", message=f"Ponuda '{quote_id}' nije pronađena.")
 
+        # Already converted via this path (converted_invoice_id written below)
         if doc.get("converted_invoice_id"):
             return {
                 "quote_id":           quote_id,
@@ -454,10 +456,13 @@ class QuoteService(BaseERPService):
                 "already_converted":  True,
             }
 
+        # Delegate to the Faza 2E canonical creator (handles its own idempotency)
         invoice = await self.create_outbound_b2b_from_quote(quote_id, ctx)
         already_existed = invoice.pop("_already_exists", False)
 
         now = datetime.now(timezone.utc).isoformat()
+        # Mark quote as converted so future calls to convert_to_invoice hit
+        # the fast idempotency path above.
         try:
             await self._get_db().collection("quotes").document(quote_id).update({
                 "document_status":               "converted",
@@ -726,6 +731,7 @@ class QuoteService(BaseERPService):
         )
         return invoice
 
+
     # ------------------------------------------------------------------
     # Faza 2E / D1: quote → outbound B2G invoice
     # ------------------------------------------------------------------
@@ -879,6 +885,7 @@ class QuoteService(BaseERPService):
         if doc is None:
             raise NotFoundError(code="NOT_FOUND", message=f"Ponuda '{quote_id}' nije pronađena.")
 
+        # Already converted via this path
         if doc.get("converted_invoice_id") and doc.get("converted_invoice_type") == "b2g":
             return {
                 "quote_id":           quote_id,
@@ -888,6 +895,7 @@ class QuoteService(BaseERPService):
                 "already_converted":  True,
             }
 
+        # Delegate to canonical B2G creator (reuses existing draft if already created via create-invoice)
         invoice = await self.create_outbound_b2g_from_quote(quote_id, ctx)
         already_existed = invoice.pop("_already_exists", False)
 

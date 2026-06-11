@@ -9,10 +9,20 @@ from typing import Dict, Any, List, Optional, Type
 from dataclasses import dataclass
 import importlib
 import logging
+import os
 
-from config.deployment_config import ENABLE_ERP, ERP_AGENTS
+from config.deployment_config import (
+    ENABLE_ERP,
+    ERP_AGENTS,
+    IS_RPI_HOME,
+    RPI_HOME_ALLOWED_AGENTS,
+)
 
 logger = logging.getLogger(__name__)
+
+FLASH_MODEL = os.getenv("FLASH_MODEL", "gemini-2.5-flash")
+PRO_MODEL = os.getenv("PRO_MODEL", "gemini-2.5-pro")
+ORCHESTRATOR_MODEL = os.getenv("ORCHESTRATOR_MODEL", FLASH_MODEL)
 
 
 @dataclass
@@ -48,7 +58,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="orchestrator",
         module="agents.adk_agents.orchestrator_adk",
         class_name="create_orchestrator_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Flash is sufficient for routing/coordination
+        model=ORCHESTRATOR_MODEL,  # Stable default for Pi/Vertex runtime
         description="Main router agent that delegates tasks to specialized agents. Handles general queries.",
         tools=[],
         instruction_file="agents/orchestrator/instructions.md",
@@ -68,7 +78,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="mailer",
         module="agents.adk_agents.mailer_adk",
         class_name="create_mailer_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast API operations
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Handles all Gmail operations: sending, reading, searching emails, managing threads and drafts.",
         tools=["gmail_adk"],
         instruction_file="agents/mailer/instructions.md",
@@ -84,7 +94,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="librarian",
         module="agents.adk_agents.librarian_adk",
         class_name="create_librarian_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast file search
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Manages Google Drive: file operations, sharing, permissions, and natural language search.",
         tools=["drive_adk"],
         instruction_file="agents/librarian/instructions.md",
@@ -100,7 +110,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="analyst",
         module="agents.adk_agents.analyst_adk",
         class_name="create_analyst_agent",
-        model="gemini-2.5-pro",  # Tier 2: Precision for data analysis & formulas
+        model=PRO_MODEL,  # Tier 2: Precision for data analysis & formulas
         description="Works with Google Sheets: data analysis, formulas, schema-first reading of large tables.",
         tools=["sheets_adk"],
         instruction_file="agents/analyst/instructions.md",
@@ -116,7 +126,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="secretary",
         module="agents.adk_agents.secretary_adk",
         class_name="create_secretary_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast calendar operations
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Manages Google Calendar: events, scheduling, timezone handling, conflict resolution.",
         tools=["calendar_adk"],
         instruction_file="agents/secretary/instructions.md",
@@ -132,7 +142,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="rolodex",
         module="agents.adk_agents.rolodex_adk",
         class_name="create_rolodex_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast contact lookup
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Manages Google Contacts: search, find emails, manage address book.",
         tools=["contacts_adk"],
         instruction_file="agents/rolodex/instructions.md",
@@ -148,7 +158,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="tracker",
         module="agents.adk_agents.tracker_adk",
         class_name="create_tracker_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast task management
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Manages Google Tasks: creating, completing, organizing tasks and task lists.",
         tools=["tasks_adk"],
         instruction_file="agents/tracker/instructions.md",
@@ -168,7 +178,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="expense",
         module="agents.adk_agents.expense_adk",
         class_name="create_expense_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast multimodal OCR
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Receipt processing specialist using Gemini Flash OCR. Extracts structured data from receipt images (merchant, date, amount, items, category), validates with confidence scoring, and saves to Google Sheets. Handles Croatian language receipts with automatic categorization.",
         tools=["vision_mcp", "drive_adk", "sheets_adk"],
         instruction_file="agents/expense/instructions.md",
@@ -188,7 +198,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="fiskalni_pripremac",
         module="agents.adk_agents.fiskalni_pripremac_adk",
         class_name="create_fiskalni_pripremac_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast data preparation
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Invoice data preparation specialist for Croatian fiscalization (Fiskalizacija 2.0). Validates OIB numbers using Module 11 algorithm, looks up VAT status in VIES, classifies products/services using KPD RAG search, calculates taxes with Decimal precision, and normalizes data to UBL 2.1 / HR-FISK 2.0 standards. Keywords: fiskalizacija, racun, faktura, invoice, OIB, PDV, VAT.",
         tools=["fiskalizacija_adk"],
         instruction_file="agents/fiskalni_pripremac/instructions.md",
@@ -204,7 +214,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="fiskalni_validator",
         module="agents.adk_agents.fiskalni_validator_adk",
         class_name="create_fiskalni_validator_agent",
-        model="gemini-2.5-pro",  # Tier 2: Thinking mode for ZERO-tolerance validation
+        model=PRO_MODEL,  # Tier 2: Thinking mode for ZERO-tolerance validation
         description="Strict quality gate for Croatian fiscalization. Performs chain-of-thought validation with ZERO tolerance for errors. Re-validates OIB checksums, verifies tax calculations exactly (0.00 EUR tolerance), enforces business rules, and validates XML against XSD schemas. Returns VALID, NEEDS_REVIEW, or INVALID.",
         tools=["fiskalizacija_adk"],
         instruction_file="agents/fiskalni_validator/instructions.md",
@@ -220,7 +230,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="fiskalni_executor",
         module="agents.adk_agents.fiskalni_executor_adk",
         class_name="create_fiskalni_executor_agent",
-        model="gemini-2.5-pro",  # Tier 2: Critical signing operations, must not fail
+        model=PRO_MODEL,  # Tier 2: Critical signing operations, must not fail
         description="Final execution agent for Croatian fiscalization. Checks idempotency via ledger, builds UBL XML, signs with XAdES-BES digital signature, submits to FINA via SOAP with circuit breaker, parses JIR response, generates QR code, and maintains audit ledger. Includes retry queue with exponential backoff and 48h deadline.",
         tools=["fiskalizacija_adk"],
         instruction_file="agents/fiskalni_executor/instructions.md",
@@ -240,7 +250,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="researcher",
         module="agents.adk_agents.researcher_adk",
         class_name="create_researcher_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast web research
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Deep web research using Google Search Grounding, YouTube transcripts, and web scraping. Supports multiple research modes.",
         tools=["research_adk"],
         instruction_file="agents/researcher/instructions.md",
@@ -256,7 +266,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="scribe",
         module="agents.adk_agents.scribe_adk",
         class_name="create_scribe_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast document creation
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Google Docs specialist: creates, formats, and manages documents with professional quality.",
         tools=["docs_adk"],
         instruction_file="agents/scribe/instructions.md",
@@ -272,7 +282,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="scraper",
         module="agents.adk_agents.scraper_adk",
         class_name="create_scraper_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast data extraction
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Web scraping specialist for extracting structured data from websites.",
         tools=["research_adk"],
         instruction_file="agents/scraper/instructions.md",
@@ -288,7 +298,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="synthesizer",
         module="agents.adk_agents.synthesizer_adk",
         class_name="create_synthesizer_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Flash 3 is capable enough for quality writing
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Professional editor and technical writer. Transforms raw research notes into cohesive, high-quality documents. Adapts tone to format (Executive Summary, Technical Report, Blog Post). Preserves citations and avoids hallucinations.",
         tools=[],
         instruction_file="agents/synthesizer/instructions.md",
@@ -300,6 +310,22 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         adk_factory_func="create_synthesizer_agent"
     ),
 
+    "voice_qa": AgentConfig(
+        name="voice_qa",
+        module="agents.adk_agents.voice_qa_adk",
+        class_name="create_voice_qa_agent",
+        model=FLASH_MODEL,
+        description="Fast spoken Q&A specialist for general knowledge and everyday questions without tool use.",
+        tools=[],
+        instruction_file="agents/voice_qa/instructions.md",
+        config={
+            "temperature": 0.4,
+            "max_tokens": 2048,
+        },
+        use_adk=True,
+        adk_factory_func="create_voice_qa_agent"
+    ),
+
     # ========================================================================
     # PHILOSOPHY & EDUCATION AGENTS
     # ========================================================================
@@ -308,7 +334,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="socrates",
         module="agents.adk_agents.socrates_adk",
         class_name="create_socrates_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Flash is sufficient for Socratic dialogue
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Socratic dialogue specialist. Uses Socratic method to teach through questions, not answers. Deep philosophical reasoning. Philosophy knowledge base (RAG). Keywords: Sokrat, Socrates, filozofija, philosophy.",
         tools=["philosophy_rag"],
         instruction_file=None,
@@ -320,6 +346,22 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         adk_factory_func="create_socrates_agent"
     ),
 
+    "christian_guide": AgentConfig(
+        name="christian_guide",
+        module="agents.adk_agents.christian_guide_adk",
+        class_name="create_christian_guide_agent",
+        model=FLASH_MODEL,
+        description="Christian spiritual guide with optional RAG knowledge base. Helps with Christian theology, Scripture-based reflection, discernment, prayer, examen, and guided spiritual exercises. Keywords: krscanstvo, krscanski, kršćanstvo, kršćanski, duhovno, duhovnost, molitva, examen, razlucivanje, razlučivanje, Biblija, Katekizam, Augustin, Ignacije.",
+        tools=["christian_rag"],
+        instruction_file="agents/christian_guide/instructions.md",
+        config={
+            "temperature": 0.5,
+            "max_tokens": 2048,
+        },
+        use_adk=True,
+        adk_factory_func="create_christian_guide_agent"
+    ),
+
     # ========================================================================
     # MARKETING & ADVERTISING AGENTS
     # ========================================================================
@@ -328,7 +370,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="marketing",
         module="agents.adk_agents.marketing_adk",
         class_name="create_marketing_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast creative ideation
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Google Ads specialist with Vertex AI visual generation. Creates images/videos, hosts on YouTube, and creates ad campaigns. CRITICAL: Human-in-the-loop workflow - always gets user approval before proceeding. Campaigns start in PAUSED state for safety.",
         tools=["marketing_adk"],
         instruction_file="agents/marketing/instructions.md",
@@ -348,7 +390,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="scheduler",
         module="agents.adk_agents.scheduler_adk",
         class_name="create_scheduler_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast schedule management
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Manages scheduled/recurring tasks. Can schedule any agent request to run on a cron schedule (e.g., weekdays at 9am), at intervals (e.g., every hour), or at a specific date/time. Keywords: zakaži, schedule, ponavljaj, recurring, timer, cron, svaki dan, svaki tjedan.",
         tools=["scheduler_adk"],
         instruction_file="agents/scheduler/instructions.md",
@@ -368,7 +410,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="decision_validator",
         module="agents.adk_agents.decision_validator",
         class_name="create_decision_validator",
-        model="gemini-3-flash-preview",  # Tier 3: Fast boolean decisions
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Enterprise precondition validator that checks conditions before actions are executed. Returns CONDITION_MET or CONDITION_FAILED.",
         tools=[],
         instruction_file=None,
@@ -384,7 +426,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="ask_user",
         module="agents.adk_agents.ask_user_agent",
         class_name="create_ask_user_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast response generation
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Handles failed preconditions by presenting users with clear alternatives when workflows cannot proceed automatically.",
         tools=[],
         instruction_file=None,
@@ -404,7 +446,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="smart_home",
         module="agents.adk_agents.smart_home_adk",
         class_name="create_smart_home_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast, simple MQTT commands
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Smart home MQTT specialist: controls lights (15), outlets (14), dimmer (1) via ESP32-IO. Keywords: svjetlo, upali, ugasi, uključi, isključi, utičnica, bojler, pametna kuća, smart home, scena, film, noćno.",
         tools=["mqtt_adk"],
         instruction_file="agents/smart_home/instructions.md",
@@ -420,7 +462,7 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         name="fiskalizacija",
         module="agents.adk_agents.fiskalizacija_adk",
         class_name="create_fiskalizacija_agent",
-        model="gemini-3-flash-preview",  # Tier 3: Fast wrapper (critical path is deterministic)
+        model=FLASH_MODEL,  # Stable default for Pi/Vertex runtime
         description="Croatian invoice fiscalization (Fiskalizacija 2.0) with hybrid architecture: LLM preparation/validation + deterministic execution (NO LLM for signing/SOAP). Keywords: fiskalizacija, racun, faktura, invoice, JIR, ZKI, FINA, PDV, VAT.",
         tools=["fiskalizacija_adk"],
         instruction_file=None,
@@ -451,6 +493,8 @@ def get_agent_config(agent_name: str) -> Optional[AgentConfig]:
     # Block ERP agents on non-ERP deployments
     if not ENABLE_ERP and agent_name in ERP_AGENTS:
         return None
+    if IS_RPI_HOME and agent_name not in RPI_HOME_ALLOWED_AGENTS:
+        return None
     return AGENT_REGISTRY.get(agent_name)
 
 
@@ -461,7 +505,10 @@ def get_all_agent_names() -> List[str]:
     Returns:
         Lista naziva agenata
     """
-    return list(AGENT_REGISTRY.keys())
+    return [
+        name for name in AGENT_REGISTRY.keys()
+        if get_agent_config(name) is not None
+    ]
 
 
 def get_worker_agent_names() -> List[str]:
@@ -500,7 +547,7 @@ def get_worker_agent_names() -> List[str]:
     # On non-ERP deployments, also exclude ERP-dependent agents
     if not ENABLE_ERP:
         excluded_agents |= ERP_AGENTS
-    return [name for name in AGENT_REGISTRY.keys() if name not in excluded_agents]
+    return [name for name in get_all_agent_names() if name not in excluded_agents]
 
 
 def get_agents_by_model(model: str) -> List[str]:
@@ -515,6 +562,7 @@ def get_agents_by_model(model: str) -> List[str]:
     """
     return [
         name for name, config in AGENT_REGISTRY.items()
+        if get_agent_config(name) is not None
         if config.model == model
     ]
 
@@ -669,9 +717,9 @@ def get_registry_stats() -> Dict[str, Any]:
     stats = {
         "total_agents": len(AGENT_REGISTRY),
         "worker_agents": len(get_worker_agent_names()),
-        "flash_agents": len(get_agents_by_model("gemini-3-flash-preview")),
-        "pro_agents": len(get_agents_by_model("gemini-2.5-pro")),
-        "orchestrator_agents": len(get_agents_by_model("gemini-3.1-pro-preview")),
+        "flash_agents": len(get_agents_by_model(FLASH_MODEL)),
+        "pro_agents": len(get_agents_by_model(PRO_MODEL)),
+        "orchestrator_agents": len(get_agents_by_model(ORCHESTRATOR_MODEL)),
         "agents_with_planner": sum(1 for c in AGENT_REGISTRY.values() if c.planner),
         "adk_agents": len(adk_agents),
         "legacy_agents": len(legacy_agents),

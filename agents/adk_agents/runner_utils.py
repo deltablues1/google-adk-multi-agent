@@ -12,7 +12,11 @@ from google.adk.agents.run_config import RunConfig
 from google.adk.sessions import InMemorySessionService, BaseSessionService
 from google.genai import types
 
+from config.runtime_patches import apply_runtime_patches
+
 logger = logging.getLogger(__name__)
+
+apply_runtime_patches()
 
 
 async def run_agent_simple(

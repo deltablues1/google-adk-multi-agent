@@ -581,9 +581,6 @@ async def erp_payables(ctx: ERPRequestContext = Depends(get_erp_ctx)):
 #   GET    /outbound-b2b/capabilities          — adapter capability map (2D)
 #   GET    /outbound-b2b/pending-archive       — issued/sent/etc not yet archived (2C)
 #   POST   /outbound-b2b/retry-archive         — scheduler archive retry (2C)
-#   POST   /outbound-b2b/peppol/webhook        — AP delivery webhook (C2.2)
-#   POST   /outbound-b2b/poll-peppol-status    — scheduler AP status poll (C2.2)
-#   GET    /outbound-b2b/pending-peppol-sync   — stale AP status dashboard (C2.2)
 #   GET    /outbound-b2b/{id}                  — get single
 #   POST   /outbound-b2b/{id}/approve
 #   POST   /outbound-b2b/{id}/issue            — UBL generated
@@ -735,6 +732,8 @@ async def erp_peppol_inbound_webhook(request: Request):
         )
 
     ctx    = _make_system_ctx(company_id)
+    # archive=True: archive_inbound_bytes() uses create_api_client_auto() fallback
+    # when no explicit credentials are passed from an HTTP context.
     result = await InboundPeppolTransportService().process(
         parsed, xml_bytes, ctx, archive=True
     )
@@ -773,8 +772,6 @@ async def erp_peppol_webhook(request: Request):
     import json as _json
     from services.erp.peppol_status_service import verify_webhook_request, parse_webhook_payload
     from services.erp.outbound_b2b_service import get_outbound_b2b_service
-    from services.erp.errors import NotFoundError
-    from services.erp.outbound_b2g_service import get_outbound_b2g_service
 
     body_bytes = await request.body()
     if not verify_webhook_request(dict(request.headers), body_bytes):
@@ -791,6 +788,9 @@ async def erp_peppol_webhook(request: Request):
             status_code=400,
             detail="Could not parse webhook payload — missing submissionId or status",
         )
+
+    from services.erp.errors import NotFoundError
+    from services.erp.outbound_b2g_service import get_outbound_b2g_service
 
     # Cross-collection lookup: B2B invoices first, then B2G.
     # The AP sends a submission_id without knowing the invoice type,
@@ -1235,7 +1235,6 @@ async def erp_sync_status_outbound_b2g(
         external_status=req.get("external_status", ""),
         external_ref=req.get("external_ref", ""),
     )
-
 
 
 # ── Payments ─────────────────────────────────────────────────────────────────
