@@ -29,7 +29,7 @@ sys.path.insert(0, str(project_root))
 
 # Configuration
 CERT_PATH = project_root / "47034854402.F1.1.p12"
-CERT_PASSWORD = "NinuPiL1903"
+CERT_PASSWORD = os.environ.get("FINA_CERT_PASSWORD")
 
 FINA_SANDBOX_URL = "https://cistest.apis-it.hr:8449/FiskalizacijaServiceTest"
 

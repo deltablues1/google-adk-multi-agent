@@ -8,7 +8,7 @@ Testira cijeli pipeline:
 4. Spremanje dokumenta na Google Drive
 
 Certificate: 47034854402.F1.1.p12
-Password: NinuPiL1903
+Password: <from FINA_CERT_PASSWORD env var>
 Environment: FINA DEMO (sandbox)
 """
 
@@ -105,7 +105,7 @@ PODACI ZA RACUN (već validirani):
 
 CERTIFIKAT ZA POTPIS (XAdES):
 - Datoteka: 47034854402.F1.1.p12
-- Lozinka: NinuPiL1903
+- Lozinka: <from FINA_CERT_PASSWORD env var>
 
 mTLS CERTIFIKATI (za SOAP komunikaciju):
 - Client Certificate: client_cert.pem (izvučeno iz .p12)

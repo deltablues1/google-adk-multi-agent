@@ -164,9 +164,19 @@ class QuoteConvertRequest(BaseModel):
 
 class QuoteCreateInvoiceRequest(BaseModel):
     """
-    Optional overrides when creating an outbound B2B invoice from an accepted quote.
+    Optional overrides when creating an outbound invoice from an accepted quote.
     All fields are optional — quote data is used as the base.
+
+    invoice_type controls the target pipeline:
+      "b2b" (default) — domestic B2B eRačun via OutboundB2BService
+      "b2g"           — public-sector B2G eRačun via FINA Peppol / OutboundB2GService
     """
+    invoice_type:       str            = Field(
+        default="b2b",
+        pattern="^(b2b|b2g)$",
+        description="Target invoice pipeline: b2b (default) | b2g",
+    )
+    # Seller overrides (both types)
     seller_name:    Optional[str]  = None
     seller_oib:     Optional[str]  = None
     seller_iban:    Optional[str]  = None
@@ -174,6 +184,15 @@ class QuoteCreateInvoiceRequest(BaseModel):
     seller_city:    Optional[str]  = None
     due_date:       Optional[date] = None
     notes:          Optional[str]  = None
+    # B2G-specific overrides (ignored for b2b)
+    buyer_reference:    Optional[str] = Field(
+        default=None,
+        description="Contract/procurement reference number (EN 16931 BT-10). B2G only.",
+    )
+    customer_peppol_id: Optional[str] = Field(
+        default=None,
+        description="Buyer Peppol participant ID (e.g. '0190:12345678901'). B2G only.",
+    )
 
 
 class ProductCreate(BaseModel):
@@ -233,6 +252,46 @@ class OutboundB2BCreate(BaseModel):
     # Items (required — at least 1)
     items: List[OutboundB2BItemCreate] = Field(..., min_length=1)
 
+    notes: str = Field(default="")
+
+
+class OutboundB2GCreate(BaseModel):
+    """Create a new outgoing B2G (public-sector) invoice (eRačun via FINA Peppol)."""
+    # Buyer (public-sector entity)
+    customer_id: str = Field(default="")
+    customer_name: str = Field(..., min_length=1)
+    customer_oib: str = Field(..., min_length=11, max_length=11, description="Buyer OIB (11 digits)")
+    customer_address: str = Field(default="")
+    customer_city: str = Field(default="")
+    customer_country: str = Field(default="HR")
+    customer_peppol_id: str = Field(
+        default="",
+        description="Buyer Peppol participant ID (e.g. '0190:12345678901'). "
+                    "Pre-fills delivery_target for Peppol dispatch.",
+    )
+
+    # B2G-specific
+    buyer_reference: str = Field(
+        default="",
+        description="Contract/procurement reference (EN 16931 BT-10 BuyerReference). "
+                    "Strongly recommended for public-sector invoices.",
+    )
+
+    # Seller (auto-resolved from company profile when empty)
+    seller_name: str = Field(default="")
+    seller_oib: str = Field(default="")
+    seller_iban: str = Field(default="")
+    seller_address: str = Field(default="")
+    seller_city: str = Field(default="")
+
+    # Invoice header
+    invoice_number: str = Field(default="")
+    issue_date: date = Field(default_factory=date.today)
+    due_date: Optional[date] = None
+    payment_terms: int = Field(default=30)
+    currency: str = Field(default="EUR")
+
+    items: List[OutboundB2BItemCreate] = Field(..., min_length=1)
     notes: str = Field(default="")
 
 

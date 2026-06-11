@@ -24,7 +24,7 @@ sys.path.insert(0, str(project_root))
 
 # Certificate configuration
 CERT_PATH = project_root / "47034854402.F1.1.p12"
-CERT_PASSWORD = "NinuPiL1903"
+CERT_PASSWORD = os.environ.get("FINA_CERT_PASSWORD")
 OIB = "47034854402"
 BUSINESS_UNIT = "1"
 DEVICE_NUMBER = "1"

@@ -123,8 +123,14 @@ class FirestoreVendorInvoiceRepository:
         async for snap in query.stream():
             doc = snap.to_dict() or {}
             doc["_id"] = snap.id
-            # Only include invoices that actually have a file to archive
-            if doc.get("drive_original_file_id") or doc.get("scan_file_id"):
+            # Include invoices that have either:
+            #   a) an existing Drive file to move (Drive intake path), OR
+            #   b) stored UBL XML bytes to re-upload (Gmail/Peppol inbound path)
+            if (
+                doc.get("drive_original_file_id")
+                or doc.get("scan_file_id")
+                or doc.get("source_ubl_xml")
+            ):
                 docs.append(doc)
         return docs
 

@@ -160,6 +160,10 @@ def build_ubl_b2b(invoice: dict) -> str:
         _sub(root, "DueDate", str(invoice["due_date"])[:10])
     _sub(root, "InvoiceTypeCode", "380")   # Commercial invoice
     _sub(root, "DocumentCurrencyCode", invoice.get("currency", "EUR"))
+    if invoice.get("buyer_reference"):
+        # EN 16931 BT-10 — mandatory when OrderReference absent.
+        # B2G: typically the public-sector contract/procurement reference number.
+        _sub(root, "BuyerReference", invoice["buyer_reference"])
     if invoice.get("notes"):
         _sub(root, "Note", invoice["notes"])
 

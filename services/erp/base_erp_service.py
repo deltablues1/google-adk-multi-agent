@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 ROLE_PERMISSIONS: dict[str, set] = {
     "owner":       {"*"},
     "accountant":  {
-        "invoice:read", "invoice:create",
+        "invoice:read", "invoice:create", "invoice:fiscalize",
         "payment:record",
         "vendor_invoice:read", "vendor_invoice:approve",
         "customer:read", "customer:create", "customer:update",
@@ -37,6 +37,8 @@ ROLE_PERMISSIONS: dict[str, set] = {
         # Outbound B2B eRačun
         "outbound:read", "outbound:create", "outbound:approve",
         "outbound:issue", "outbound:send", "outbound:archive",
+        # Company settings — accountant can read and configure
+        "company:read", "company:write",
     },
     "employee":    {
         "invoice:read",
@@ -204,7 +206,11 @@ async def write_audit(
 ) -> None:
     """
     Write an immutable audit entry to the audit_log collection.
-    Silently swallows errors — audit failure must not block business operations.
+
+    Audit failures must not block business operations, but they must be
+    observable. On failure, emit a structured log with a stable
+    ``event="audit_write_failed"`` marker (for alerting) and bump the
+    ``audit_write_failed`` counter in the metrics collector.
     """
     try:
         _db = db or get_firestore_db()
@@ -225,7 +231,30 @@ async def write_audit(
         }
         await _db.collection("audit_log").document(str(uuid4())).set(entry)
     except Exception as exc:
-        logger.warning(f"[ERP Audit] Failed to write audit log: {exc}")
+        logger.error(
+            "[ERP Audit] Failed to write audit log: %s",
+            exc,
+            extra={
+                "event": "audit_write_failed",
+                "action": action,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "display_id": display_id,
+                "company_id": ctx.company_id,
+                "user_id": ctx.user_id,
+                "request_id": ctx.request_id,
+            },
+        )
+        # Best-effort counter bump — a failing metrics backend must never
+        # block business flow, so swallow any downstream error.
+        try:
+            from monitoring.metrics import get_metrics_collector
+            get_metrics_collector().increment(
+                "audit_write_failed",
+                labels={"entity_type": entity_type, "action": action},
+            )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

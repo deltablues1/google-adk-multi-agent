@@ -117,7 +117,7 @@ def test_1_hitl_rejection():
         result = fiscalize_invoice_sync(
             invoice_data=invoice_data,
             cert_path=str(cert_file),
-            cert_password="NinuPiL1903",
+            cert_password=os.environ.get("FINA_CERT_PASSWORD"),
             use_sandbox=True,
             auto_approve=False  # Manual confirmation required
         )
@@ -216,7 +216,7 @@ def test_2_duplicate_invoice():
         result1 = fiscalize_invoice_sync(
             invoice_data=invoice_data,
             cert_path=str(cert_file),
-            cert_password="NinuPiL1903",
+            cert_password=os.environ.get("FINA_CERT_PASSWORD"),
             use_sandbox=True,
             auto_approve=True
         )
@@ -247,7 +247,7 @@ def test_2_duplicate_invoice():
         result2 = fiscalize_invoice_sync(
             invoice_data=invoice_data,  # Same invoice data
             cert_path=str(cert_file),
-            cert_password="NinuPiL1903",
+            cert_password=os.environ.get("FINA_CERT_PASSWORD"),
             use_sandbox=True,
             auto_approve=True
         )
@@ -344,7 +344,7 @@ def test_3_missing_drive_credentials():
         result = fiscalize_invoice_sync(
             invoice_data=invoice_data,
             cert_path=str(cert_file),
-            cert_password="NinuPiL1903",
+            cert_password=os.environ.get("FINA_CERT_PASSWORD"),
             use_sandbox=True,
             auto_approve=True
         )
@@ -433,7 +433,7 @@ def test_4_invalid_invoice_data():
         result = fiscalize_invoice_sync(
             invoice_data=invalid_oib_data,
             cert_path=str(cert_file),
-            cert_password="NinuPiL1903",
+            cert_password=os.environ.get("FINA_CERT_PASSWORD"),
             use_sandbox=True,
             auto_approve=True
         )
@@ -492,7 +492,7 @@ def test_4_invalid_invoice_data():
         result = fiscalize_invoice_sync(
             invoice_data=negative_amount_data,
             cert_path=str(cert_file),
-            cert_password="NinuPiL1903",
+            cert_password=os.environ.get("FINA_CERT_PASSWORD"),
             use_sandbox=True,
             auto_approve=True
         )

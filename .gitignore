@@ -128,7 +128,8 @@ sessions/data/
 .tmp/
 tmpclaude-*/
 nul
-=60.0
+# Stray pip artifacts from `pip install pkg =X.Y` (space before version)
+=*
 *.backup
 
 # ============================================================================

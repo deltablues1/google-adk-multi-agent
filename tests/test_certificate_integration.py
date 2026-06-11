@@ -29,7 +29,7 @@ def test_certificate_loading():
     from tools.api_implementations.xades_signer import load_certificate_from_file
 
     cert_path = project_root / "47034854402.F1.1.p12"
-    cert_password = "NinuPiL1903"
+    cert_password = os.environ.get("FINA_CERT_PASSWORD")
 
     if not cert_path.exists():
         print(f"[FAIL] Certificate file not found: {cert_path}")
@@ -194,7 +194,7 @@ def test_adk_tool_integration():
     )
 
     cert_path = str(project_root / "47034854402.F1.1.p12")
-    cert_password = "NinuPiL1903"
+    cert_password = os.environ.get("FINA_CERT_PASSWORD")
 
     async def run_tests():
         # Test load_certificate

@@ -21,7 +21,7 @@ sys.path.insert(0, str(project_root))
 
 # Configuration
 CERT_PATH = project_root / "47034854402.F1.1.p12"
-CERT_PASSWORD = "NinuPiL1903"
+CERT_PASSWORD = os.environ.get("FINA_CERT_PASSWORD")
 
 
 async def create_test_invoice():

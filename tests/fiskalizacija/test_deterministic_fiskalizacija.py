@@ -56,7 +56,7 @@ async def test_deterministic_fiscalization():
 
         # Certificate
         cert_path=str(cert_file),
-        cert_password="NinuPiL1903",
+        cert_password=os.environ.get("FINA_CERT_PASSWORD"),
 
         # Invoice datetime
         invoice_datetime=datetime(2026, 1, 28, 11, 30, 0),

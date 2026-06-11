@@ -196,7 +196,8 @@ class FiskalizacijaOrchestrator:
         cert_password: str,
         use_sandbox: bool = True,
         use_ledger: bool = True,
-        skip_llm: bool = False  # For testing - skip LLM agents
+        skip_llm: bool = False,   # For testing - skip LLM agents
+        skip_hitl: bool = False,  # For API-triggered calls - skip HITL confirmation
     ):
         """
         Initialize orchestrator.
@@ -207,12 +208,15 @@ class FiskalizacijaOrchestrator:
             use_sandbox: Use FINA sandbox (True) or production (False)
             use_ledger: Enable idempotency checking
             skip_llm: Skip LLM agents (for testing with pre-prepared data)
+            skip_hitl: Skip HITL user confirmation (for API-triggered fiscalization
+                       where the API call itself is the user's explicit confirmation)
         """
         self.cert_path = cert_path
         self.cert_password = cert_password
         self.use_sandbox = use_sandbox
         self.use_ledger = use_ledger
         self.skip_llm = skip_llm
+        self.skip_hitl = skip_hitl
 
         # Initialize LLM agents (lazy loading)
         self._pripremac_agent = None
@@ -316,8 +320,11 @@ class FiskalizacijaOrchestrator:
             # ============================================================
             hitl_start = time.time()
 
-            # Check if HITL is enabled
-            enable_hitl = os.environ.get('ENABLE_HITL', 'true').lower() == 'true'
+            # Check if HITL is enabled (instance flag overrides env var)
+            enable_hitl = (
+                not self.skip_hitl
+                and os.environ.get('ENABLE_HITL', 'true').lower() == 'true'
+            )
 
             if enable_hitl:
                 logger.info("Running HITL confirmation...")
@@ -845,8 +852,13 @@ if __name__ == "__main__":
 
     # Test configuration
     project_root = Path(__file__).parent.parent.parent
-    CERT_PATH = str(project_root / "47034854402.F1.1.p12")
-    CERT_PASSWORD = "NinuPiL1903"
+    CERT_PATH = os.environ.get("FINA_CERT_PATH") or str(project_root / "47034854402.F1.1.p12")
+    CERT_PASSWORD = os.environ.get("FINA_CERT_PASSWORD")
+    if not CERT_PASSWORD:
+        raise SystemExit(
+            "FINA_CERT_PASSWORD is not set. "
+            "Export it in your shell (or .env) before running this demo."
+        )
 
     # Test invoice
     test_invoice = {

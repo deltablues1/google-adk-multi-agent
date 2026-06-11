@@ -124,8 +124,8 @@ class VendorInvoiceService(BaseERPService):
     async def create_vendor_invoice(self, data: dict, ctx: ERPRequestContext) -> dict:
         """Create a new vendor invoice (manual entry or from OCR)."""
         check_permission(ctx, "vendor_invoice:create")
-        # vendor_id is optional for OCR drafts — accountant assigns it via UI
-        if not data.get("from_ocr") and not data.get("vendor_id"):
+        # vendor_id is optional for OCR and UBL drafts — accountant assigns it via UI
+        if not data.get("from_ocr") and not data.get("from_ubl") and not data.get("vendor_id"):
             raise ValidationError(code="REQUIRED_FIELD", message="vendor_id je obavezan.", field="vendor_id")
         if not data.get("total_gross") or float(data["total_gross"]) <= 0:
             raise ValidationError(code="REQUIRED_FIELD", message="total_gross mora biti > 0.", field="total_gross")
@@ -239,14 +239,28 @@ class VendorInvoiceService(BaseERPService):
 
         check_permission(ctx, "vendor_invoice:create")
 
-        # Resolve buyer OIB for this company (best-effort — empty skips the
-        # buyer-identity check in the parser; mismatch is a hard error)
+        # ── Buyer OIB resolution ──
+        # Primary: company_settings store (CompanyService, multi-tenant aware).
+        # Fallback: static company_config (single-company deployments).
+        # Empty OIB skips the buyer-identity check in the parser; mismatch is a hard error.
         buyer_oib = ""
+        buyer_oib_source = "not_resolved"
         try:
-            from config.company_config import get_company_config
-            buyer_oib = get_company_config().oib or ""
+            from services.erp.company_service import get_company_oib as _company_get_oib
+            buyer_oib = await _company_get_oib(ctx.company_id)
+            if buyer_oib:
+                buyer_oib_source = "company_settings"
         except Exception:
             pass
+
+        if not buyer_oib:
+            try:
+                from config.company_config import get_company_config
+                buyer_oib = get_company_config().oib or ""
+                if buyer_oib:
+                    buyer_oib_source = "company_config"
+            except Exception:
+                pass
 
         result = parse_ubl_invoice(xml_input, buyer_oib=buyer_oib)
         if not result["ok"]:
@@ -257,6 +271,22 @@ class VendorInvoiceService(BaseERPService):
 
         data = result["data"]
 
+        # Explicit buyer validation status (Sprint A.2):
+        #   "validated"        — our OIB was known and matched the XML's AccountingCustomerParty
+        #   "oib_not_resolved" — we could not determine our company OIB; no check performed
+        #   "oib_mismatch"     — our OIB was known but did NOT match the XML (parse already
+        #                         rejected this case above, so this value can't appear here;
+        #                         included in the enum for completeness)
+        if not buyer_oib:
+            data["buyer_validation_status"] = "oib_not_resolved"
+        else:
+            # If we reached here with a known OIB, the parser accepted it (match OK)
+            data["buyer_validation_status"] = "validated"
+
+        # Mark as UBL draft so create_vendor_invoice() treats it like an OCR draft
+        # (vendor_id is optional — accountant assigns it via UI after review).
+        data["from_ubl"] = True
+
         # Auto-match vendor
         matched = await self._try_match_vendor(data["vendor_oib"], data["vendor_name"], ctx.company_id)
         if matched:
@@ -264,6 +294,7 @@ class VendorInvoiceService(BaseERPService):
             data["vendor_name"] = matched.get("name") or data["vendor_name"]
             data["vendor_match_status"] = "matched"
         else:
+            data["vendor_id"] = ""   # accountant assigns via UI
             data["vendor_match_status"] = "no_match"
 
         # Archive references
@@ -282,6 +313,8 @@ class VendorInvoiceService(BaseERPService):
             notes_parts.append(f"Dobavljač automatski prepoznat: {data['vendor_name']}.")
         else:
             notes_parts.append("Molimo provjerite i dodijelite dobavljača.")
+        if data["buyer_validation_status"] == "oib_not_resolved":
+            notes_parts.append("Upozorenje: OIB kupca nije provjeren — ID tvrtke nije dostupan.")
         data["notes"] = (data.get("notes") or "") + " " + " ".join(notes_parts)
 
         return await self.create_vendor_invoice(data, ctx)
@@ -448,15 +481,46 @@ class VendorInvoiceService(BaseERPService):
                     "note": "Already archived"}
 
         drive_file_id = doc.get("drive_original_file_id") or doc.get("scan_file_id", "")
-        if not drive_file_id:
+        source_ubl_xml = doc.get("source_ubl_xml", "")
+
+        if not drive_file_id and not source_ubl_xml:
             raise ValidationError(
                 code="NO_DRIVE_FILE",
-                message="Vendor invoice nema referencu na Drive fajl (drive_original_file_id / scan_file_id).",
+                message=(
+                    "Vendor invoice nema referencu na Drive fajl niti pohranjeni UBL XML "
+                    "(drive_original_file_id / scan_file_id / source_ubl_xml)."
+                ),
             )
 
         attempts = int(doc.get("archive_attempts") or 0) + 1
+        now = datetime.now(timezone.utc).isoformat()
 
-        result = await archive_inbound_document(drive_file_id, issue_date=doc.get("issue_date"))
+        if drive_file_id:
+            # Original path: move an existing Drive file into the archive folder
+            result = await archive_inbound_document(drive_file_id, issue_date=doc.get("issue_date"))
+        else:
+            # Byte re-upload path: Gmail/Peppol inbound docs without a Drive source file.
+            # Re-upload the stored UBL XML bytes directly into Invoices_Archive/IN/YYYY/MM/.
+            from .drive_archive_service import archive_inbound_bytes
+            xml_bytes = source_ubl_xml.encode("utf-8") if isinstance(source_ubl_xml, str) else source_ubl_xml
+            filename = (
+                doc.get("source_email_attachment_name")
+                or doc.get("source_filename")
+                or f"eracun_{vendor_invoice_id[:8]}.xml"
+            )
+            result = await archive_inbound_bytes(
+                content=xml_bytes,
+                filename=filename,
+                issue_date=doc.get("issue_date"),
+                mime_type="application/xml",
+            )
+            if result.get("ok"):
+                # Backpatch drive_original_file_id so future calls use the move path
+                await self._get_repo()._db.collection("vendor_invoices").document(vendor_invoice_id).update({
+                    "drive_original_file_id": result.get("drive_file_id", ""),
+                })
+
+        # Shared handling below (original path code continues)
         now = datetime.now(timezone.utc).isoformat()
 
         if not result["ok"]:
