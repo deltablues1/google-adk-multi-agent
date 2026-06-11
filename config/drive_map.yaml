@@ -10,20 +10,51 @@ structure:
     subfolders:
       - name: "Invoices_Input"
         alias: "invoices_input"
-        description: "Drop new invoices here for processing"
-      
+        description: "Drop outgoing invoice source documents here for processing"
+
+      - name: "Vendor_Invoices_Input"
+        alias: "vendor_invoices_input"
+        description: "Drop incoming vendor invoices (UBL XML, scans, PDFs) for processing"
+
       - name: "Invoices_Archive"
         alias: "invoices_archive"
-        description: "Processed invoices are moved here"
-      
+        description: "Archived invoices organized by direction/type/year/month"
+        subfolders:
+          - name: "OUT"
+            alias: "archive_out"
+            description: "Outgoing invoices archive"
+            subfolders:
+              - name: "b2c"
+                alias: "archive_out_b2c"
+                description: "B2C fiscalized invoices (JIR/ZKI/QR)"
+              - name: "b2b"
+                alias: "archive_out_b2b"
+                description: "B2B eRacun invoices (UBL + signed)"
+              - name: "b2g"
+                alias: "archive_out_b2g"
+                description: "B2G Peppol invoices"
+              - name: "eu"
+                alias: "archive_out_eu"
+                description: "EU cross-border invoices"
+              - name: "int"
+                alias: "archive_out_int"
+                description: "International export invoices"
+          - name: "IN"
+            alias: "archive_in"
+            description: "Incoming vendor invoices archive (original XML/PDF + fiscal confirmation)"
+
       - name: "ADK_Brain"
         alias: "brain"
         description: "Knowledge Base: Drop PDFs/Docs here for RAG ingestion"
-      
+
       - name: "Reports_Output"
         alias: "reports"
-        description: "Generated reports and summaries are saved here"
-      
+        description: "Generated reports and summaries"
+        subfolders:
+          - name: "ERP"
+            alias: "reports_erp"
+            description: "Automated ERP reports (VAT, cashflow, aging, P&L)"
+
       - name: "Temp_Work"
         alias: "temp"
         description: "Temporary working directory for agents"

@@ -34,6 +34,9 @@ ROLE_PERMISSIONS: dict[str, set] = {
         "report:read",
         "expense:read",
         "quote:read", "quote:create", "quote:update", "quote:send", "quote:convert",
+        # Outbound B2B eRačun
+        "outbound:read", "outbound:create", "outbound:approve",
+        "outbound:issue", "outbound:send", "outbound:archive",
     },
     "employee":    {
         "invoice:read",
@@ -42,6 +45,8 @@ ROLE_PERMISSIONS: dict[str, set] = {
         "customer:read",
         "product:read", "stock:adjust",
         "quote:read", "quote:create", "quote:update", "quote:send",
+        # Outbound B2B — read + create only
+        "outbound:read", "outbound:create",
     },
     "viewer":      {
         "invoice:read",
@@ -50,6 +55,7 @@ ROLE_PERMISSIONS: dict[str, set] = {
         "customer:read",
         "product:read",
         "quote:read",
+        "outbound:read",
     },
 }
 
@@ -84,7 +90,7 @@ def check_permission(ctx: ERPRequestContext, permission: str) -> None:
 # ---------------------------------------------------------------------------
 # Firestore helpers
 # ---------------------------------------------------------------------------
-_DEFAULT_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "fabled-sector-476018-n3")
+_DEFAULT_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "lyrical-star-497817-m3")
 
 _db_instance: Optional[AsyncClient] = None
 

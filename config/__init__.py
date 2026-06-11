@@ -21,6 +21,16 @@ from .auth_config import (
     get_auth_config,
 )
 
+from .deployment_config import (
+    DeploymentConfig,
+    get_deployment_config,
+    is_api_token_required,
+    is_erp_enabled,
+    is_telegram_enabled,
+    is_wake_word_enabled,
+    reset_deployment_config_cache,
+)
+
 from .mcp_config import (
     MCPServerConfig,
     MCP_SERVER_REGISTRY,
@@ -42,6 +52,14 @@ __all__ = [
     'OAuthConfig',
     'ServiceAccountConfig',
     'get_auth_config',
+    # Deployment Config
+    'DeploymentConfig',
+    'get_deployment_config',
+    'is_api_token_required',
+    'is_erp_enabled',
+    'is_telegram_enabled',
+    'is_wake_word_enabled',
+    'reset_deployment_config_cache',
     # MCP Config
     'MCPServerConfig',
     'MCP_SERVER_REGISTRY',

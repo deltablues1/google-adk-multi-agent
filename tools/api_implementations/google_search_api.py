@@ -75,7 +75,7 @@ async def google_search_grounding(
         # Generate content with grounding
         # The model will automatically search and cite sources
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.5-flash",
             contents=f"Search the web and answer: {query}",
             config=types.GenerateContentConfig(
                 tools=[google_search_tool],

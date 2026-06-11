@@ -37,7 +37,7 @@ class FirestorePersistenceService:
 
     def __init__(self, project_id: Optional[str] = None):
         self._project_id = project_id or os.environ.get(
-            'GOOGLE_CLOUD_PROJECT', 'fabled-sector-476018-n3'
+            'GOOGLE_CLOUD_PROJECT', 'lyrical-star-497817-m3'
         )
         self._db: Optional[AsyncClient] = None
 
@@ -102,10 +102,12 @@ class FirestorePersistenceService:
         try:
             db = self._get_db()
             from google.cloud.firestore_v1 import transforms
-            await db.collection("conversations").document(session_id).update({
+            # set(merge=True) so it works even if the session doc doesn't exist
+            # yet (fire-and-forget create may not have landed) — avoids 404.
+            await db.collection("conversations").document(session_id).set({
                 "updated_at": datetime.now(timezone.utc),
                 "message_count": transforms.Increment(1),
-            })
+            }, merge=True)
         except Exception as e:
             logger.error(f"Failed to update session activity {session_id}: {e}")
 
@@ -113,10 +115,12 @@ class FirestorePersistenceService:
         """Mark session as inactive (when user switches sessions)."""
         try:
             db = self._get_db()
-            await db.collection("conversations").document(session_id).update({
+            # set(merge=True) instead of update() so a not-yet-persisted session
+            # doc doesn't raise "404 No document to update".
+            await db.collection("conversations").document(session_id).set({
                 "is_active": False,
                 "updated_at": datetime.now(timezone.utc),
-            })
+            }, merge=True)
         except Exception as e:
             logger.error(f"Failed to deactivate session {session_id}: {e}")
 

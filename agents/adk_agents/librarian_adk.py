@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_librarian_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None,
     user_timezone: str = "Europe/Zagreb"
 ) -> LlmAgent:
@@ -79,7 +79,7 @@ def create_librarian_agent(
     with low temperature for consistent, accurate results.
 
     Args:
-        model: Gemini model to use (default: "gemini-2.5-flash")
+        model: Gemini model to use (default: "gemini-3.5-flash")
         credentials: Optional OAuth2 credentials. If None, uses token file.
 
     Returns:
@@ -130,7 +130,7 @@ librarian_agent = None
 
 
 def get_librarian_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """

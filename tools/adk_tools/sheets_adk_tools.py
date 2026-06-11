@@ -24,7 +24,7 @@ Usage:
     # Create agent with Sheets tools
     agent = LlmAgent(
         name="analyst",
-        model="gemini-2.5-flash",
+        model="gemini-3.5-flash",
         tools=sheets_tools
     )
 """
@@ -555,7 +555,7 @@ def get_sheets_adk_tools(credentials: Optional[Credentials] = None) -> list:
         >>> sheets_tools = get_sheets_adk_tools()
         >>> agent = LlmAgent(
         ...     name="analyst",
-        ...     model="gemini-2.5-flash",
+        ...     model="gemini-3.5-flash",
         ...     tools=sheets_tools
         ... )
     """

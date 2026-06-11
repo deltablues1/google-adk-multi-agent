@@ -25,7 +25,7 @@ Ovo je **tvoj cheat sheet** za brzo vraćanje Claude-a u kontekst projekta kada 
 **Email:** tomislav.luxtech@gmail.com
 **Mobitel:** +385914575757
 
-**GCP Project:** `fabled-sector-476018-n3`
+**GCP Project:** `lyrical-star-497817-m3`
 **Project Name:** AI Business Assistant za fiskalizaciju 2.0
 **Status:** Faza 1 COMPLETE (100%) - Full fiscalization pipeline working
 
@@ -192,7 +192,7 @@ python scripts/force_oauth_login.py
 
 ```bash
 # Google Cloud
-PROJECT_ID=fabled-sector-476018-n3
+PROJECT_ID=lyrical-star-497817-m3
 LOCATION=europe-west1
 
 # Service Account (za Vertex AI)
@@ -759,7 +759,7 @@ Faza 4: ░░░░░░░░░░░░░░░░░░░░   0% ⏸️
 **Dokumentacija:**
 - Google ADK: https://google.github.io/adk-docs/
 - FINA Fiskalizacija: https://www.fina.hr/fiskalizacija
-- GCP Project: fabled-sector-476018-n3
+- GCP Project: lyrical-star-497817-m3
 
 ---
 

@@ -37,10 +37,16 @@ psycopg2-binary>=2.9.9
 # Scheduling
 APScheduler>=3.10.0
 
+# MQTT (Smart Home)
+paho-mqtt>=2.0.0
+sounddevice>=0.4.7
+pvporcupine>=3.0.3
+
 # Utilities
 python-dotenv>=1.0.0
 pydantic>=2.5.0
 pytz>=2023.3
+markdown>=3.5.0
 
 # Web Interface
 fastapi>=0.109.0

@@ -14,6 +14,14 @@ import re
 from typing import Optional, List
 from pathlib import Path
 
+# Force UTF-8 on Windows console so emojis/unicode don't crash print/logging
+# (CP1250 console can't encode them). Python 3.7+ supports reconfigure().
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -51,16 +59,18 @@ def sanitize_emojis(text: str) -> str:
     for emoji, replacement in emoji_map.items():
         text = text.replace(emoji, replacement)
 
-    # Remove any remaining emojis (Unicode range for emojis)
-    # This regex matches most emoji characters
+    # Remove any remaining emojis. Ranges are kept narrow on purpose —
+    # a broad sweep like U+24C2–U+1F251 would also strip CJK text.
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"  # emoticons
         "\U0001F300-\U0001F5FF"  # symbols & pictographs
         "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F900-\U0001F9FF"  # supplemental symbols & pictographs
         "\U0001F1E0-\U0001F1FF"  # flags (iOS)
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
+        "\U00002600-\U000027BF"  # misc symbols + dingbats
+        "\U0001FA70-\U0001FAFF"  # symbols & pictographs extended-A
+        "\U0000FE0F"             # variation selector-16
         "]+",
         flags=re.UNICODE
     )
@@ -79,6 +89,7 @@ from config.agent_registry import (
     get_registry_stats
 )
 from config.auth_config import get_auth_config
+from config.deployment_config import get_deployment_config
 
 
 # Import ADK agents and runner utils
@@ -113,6 +124,7 @@ class WorkspaceADKSystem:
         self.termination_checker = termination_checker
         self.worker_agents: List = []
         self.auth_config = get_auth_config()
+        self.deployment_config = get_deployment_config()
 
         # Generate unique session ID for this CLI session
         self.session_id = f"cli-session-{int(time.time())}"
@@ -132,6 +144,14 @@ class WorkspaceADKSystem:
 
         logger.info("=== Google Workspace ADK Multi-Agent System ===")
         logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
+        logger.info(
+            "Deployment profile: %s | ERP=%s | Telegram=%s | WakeWord=%s | API token required=%s",
+            self.deployment_config.profile,
+            self.deployment_config.erp_enabled,
+            self.deployment_config.telegram_enabled,
+            self.deployment_config.wake_word_enabled,
+            self.deployment_config.api_token_required,
+        )
 
     def initialize_agents(self, start_scheduler: bool = False) -> None:
         """
@@ -145,6 +165,17 @@ class WorkspaceADKSystem:
                              Scheduler je dostupan kao zaseban proces (run_scheduler.py).
         """
         logger.info("Initializing agents from registry...")
+
+        try:
+            from auth.oauth_manager import get_oauth_manager
+            oauth_health = get_oauth_manager().get_auth_health_status()
+            logger.info(
+                "OAuth health: %s (token_path=%s)",
+                oauth_health.get("status"),
+                oauth_health.get("token_path"),
+            )
+        except Exception as e:
+            logger.warning(f"OAuth health check failed during startup: {e}")
 
         # Initialize tool registry first
         logger.info("Ensuring tool registry is initialized...")
@@ -174,7 +205,7 @@ class WorkspaceADKSystem:
         # 1. Decision Validator (NO sub_agents - will delegate through orchestrator hierarchy)
         logger.info("  - Creating Decision Validator agent...")
         self.decision_validator = create_decision_validator(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-pro-preview",  # Tier 1: zero-tolerance precondition validation
             sub_agents=[]  # Empty - will access workers through Smart Orchestrator
         )
         logger.info("  [OK] Decision Validator created")
@@ -182,7 +213,7 @@ class WorkspaceADKSystem:
         # 2. Ask User Agent (for handling failed conditions)
         logger.info("  - Creating Ask User agent...")
         self.ask_user = create_ask_user_agent(
-            model="gemini-2.5-flash"
+            model="gemini-3.5-flash"  # Tier 2: GA workhorse
         )
         logger.info("  [OK] Ask User agent created")
 
@@ -192,7 +223,7 @@ class WorkspaceADKSystem:
         logger.info("  - Creating Smart Orchestrator agent...")
 
         self.orchestrator = create_smart_orchestrator(
-            model="gemini-3.1-pro-preview",
+            model="gemini-3.5-flash",  # Tier 2: GA, fast routing — no need for costly Pro here
             worker_agents=self.worker_agents,  # For documentation/routing
             validator_agent=self.decision_validator,  # For documentation
             ask_user_agent=self.ask_user  # For documentation

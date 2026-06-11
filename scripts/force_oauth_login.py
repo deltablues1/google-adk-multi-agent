@@ -3,12 +3,22 @@ Force OAuth Login
 
 Forces OAuth authentication flow and opens browser.
 
+Uses the project's OAuthManager (web client flow) so that the redirect URI
+matches exactly what is registered in Google Cloud Console
+(http://localhost:8080/oauth2callback). A tiny local HTTP server captures the
+authorization code on that exact path and exchanges it for a token.
+
 Usage:
     py scripts/force_oauth_login.py
 """
 
 import os
 import sys
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
+
 from dotenv import load_dotenv
 
 # Add project root to path
@@ -25,105 +35,163 @@ if sys.platform == 'win32':
 # Load environment
 load_dotenv()
 
+# Allow http://localhost redirect during local login and tolerate Google
+# returning scopes in a different order than requested.
+os.environ.setdefault('OAUTHLIB_INSECURE_TRANSPORT', '1')
+os.environ.setdefault('OAUTHLIB_RELAX_TOKEN_SCOPE', '1')
+
+
+# Holds the captured authorization code (or error) from the redirect.
+_auth_result = {"code": None, "error": None}
+
+
+def _make_handler(callback_path: str):
+    class _OAuthCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 (http.server API)
+            parsed = urlparse(self.path)
+            if parsed.path != callback_path:
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            params = parse_qs(parsed.query)
+            _auth_result["code"] = (params.get("code") or [None])[0]
+            _auth_result["error"] = (params.get("error") or [None])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            if _auth_result["code"]:
+                msg = "Authentication successful! You can close this window."
+            else:
+                msg = f"Authentication failed: {_auth_result['error'] or 'no code returned'}"
+            self.wfile.write(f"<html><body><h3>{msg}</h3></body></html>".encode("utf-8"))
+
+        def log_message(self, *args):  # silence default request logging
+            pass
+
+    return _OAuthCallbackHandler
+
+
+def _free_port_8080():
+    """Best-effort kill of any stale process holding port 8080 (Windows only)."""
+    if sys.platform != 'win32':
+        return
+    import subprocess
+    try:
+        subprocess.run(
+            ['cmd', '/c',
+             'for /f "tokens=5" %a in (\'netstat -ano ^| findstr :8080 ^| findstr LISTENING\') '
+             'do taskkill /PID %a /F'],
+            capture_output=True, text=True
+        )
+    except Exception:
+        pass
+
 
 def main():
     print("=" * 70)
     print("Force OAuth Authentication")
     print("=" * 70)
 
-    import json
-    from pathlib import Path
-    from google_auth_oauthlib.flow import InstalledAppFlow
-
-    # Check for oauth_client_credentials.json
     creds_file = os.path.join(project_root, 'oauth_client_credentials.json')
-
     if not os.path.exists(creds_file):
-        print(f"\n❌ Error: oauth_client_credentials.json not found!")
+        print("\n❌ Error: oauth_client_credentials.json not found!")
         print(f"   Expected location: {creds_file}")
         print("\n💡 Please ensure OAuth credentials file exists")
         return
 
-    print(f"\n✅ Found credentials file: oauth_client_credentials.json")
+    print("\n✅ Found credentials file: oauth_client_credentials.json")
 
-    # OAuth scopes - must match auth/oauth_manager.py OAuthManager.SCOPES
-    from auth.oauth_manager import OAuthManager
-    SCOPES = OAuthManager.SCOPES
+    from auth.oauth_manager import get_oauth_manager
 
-    print("\n🔑 Starting OAuth authentication flow...")
-    print("   Browser will open automatically in a few seconds...")
-    print("   If browser doesn't open, you'll see a URL to open manually\n")
+    manager = get_oauth_manager()
+    redirect_uri = manager.redirect_uri
+    parsed_redirect = urlparse(redirect_uri)
+    host = parsed_redirect.hostname or "localhost"
+    port = parsed_redirect.port or 8080
+    callback_path = parsed_redirect.path or "/oauth2callback"
 
+    print(f"\n🔑 OAuth client: {(manager.client_id or '')[:32]}...")
+    print(f"   Redirect URI : {redirect_uri}")
+    print(f"   Scopes       : {len(manager.SCOPES)}")
+
+    if port == 8080:
+        _free_port_8080()
+
+    auth_url = manager.get_authorization_url()
+
+    handler = _make_handler(callback_path)
     try:
-        # Create flow from client secrets file
-        flow = InstalledAppFlow.from_client_secrets_file(
-            creds_file,
-            scopes=SCOPES
-        )
+        server = HTTPServer((host if host != "localhost" else "127.0.0.1", port), handler)
+    except OSError as e:
+        print(f"\n❌ Could not bind local server on {host}:{port} -> {e}")
+        print("   Make sure no other process is using that port.")
+        return
 
-        # Run local server to handle OAuth callback
-        # This will open browser automatically
-        print("🌐 Opening browser for authentication...")
-        credentials = flow.run_local_server(
-            port=8080,
-            open_browser=True,
-            authorization_prompt_message='Please visit this URL to authorize: {url}',
-            success_message='Authentication successful! You can close this window.'
-        )
+    print("\n🌐 Opening browser for authentication...")
+    print(f"   If it does not open, visit this URL manually:\n   {auth_url}\n")
+    webbrowser.open(auth_url)
 
-        if credentials and credentials.valid:
-            print("\n✅ Authentication successful!")
+    # Serve requests until the callback is received.
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
 
-            # Save token to expected location
-            token_dir = Path.home() / '.google_workspace_adk'
-            token_dir.mkdir(exist_ok=True)
-            token_path = token_dir / 'tokens.json'
+    print("   Waiting for Google redirect (complete the consent in your browser)...")
+    try:
+        while _auth_result["code"] is None and _auth_result["error"] is None:
+            server_thread.join(timeout=0.5)
+    except KeyboardInterrupt:
+        print("\n❌ Cancelled by user.")
+        server.shutdown()
+        return
+    finally:
+        server.shutdown()
 
-            # Save credentials
-            token_data = {
-                'token': credentials.token,
-                'refresh_token': credentials.refresh_token,
-                'token_uri': credentials.token_uri,
-                'client_id': credentials.client_id,
-                'client_secret': credentials.client_secret,
-                'scopes': credentials.scopes
-            }
+    if _auth_result["error"] or not _auth_result["code"]:
+        print(f"\n❌ Authentication failed: {_auth_result['error'] or 'no authorization code returned'}")
+        _print_troubleshooting()
+        return
 
-            with open(token_path, 'w') as f:
-                json.dump(token_data, f, indent=2)
-
-            print(f"   Token saved to: {token_path}")
-
-            print("\n📋 Granted permissions:")
-            if credentials.scopes:
-                for scope in credentials.scopes[:8]:  # Show first 8
-                    scope_name = scope.split('/')[-1]
-                    print(f"   ✓ {scope_name}")
-                if len(credentials.scopes) > 8:
-                    print(f"   ... and {len(credentials.scopes) - 8} more")
-
-            print("\n✅ You can now run batch processing:")
-            print("   py scripts/batch_process_invoices.py")
-
-            print("\n✅ Or test with main.py:")
-            print("   py main.py")
-        else:
-            print("\n❌ Authentication failed!")
-            print("   Credentials are not valid")
-
+    print("\n🔄 Exchanging authorization code for token...")
+    try:
+        credentials = manager.exchange_code_for_token(_auth_result["code"])
     except Exception as e:
-        print(f"\n❌ Authentication error: {e}")
+        print(f"\n❌ Token exchange error: {e}")
         import traceback
         traceback.print_exc()
+        _print_troubleshooting()
+        return
 
-        print("\n💡 Troubleshooting:")
-        print("   1. Check oauth_client_credentials.json is valid JSON")
-        print("   2. Verify OAuth Client ID and Secret are correct")
-        print("   3. Check redirect URI includes: http://localhost:8080")
-        print("   4. Ensure OAuth consent screen is configured in Google Cloud")
-        print("   5. Make sure port 8080 is not in use")
+    if credentials and credentials.valid:
+        print("\n✅ Authentication successful!")
+        print(f"   Token saved to: {manager.token_storage_path}")
+
+        scopes = list(credentials.scopes or manager.SCOPES)
+        print("\n📋 Granted permissions:")
+        for scope in scopes[:8]:
+            print(f"   ✓ {scope.split('/')[-1]}")
+        if len(scopes) > 8:
+            print(f"   ... and {len(scopes) - 8} more")
+
+        print("\n✅ You can now run the system:")
+        print("   py main.py")
+        print("   py run_web.py")
+    else:
+        print("\n❌ Authentication failed! Credentials are not valid.")
+        _print_troubleshooting()
 
     print("\n" + "=" * 70)
+
+
+def _print_troubleshooting():
+    print("\n💡 Troubleshooting:")
+    print("   1. Check oauth_client_credentials.json is valid JSON for the right project")
+    print("   2. Verify GOOGLE_OAUTH_CLIENT_ID / SECRET in .env match the JSON")
+    print("   3. In Google Cloud Console, the OAuth client must list the redirect URI:")
+    print("      http://localhost:8080/oauth2callback")
+    print("   4. Ensure the OAuth consent screen is configured and your account is a test user")
+    print("   5. Make sure port 8080 is free")
 
 
 if __name__ == "__main__":

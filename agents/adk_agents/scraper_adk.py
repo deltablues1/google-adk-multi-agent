@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_scraper_agent(
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.5-flash"
 ):
     """
     Create Scraper ADK agent for web data extraction.

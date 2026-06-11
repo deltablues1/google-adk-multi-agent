@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 load_dotenv()
 
-PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "fabled-sector-476018-n3")
+PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT", "lyrical-star-497817-m3")
 LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-BUCKET_NAME = os.getenv("GOOGLE_CLOUD_STORAGE_BUCKET", "fabled-sector-assets")
+BUCKET_NAME = os.getenv("GOOGLE_CLOUD_STORAGE_BUCKET", "lyrical-star-497817-m3-assets")
 
 def setup_bucket():
     """Create GCS bucket if it doesn't exist"""

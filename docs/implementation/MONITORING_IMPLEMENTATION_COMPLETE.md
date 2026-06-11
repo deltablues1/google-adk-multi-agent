@@ -54,7 +54,7 @@
 ### 1. View Logs in Real-Time
 ```bash
 # Open Cloud Console
-https://console.cloud.google.com/logs?project=fabled-sector-476018-n3
+https://console.cloud.google.com/logs?project=lyrical-star-497817-m3
 
 # Filter by session
 jsonPayload.session_id="session-abc123"
@@ -100,7 +100,7 @@ pip install google-cloud-logging google-cloud-monitoring
 # Should already be set:
 USE_CLOUD_LOGGING=true
 LOG_LEVEL=INFO
-GOOGLE_CLOUD_PROJECT=fabled-sector-476018-n3
+GOOGLE_CLOUD_PROJECT=lyrical-star-497817-m3
 ```
 
 ### Step 3: Test Logging (30 seconds)
@@ -113,8 +113,8 @@ python main.py
 ```
 
 ### Step 4: Check Logs in Console (1 minute)
-1. Open: https://console.cloud.google.com/logs?project=fabled-sector-476018-n3
-2. Filter: `logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"`
+1. Open: https://console.cloud.google.com/logs?project=lyrical-star-497817-m3
+2. Filter: `logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"`
 3. See your logs! ✅
 
 ### Step 5: Create Dashboard (Optional - 2 minutes)
@@ -237,20 +237,20 @@ All logs tagged with event_type:
 
 ## 🔗 QUICK ACCESS LINKS
 
-### Your Project: fabled-sector-476018-n3
+### Your Project: lyrical-star-497817-m3
 
 **Logging:**
-- Logs Explorer: https://console.cloud.google.com/logs?project=fabled-sector-476018-n3
-- Log Analytics: https://console.cloud.google.com/logs/analytics?project=fabled-sector-476018-n3
+- Logs Explorer: https://console.cloud.google.com/logs?project=lyrical-star-497817-m3
+- Log Analytics: https://console.cloud.google.com/logs/analytics?project=lyrical-star-497817-m3
 
 **Monitoring:**
-- Dashboards: https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
-- Metrics: https://console.cloud.google.com/monitoring/metrics-explorer?project=fabled-sector-476018-n3
-- Alerts: https://console.cloud.google.com/monitoring/alerting?project=fabled-sector-476018-n3
+- Dashboards: https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
+- Metrics: https://console.cloud.google.com/monitoring/metrics-explorer?project=lyrical-star-497817-m3
+- Alerts: https://console.cloud.google.com/monitoring/alerting?project=lyrical-star-497817-m3
 
 **Vertex AI:**
-- Dashboard: https://console.cloud.google.com/vertex-ai?project=fabled-sector-476018-n3
-- Usage: https://console.cloud.google.com/vertex-ai/generative?project=fabled-sector-476018-n3
+- Dashboard: https://console.cloud.google.com/vertex-ai?project=lyrical-star-497817-m3
+- Usage: https://console.cloud.google.com/vertex-ai/generative?project=lyrical-star-497817-m3
 
 ---
 

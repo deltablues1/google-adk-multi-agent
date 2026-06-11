@@ -8,12 +8,13 @@ Uses Contacts ADK tools for Google People API operations.
 import logging
 from google.genai.types import Tool
 from agents.adk_agents.adk_agent_factory import create_adk_agent
+from config.deployment_config import is_erp_enabled
 
 logger = logging.getLogger(__name__)
 
 
 def create_rolodex_agent(
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.5-flash"
 ):
     """
     Create Rolodex ADK agent for Google Contacts management.
@@ -50,8 +51,6 @@ def create_rolodex_agent(
         contacts_delete_contact
     )
 
-    from tools.adk_tools.erp_adk_tools import erp_search_customers, erp_get_customer_balance
-
     # Create list of tools
     tools = [
         contacts_search_people,
@@ -60,16 +59,22 @@ def create_rolodex_agent(
         contacts_create_contact,
         contacts_update_contact,
         contacts_delete_contact,
-        # ERP customer lookup (read-only)
-        erp_search_customers,
-        erp_get_customer_balance,
     ]
+    description = "Google Contacts specialist: search contacts, find emails, manage address book"
+
+    if is_erp_enabled():
+        from tools.adk_tools.erp_adk_tools import erp_search_customers, erp_get_customer_balance
+        tools.extend([
+            erp_search_customers,
+            erp_get_customer_balance,
+        ])
+        description += ", plus ERP customer lookup"
 
     # Create agent using factory
     agent = create_adk_agent(
         name="rolodex",
         model=model,
-        description="Google Contacts specialist: search contacts, find emails, manage address book",
+        description=description,
         tools=tools,
         instruction=instruction,
         config={

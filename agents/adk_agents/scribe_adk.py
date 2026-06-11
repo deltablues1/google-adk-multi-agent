@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_scribe_agent(
-    model: str = "gemini-3-flash-preview",  # Tier 3: Fast document creation
+    model: str = "gemini-3.5-flash",  # Tier 3: Fast document creation
     credentials=None
 ) -> LlmAgent:
     """
@@ -120,7 +120,7 @@ def create_scribe_agent(
 scribe_agent = None
 
 
-def get_scribe_agent(model: str = "gemini-2.5-flash", credentials=None) -> LlmAgent:
+def get_scribe_agent(model: str = "gemini-3.5-flash", credentials=None) -> LlmAgent:
     """
     Get or create singleton Scribe agent instance.
 

@@ -68,20 +68,26 @@ class DriveNavigator:
         self.folder_cache['root'] = root_id
         logger.info(f"✅ Root folder '{root_name}' ready (ID: {root_id})")
         
-        # 2. Ensure Subfolders
-        subfolders = root_config.get('subfolders', [])
+        # 2. Ensure Subfolders (recursive — handles nested structure from drive_map.yaml)
         results = {'root': root_id}
-        
+        subfolders = root_config.get('subfolders', [])
+        await self._ensure_subfolders(credentials, subfolders, parent_id=root_id, results=results)
+        return results
+
+    async def _ensure_subfolders(
+        self, credentials, subfolders: list, parent_id: str, results: dict
+    ) -> None:
+        """Recursively create/cache all folders and their nested subfolders."""
         for folder in subfolders:
             name = folder['name']
             alias = folder['alias']
-            
-            folder_id = await self._get_or_create_folder(credentials, name, parent_id=root_id)
+            folder_id = await self._get_or_create_folder(credentials, name, parent_id=parent_id)
             self.folder_cache[alias] = folder_id
             results[alias] = folder_id
-            logger.info(f"✅ Subfolder '{name}' ready (ID: {folder_id})")
-            
-        return results
+            logger.info(f"✅ Folder '{name}' (alias: {alias}) ready (ID: {folder_id})")
+            nested = folder.get('subfolders', [])
+            if nested:
+                await self._ensure_subfolders(credentials, nested, parent_id=folder_id, results=results)
 
     async def _get_or_create_folder(self, credentials, name: str, parent_id: Optional[str] = None) -> str:
         """Finds a folder by name/parent, or creates it if missing."""

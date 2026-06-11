@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_researcher_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """
@@ -77,7 +77,7 @@ def create_researcher_agent(
     Uses Vertex AI credentials from environment.
 
     Args:
-        model: Gemini model to use (default: "gemini-2.5-flash")
+        model: Gemini model to use (default: "gemini-3.5-flash")
         credentials: Optional credentials. If None, uses env credentials.
 
     Returns:
@@ -116,7 +116,7 @@ def create_researcher_agent(
 researcher_agent = None
 
 
-def get_researcher_agent(model: str = "gemini-2.5-flash", credentials=None) -> LlmAgent:
+def get_researcher_agent(model: str = "gemini-3.5-flash", credentials=None) -> LlmAgent:
     """
     Get or create singleton Researcher agent instance.
 

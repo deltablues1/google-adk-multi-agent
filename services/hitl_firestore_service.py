@@ -43,7 +43,7 @@ class HITLFirestoreService:
 
     def __init__(self, project_id: Optional[str] = None):
         self._project_id = project_id or os.environ.get(
-            'GOOGLE_CLOUD_PROJECT', 'fabled-sector-476018-n3'
+            'GOOGLE_CLOUD_PROJECT', 'lyrical-star-497817-m3'
         )
         self._db: Optional[AsyncClient] = None
 

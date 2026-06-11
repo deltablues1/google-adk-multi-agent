@@ -39,6 +39,7 @@ ENV/
 .env
 .env.local
 .env.*.local
+deploy/rpi/.env.rpi
 
 # ============================================================================
 # SECURITY: Certificates & Keys (NEVER commit)

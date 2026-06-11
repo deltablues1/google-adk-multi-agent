@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_synthesizer_agent(
-    model: str = "gemini-3-flash-preview",  # Tier 3: Fast quality writing
+    model: str = "gemini-3.5-flash",  # Tier 3: Fast quality writing
     credentials=None
 ) -> LlmAgent:
     """
@@ -133,7 +133,7 @@ synthesizer_agent = None
 
 
 def get_synthesizer_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """

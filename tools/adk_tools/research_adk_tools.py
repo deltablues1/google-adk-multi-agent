@@ -159,6 +159,47 @@ async def scrape_url(
         return {"error": str(e), "url": url}
 
 
+async def scrape_url_advanced(
+    url: str,
+    only_main_content: bool = True
+) -> dict:
+    """
+    Advanced web scraping with automatic fallback chain. Handles JavaScript-rendered
+    pages, tables, price lists, PDF documents, and sites that block standard scrapers.
+
+    Tries in order:
+    1. Jina Reader (free, no API key) — fast, works for most pages
+    2. Firecrawl (requires FIRECRAWL_API_KEY) — for complex/protected pages
+
+    Use when: scrape_url fails or returns empty/403, page uses React/Vue/AJAX,
+    need to extract tables or price lists, target is a PDF from a web URL.
+
+    Args:
+        url: URL to scrape
+        only_main_content: Strip nav/header/footer for cleaner output (default: True)
+
+    Returns:
+        Dictionary with content, word_count, url, source, success flag
+    """
+    try:
+        from tools.api_implementations.web_scraper_api import scrape_url_jina, scrape_url_firecrawl
+
+        # 1. Try Jina Reader first (free, no API key)
+        result = await scrape_url_jina(None, url)
+        if result.get("success"):
+            return result
+
+        logger.info(f"Jina Reader failed for {url}, trying Firecrawl: {result.get('error')}")
+
+        # 2. Fall back to Firecrawl
+        result = await scrape_url_firecrawl(None, url, only_main_content=only_main_content)
+        return result
+
+    except Exception as e:
+        logger.error(f"Advanced URL scraping failed for {url}: {e}")
+        return {"error": str(e), "url": url, "success": False}
+
+
 async def scrape_multiple_urls(
     urls: List[str],
     extract_type: str = "article",
@@ -230,7 +271,8 @@ def get_research_adk_tools(credentials=None) -> List:
         google_search_simple,
         youtube_get_transcript,
         scrape_url,
-        scrape_multiple_urls
+        scrape_multiple_urls,
+        scrape_url_advanced,
     ]
 
     logger.info(f"Research ADK tools loaded: {len(tools)} tools")

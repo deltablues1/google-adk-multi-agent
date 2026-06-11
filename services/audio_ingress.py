@@ -1,0 +1,107 @@
+"""
+Shared audio ingress service for Telegram and Raspberry Pi voice paths.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from dataclasses import dataclass, field
+from typing import Dict, Optional
+
+
+SUPPORTED_AUDIO_MIME_TYPES = {
+    "audio/ogg",
+    "audio/opus",
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/webm",
+}
+
+MAX_AUDIO_BYTES = 20 * 1024 * 1024
+
+
+class AudioIngressError(RuntimeError):
+    pass
+
+
+@dataclass
+class AudioIngressResult:
+    transcript: str
+    metadata: Dict[str, object] = field(default_factory=dict)
+
+
+class AudioIngressService:
+    def __init__(self, model: Optional[str] = None, api_key: Optional[str] = None):
+        self.model = model or os.getenv("AUDIO_TRANSCRIPTION_MODEL", "gemini-3.5-flash")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
+
+    async def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        mime_type: str,
+        source: str,
+        metadata: Optional[Dict[str, object]] = None,
+    ) -> AudioIngressResult:
+        metadata = dict(metadata or {})
+        mime_type = (mime_type or "").strip().lower()
+
+        if not audio_bytes:
+            raise AudioIngressError("Audio payload is empty")
+        if mime_type not in SUPPORTED_AUDIO_MIME_TYPES:
+            raise AudioIngressError(f"Unsupported audio MIME type: {mime_type}")
+        if len(audio_bytes) > MAX_AUDIO_BYTES:
+            raise AudioIngressError(f"Audio payload exceeds {MAX_AUDIO_BYTES} bytes inline limit")
+        if not self.api_key:
+            raise AudioIngressError("GEMINI_API_KEY is not configured")
+
+        loop = asyncio.get_running_loop()
+        transcript = await loop.run_in_executor(
+            None,
+            self._transcribe_sync,
+            audio_bytes,
+            mime_type,
+        )
+        transcript = (transcript or "").strip()
+        if not transcript:
+            raise AudioIngressError("Model returned an empty transcript")
+
+        metadata.update({
+            "source": source,
+            "mime_type": mime_type,
+            "bytes": len(audio_bytes),
+            "model": self.model,
+        })
+        return AudioIngressResult(transcript=transcript, metadata=metadata)
+
+    def _transcribe_sync(self, audio_bytes: bytes, mime_type: str) -> str:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=self.api_key)
+        response = client.models.generate_content(
+            model=self.model,
+            contents=[
+                "Transcribe the spoken audio faithfully. Return only the transcript text.",
+                types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+            ],
+        )
+        return getattr(response, "text", "") or ""
+
+
+_audio_ingress_service: AudioIngressService | None = None
+
+
+def get_supported_audio_mime_types() -> set[str]:
+    return set(SUPPORTED_AUDIO_MIME_TYPES)
+
+
+def get_audio_ingress_service() -> AudioIngressService:
+    global _audio_ingress_service
+    if _audio_ingress_service is None:
+        _audio_ingress_service = AudioIngressService()
+    return _audio_ingress_service

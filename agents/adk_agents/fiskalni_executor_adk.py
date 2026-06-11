@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_fiskalni_executor_agent(
-    model: str = "gemini-2.5-pro",  # Tier 2: Critical signing operations
+    model: str = "gemini-3.1-pro-preview",  # Tier 1: Critical signing operations
     credentials=None
 ) -> LlmAgent:
     """
@@ -213,7 +213,7 @@ fiskalni_executor_agent = None
 
 
 def get_fiskalni_executor_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """

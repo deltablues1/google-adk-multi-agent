@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_secretary_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None,
     user_timezone: str = "Europe/Zagreb"
 ) -> LlmAgent:
@@ -72,7 +72,7 @@ def create_secretary_agent(
     using Gemini Flash model for quick responses.
 
     Args:
-        model: Gemini model to use (default: "gemini-2.5-flash")
+        model: Gemini model to use (default: "gemini-3.5-flash")
         credentials: Optional OAuth2 credentials. If None, uses token file.
         user_timezone: User's timezone (default: "Europe/Zagreb")
 
@@ -135,7 +135,7 @@ secretary_agent = None
 
 
 def get_secretary_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None,
     user_timezone: str = "Europe/Zagreb"
 ) -> LlmAgent:

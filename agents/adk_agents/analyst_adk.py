@@ -52,12 +52,13 @@ from google.adk.agents import LlmAgent
 
 from tools.adk_tools.sheets_adk_tools import get_sheets_adk_tools
 from agents.adk_agents.adk_agent_factory import create_adk_agent
+from config.deployment_config import is_erp_enabled
 
 logger = logging.getLogger(__name__)
 
 
 def create_analyst_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """
@@ -78,7 +79,7 @@ def create_analyst_agent(
     with low temperature for consistent, accurate results.
 
     Args:
-        model: Gemini model to use (default: "gemini-2.5-flash")
+        model: Gemini model to use (default: "gemini-3.5-flash")
         credentials: Optional OAuth2 credentials. If None, uses token file.
 
     Returns:
@@ -95,32 +96,40 @@ def create_analyst_agent(
     # Get Sheets tools
     sheets_tools = get_sheets_adk_tools(credentials=credentials)
 
-    from tools.adk_tools.erp_adk_tools import (
-        erp_get_vat_summary,
-        erp_get_receivables_aging,
-        erp_get_financial_summary,
-        erp_get_stock_levels,
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        erp_list_quotes,
-        erp_get_quote,
+    all_tools = list(sheets_tools)
+    description = (
+        "Google Sheets specialist for data analysis, schema-first reading, "
+        "and efficient data manipulation."
     )
-    all_tools = sheets_tools + [
-        erp_get_vat_summary,
-        erp_get_receivables_aging,
-        erp_get_financial_summary,
-        erp_get_stock_levels,
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        erp_list_quotes,
-        erp_get_quote,
-    ]
+
+    if is_erp_enabled():
+        from tools.adk_tools.erp_adk_tools import (
+            erp_get_vat_summary,
+            erp_get_receivables_aging,
+            erp_get_financial_summary,
+            erp_get_stock_levels,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        )
+        all_tools.extend([
+            erp_get_vat_summary,
+            erp_get_receivables_aging,
+            erp_get_financial_summary,
+            erp_get_stock_levels,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        ])
+        description += " Also provides ERP financial reports: VAT, receivables aging, P&L, stock levels."
 
     # Create agent using factory
     agent = create_adk_agent(
         name="analyst",
         model=model,
-        description="Google Sheets specialist for data analysis, schema-first reading, and efficient data manipulation. Also provides ERP financial reports: VAT, receivables aging, P&L, stock levels.",
+        description=description,
         tools=all_tools,
         load_instruction_from_file=True,  # Will load from agents/analyst/instructions.md
         config={
@@ -129,7 +138,7 @@ def create_analyst_agent(
         }
     )
 
-    logger.info(f"Analyst ADK agent created with {len(all_tools)} tools ({len(sheets_tools)} Sheets + 4 ERP)")
+    logger.info(f"Analyst ADK agent created with {len(all_tools)} tools")
     return agent
 
 
@@ -138,7 +147,7 @@ analyst_agent = None
 
 
 def get_analyst_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """

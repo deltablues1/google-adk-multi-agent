@@ -31,28 +31,81 @@ def _get_credentials():
         return None
 
 
-async def docs_create_document(title: str, content: Optional[str] = None) -> dict:
+async def docs_create_document(
+    title: str,
+    content: Optional[str] = None,
+    share: bool = False,
+    share_role: str = "reader",
+) -> dict:
     """
-    Create a new Google Docs document.
+    Create a new Google Docs document, fill it with content, and optionally share it.
 
-    Creates an empty document with the specified title. Optionally adds
-    initial plain text content if provided.
+    This is the ONE-CALL way to produce a finished document. When `content` is
+    provided it is written into the document (Markdown is auto-formatted into
+    headings/bold/lists; on any formatting issue it falls back to plain text).
+    When `share=True` the document is shared (anyone with the link can view),
+    so emailed links work without an "access denied" error.
+
+    Prefer this single call over create-then-batch_update: it guarantees the
+    document is never left empty and the returned URL is immediately usable.
 
     Args:
         title: Document title
-        content: Initial content to add (optional, plain text)
+        content: Document body. Plain text or Markdown
+            (# headings, **bold**, - lists, [text](url)). Strongly recommended.
+        share: If True, share the document as "anyone with link" (default False).
+        share_role: Permission when sharing: "reader" (default), "commenter", or "writer".
 
     Returns:
-        Dictionary with document_id, title, document_url, and status
+        Dictionary with document_id, title, document_url, content_inserted,
+        shared (bool), and status.
     """
     creds = _get_credentials()
     if creds is None:
         return {"error": "Authentication required"}
 
     try:
-        from tools.api_implementations.docs_api import docs_create_document as docs_create_impl
+        from tools.api_implementations.docs_api import (
+            docs_create_document as docs_create_impl,
+            docs_batch_update as docs_batch_impl,
+            docs_insert_text as docs_insert_impl,
+        )
 
-        result = await docs_create_impl(creds, title, content)
+        # 1. Create the (empty) document first; we insert content ourselves so
+        #    we can apply Markdown formatting.
+        result = await docs_create_impl(creds, title, None)
+        if not isinstance(result, dict) or result.get("error") or not result.get("document_id"):
+            return result
+        doc_id = result["document_id"]
+
+        # 2. Insert content (Markdown-formatted, with plain-text fallback).
+        content_inserted = False
+        if content and content.strip():
+            try:
+                from tools.custom_tools.docs_formatter import DocsFormatter
+                requests = DocsFormatter().markdown_to_docs_requests(content)
+                if requests:
+                    await docs_batch_impl(creds, doc_id, requests)
+                    content_inserted = True
+            except Exception as fmt_err:
+                logger.warning(f"Markdown formatting failed, falling back to plain text: {fmt_err}")
+            if not content_inserted:
+                await docs_insert_impl(creds, doc_id, content, 1)
+                content_inserted = True
+        result["content_inserted"] = content_inserted
+
+        # 3. Optionally share so links are accessible to recipients.
+        if share:
+            try:
+                from tools.api_implementations.drive_api import drive_share_file as drive_share_impl
+                share_res = await drive_share_impl(creds, doc_id, None, share_role, "anyone")
+                result["shared"] = not (isinstance(share_res, dict) and share_res.get("error"))
+                result["share_role"] = share_role
+            except Exception as share_err:
+                logger.error(f"Sharing failed for {doc_id}: {share_err}")
+                result["shared"] = False
+                result["share_error"] = str(share_err)
+
         return result
     except Exception as e:
         logger.error(f"Document creation failed: {e}")

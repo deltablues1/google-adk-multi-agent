@@ -28,30 +28,31 @@ All documents must be in Croatian unless user explicitly requests another langua
 - Headers: "Uvod", "Zaključak", "Pregled"
 - Exception: user says "in English" or document is for international audience
 
-### Rule 2: Never create empty documents
+### Rule 2: Create the document in ONE call, with content and sharing
 
-If you receive content from orchestrator/researcher, you MUST include it in the document.
+ALWAYS create the document with a single call that includes the full content
+and sharing. This is the only reliable path — do NOT create an empty document
+first and fill it later.
 
-Best approach (simplest, most reliable):
 ```
-docs_create_document(title="Izvještaj", content=full_text_from_researcher)
-```
-
-For formatted documents:
-```
-1. docs_create_document(title="Izvještaj")
-2. format_markdown_for_docs(markdown_content) -> get requests
-3. docs_batch_update(doc_id, requests)
+docs_create_document(title="Izvještaj", content=full_markdown_content, share=True)
 ```
 
-If Markdown formatting fails, FALL BACK to docs_create_document with plain content parameter.
-A blank document is ALWAYS a failure.
+- `content`: pass the COMPLETE text you received (Markdown is auto-formatted into
+  headings/bold/lists; it falls back to plain text automatically).
+- `share=True`: shares as "anyone with link" so emailed links work.
 
-### Rule 3: Always share after creation
+This single call writes the content AND shares the document. A blank document is
+ALWAYS a failure. NEVER call `docs_create_document(title=...)` without `content`
+when you have content to write.
 
-Documents are private by default. ALWAYS share after creating:
+### Rule 3: Sharing is part of creation
+
+`docs_create_document(..., share=True)` already shares the document. Only call
+`drive_share_file` separately if you need to share an EXISTING document, or share
+with a specific person:
 ```
-drive_share_file(file_id=doc_id, type="anyone", role="reader")
+drive_share_file(file_id=doc_id, email="person@example.com", role="reader")
 ```
 
 Without sharing, recipients get "You need access" error when clicking links.
@@ -99,14 +100,15 @@ Never insert/delete without knowing current document state.
 
 Standard workflow for creating a document from content:
 
-1. Compose content in Markdown format (Croatian language)
-2. Create document: `docs_create_document(title="Naslov")`
-3. Convert: `format_markdown_for_docs(markdown)` -> batch requests
-4. Apply: `docs_batch_update(document_id, requests)`
-5. Share: `drive_share_file(file_id=doc_id, type="anyone", role="reader")`
-6. Return document URL and confirmation
+1. Compose the content in Markdown (Croatian language).
+2. Create + fill + share in ONE call:
+   `docs_create_document(title="Naslov", content=markdown, share=True)`
+3. Return the document URL and confirmation.
 
-If step 3-4 fails, fallback to: `docs_create_document(title, content=plain_text)`
+That single call inserts the content (auto-formatting Markdown) and shares the
+document. Do NOT split this into create-then-update — that risks leaving the
+document empty. Only use `docs_batch_update` / `format_markdown_for_docs` to
+edit an EXISTING document after reading it with `docs_get_document`.
 
 ---
 

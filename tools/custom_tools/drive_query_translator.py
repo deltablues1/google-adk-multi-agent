@@ -58,6 +58,13 @@ class DriveQueryTranslator:
         Returns:
             Drive QPL query string
         """
+        # If the input is ALREADY valid Drive Query Language, return it
+        # unchanged. Otherwise this NL translator mangles it (e.g. it would
+        # turn "name = 'X' and trashed = false" into "trashed = true" because
+        # it substring-matches "trash" and loses the name filter).
+        if self._looks_like_qpl(natural_query):
+            return natural_query.strip()
+
         query_parts = []
 
         # Normaliziraj query
@@ -103,6 +110,19 @@ class DriveQueryTranslator:
 
         return ' and '.join(query_parts)
 
+    # Drive Query Language signatures: field operators / functions that only
+    # appear in real QPL, never in plain natural-language search phrases.
+    _QPL_SIGNATURES = (
+        'contains', 'mimetype', 'modifiedtime', 'createdtime',
+        'in owners', 'in readers', 'in writers', 'in parents',
+        'trashed =', 'starred =', 'fulltext', 'sharedwithme', 'name =',
+    )
+
+    def _looks_like_qpl(self, query: str) -> bool:
+        """Heuristic: is this string already valid Drive Query Language?"""
+        q = query.lower()
+        return any(sig in q for sig in self._QPL_SIGNATURES)
+
     def _extract_name_pattern(self, query: str) -> Optional[str]:
         """Ekstraktira pattern iz imena datoteke"""
         # Pattern: "find <name>", "search <name>", "<name> file"
@@ -115,8 +135,11 @@ class DriveQueryTranslator:
         for pattern in patterns:
             match = re.search(pattern, query)
             if match:
-                # Return captured group (without quotes)
-                return match.group(2) if match.lastindex >= 2 else match.group(1)
+                # Group 2 holds the name; group 1 is the optional opening quote.
+                name = match.group(2) if (match.lastindex or 0) >= 2 else match.group(1)
+                name = (name or "").strip().strip("'\"").strip()
+                if name:
+                    return name
 
         return None
 

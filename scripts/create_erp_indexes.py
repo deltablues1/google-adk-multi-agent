@@ -11,6 +11,11 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# Load .env so google.auth.default() picks up GOOGLE_APPLICATION_CREDENTIALS
+# (service account) instead of falling back to user ADC without permissions.
+from dotenv import load_dotenv
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
 
 INDEXES = [
     # ── customers ────────────────────────────────────────────────────────────
@@ -146,6 +151,51 @@ INDEXES = [
             ("issue_date", "DESCENDING"),
         ],
     },
+    # ── quotes ───────────────────────────────────────────────────────────────
+    {
+        "collection": "quotes",
+        "fields": [
+            ("company_id", "ASCENDING"),
+            ("deleted", "ASCENDING"),
+            ("created_at", "DESCENDING"),
+        ],
+    },
+    {
+        "collection": "quotes",
+        "fields": [
+            ("company_id", "ASCENDING"),
+            ("deleted", "ASCENDING"),
+            ("document_status", "ASCENDING"),
+            ("created_at", "DESCENDING"),
+        ],
+    },
+    {
+        "collection": "quotes",
+        "fields": [
+            ("company_id", "ASCENDING"),
+            ("deleted", "ASCENDING"),
+            ("customer_id", "ASCENDING"),
+            ("created_at", "DESCENDING"),
+        ],
+    },
+    # ── audit_log (activity feed) ────────────────────────────────────────────
+    {
+        "collection": "audit_log",
+        "fields": [
+            ("company_id", "ASCENDING"),
+            ("target_service", "ASCENDING"),
+            ("timestamp", "DESCENDING"),
+        ],
+    },
+    # ── inventory_movements ──────────────────────────────────────────────────
+    {
+        "collection": "inventory_movements",
+        "fields": [
+            ("company_id", "ASCENDING"),
+            ("product_id", "ASCENDING"),
+            ("created_at", "DESCENDING"),
+        ],
+    },
 ]
 
 
@@ -218,7 +268,7 @@ def create_indexes_rest(project_id: str, database_id: str = "(default)"):
 if __name__ == "__main__":
     import google.auth as _gauth
     _, project_id = _gauth.default()
-    project_id = project_id or "fabled-sector-476018-n3"
+    project_id = project_id or "lyrical-star-497817-m3"
     print(f"Creating ERP composite indexes for project: {project_id}")
     print(f"Total indexes to create: {len(INDEXES)}\n")
     create_indexes_rest(project_id)

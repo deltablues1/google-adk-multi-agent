@@ -17,6 +17,7 @@ from typing import List, Optional
 from google.adk.agents import LlmAgent
 from google.adk.tools import AgentTool
 from google.genai import types
+from config.deployment_config import is_erp_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ FALLBACK_INSTRUCTION = (
 
 
 def create_smart_orchestrator(
-    model: str = "gemini-3-flash-preview",
+    model: str = "gemini-3.5-flash",
     worker_agents: Optional[List[LlmAgent]] = None,
     validator_agent: Optional[LlmAgent] = None,
     ask_user_agent: Optional[LlmAgent] = None
@@ -54,6 +55,7 @@ def create_smart_orchestrator(
     """
     from agents.adk_agents.adk_agent_factory import create_adk_agent
     from agents.adk_agents.datetime_context import inject_datetime_context
+    from agents.adk_agents.control_callbacks import validate_worker_result
 
     # --- Load instructions from file ---
     instruction_file = os.path.join(
@@ -104,6 +106,13 @@ def create_smart_orchestrator(
     # Inject current datetime context
     instruction = inject_datetime_context(instruction, user_timezone="Europe/Zagreb")
 
+    if not is_erp_enabled():
+        instruction += (
+            "\n\nDeployment constraint: ERP is disabled in this environment. "
+            "Do not route to ERP UI/API flows, ERP draft creation, ERP reporting, "
+            "or ERP-backed OCR save steps."
+        )
+
     # --- Create orchestrator ---
     orchestrator = create_adk_agent(
         name="smart_orchestrator",
@@ -113,6 +122,8 @@ def create_smart_orchestrator(
         sub_agents=special_sub_agents,
         instruction=instruction,
         load_instruction_from_file=False,  # Already loaded above
+        # Guardrail: block silent empty/failed worker results from propagating.
+        after_tool_callback=validate_worker_result,
     )
 
     # Set generation config properly (not via _config which has no effect)

@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_fiskalni_pripremac_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """
@@ -77,7 +77,7 @@ def create_fiskalni_pripremac_agent(
     - Mark items with <95% KPD confidence for review
 
     Args:
-        model: Gemini model to use (default: "gemini-2.5-flash")
+        model: Gemini model to use (default: "gemini-3.5-flash")
         credentials: Optional OAuth2 credentials. If None, uses token file.
 
     Returns:
@@ -175,7 +175,7 @@ fiskalni_pripremac_agent = None
 
 
 def get_fiskalni_pripremac_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """

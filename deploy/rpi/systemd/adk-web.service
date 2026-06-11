@@ -1,0 +1,15 @@
+[Unit]
+Description=Google Clause Web Interface
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/google-clause
+EnvironmentFile=/opt/google-clause/deploy/rpi/.env.rpi
+ExecStart=/opt/google-clause/.venv/bin/python run_web.py --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

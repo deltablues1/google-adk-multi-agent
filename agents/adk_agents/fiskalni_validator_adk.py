@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_fiskalni_validator_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """
@@ -77,7 +77,7 @@ def create_fiskalni_validator_agent(
     - When in doubt, REJECT
 
     Args:
-        model: Gemini model to use (default: "gemini-2.5-flash")
+        model: Gemini model to use (default: "gemini-3.5-flash")
         credentials: Optional OAuth2 credentials.
 
     Returns:
@@ -174,7 +174,7 @@ fiskalni_validator_agent = None
 
 
 def get_fiskalni_validator_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """

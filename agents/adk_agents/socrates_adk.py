@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_socrates_agent(
-    model: str = "gemini-2.5-pro",  # Tier 2: Deep philosophical reasoning
+    model: str = "gemini-3.5-flash",  # Tier 2: GA workhorse (matches registry)
     credentials=None
 ) -> LlmAgent:
     """
@@ -71,49 +71,35 @@ def create_socrates_agent(
         >>> # Socrates: "Zanimljivo pitanje! Ali reci mi prvo - kako znaš da je nešto istinito?"
     """
 
-    try:
-        # Import the existing Socrates agent from philosophy module
-        from agents.philosophy.philosophy_agents import socrates_agent
+    # Build Socrates directly (avoid importing philosophy_agents.py which
+    # initialises Vertex AI at module level and blocks startup on Windows)
+    from google.adk.agents import LlmAgent
+    from tools.classroom_tools import get_philosophy_rag_tool
 
-        logger.info("Loaded existing Socrates agent from philosophy module")
-        logger.info("Model: Gemini 3.0 Pro Preview (Thinking Mode enabled)")
-        logger.info("Method: Socratic dialogue (RAG knowledge base if available)")
+    rag_tool = get_philosophy_rag_tool()
+    tools = [rag_tool] if rag_tool is not None else []
 
-        return socrates_agent
+    instruction = """Ti si Sokrat, antički grčki filozof. Tvoj cilj nije dati odgovor, već voditi učenika do spoznaje.
 
-    except Exception as e:
-        logger.error(f"Failed to import Socrates agent: {e}")
-        logger.warning("Creating fallback Socrates agent without RAG")
+Pravila:
+1. Nikada ne odgovaraj direktno na pitanje.
+2. Uvijek odgovaraj protu-pitanjem koje izaziva pretpostavku korisnika.
+3. Koristi analogije iz klasične filozofije i svakodnevnog života.
+4. Ako korisnik tvrdi nešto nelogično, koristi 'reductio ad absurdum'.
+5. Nikada ne izlazi iz lika. Ti si antički filozof.
+6. Budi strpljiv, ali intelektualno rigorozan."""
 
-        # Fallback: Create a basic Socrates agent without RAG
-        from google.adk.agents import LlmAgent
+    if rag_tool is not None:
+        instruction += "\nKoristi bazu znanja (PhilosophyKnowledgeBase) da pronađeš relevantne koncepte, ali ih preformuliraj u pitanja."
 
-        fallback_agent = LlmAgent(
-            name="Socrates",
-            model="gemini-2.5-pro",  # Tier 2: Deep reasoning
-            tools=[],
-            instruction="""
-            Ti si Sokrat, antički grčki filozof. Tvoj cilj nije dati odgovor, već voditi učenika do spoznaje.
-
-            Pravila:
-            1. Nikada ne odgovaraj direktno na pitanje.
-            2. Uvijek odgovaraj protu-pitanjem koje izaziva pretpostavku korisnika.
-            3. Koristi analogije iz svakodnevnog života.
-            4. Ako korisnik tvrdi nešto nelogično, koristi 'reductio ad absurdum'.
-            5. Nikada ne izlazi iz lika. Ti si antički filozof.
-            6. Budi strpljiv, ali intelektualno rigorozan.
-
-            Primjeri:
-            - Korisnik: "Što je istina?"
-              Sokrat: "Zanimljivo pitanje! Ali reci mi prvo - kako znaš da je nešto istinito? Po čemu prepoznaješ istinu?"
-
-            - Korisnik: "Novac donosi sreću."
-              Sokrat: "Fascinantno! Znači li to da je najbogatiji čovjek ujedno i najsretniji? A što kažeš na siromašnog čovjeka koji se smije?"
-            """
-        )
-
-        logger.info("Created fallback Socrates agent (no RAG)")
-        return fallback_agent
+    fallback_agent = LlmAgent(
+        name="Socrates",
+        model=model or "gemini-3.5-flash",
+        tools=tools,
+        instruction=instruction,
+    )
+    logger.info(f"Socrates agent created (model={model}, RAG={'yes' if rag_tool else 'no'})")
+    return fallback_agent
 
 
 # Create singleton instance for easy import

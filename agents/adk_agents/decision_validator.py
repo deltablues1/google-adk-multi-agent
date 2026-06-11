@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_decision_validator(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     sub_agents: Optional[List[LlmAgent]] = None
 ) -> LlmAgent:
     """

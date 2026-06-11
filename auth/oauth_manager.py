@@ -1,54 +1,43 @@
 """
-OAuth 2.0 Manager za Google Workspace API
-Implementira OAuth 2.1 flow s token refresh mehanizmom
+OAuth 2.0 Manager for Google Workspace APIs.
 """
 
-import os
 import json
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+import logging
+import os
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
-from google.auth.transport.requests import Request
-from pathlib import Path
-import logging
 
 logger = logging.getLogger(__name__)
 
 
 class OAuthManager:
-    """Upravlja OAuth 2.0 autentifikacijom za Google Workspace API"""
+    """Manage OAuth 2.0 authentication and token refresh."""
 
-    # OAuth 2.0 scopes za Google Workspace
     SCOPES = [
-        # Gmail
-        'https://www.googleapis.com/auth/gmail.readonly',
-        'https://www.googleapis.com/auth/gmail.send',
-        'https://www.googleapis.com/auth/gmail.modify',
-        'https://www.googleapis.com/auth/gmail.compose',
-        # Drive
-        'https://www.googleapis.com/auth/drive',
-        'https://www.googleapis.com/auth/drive.file',
-        # Docs
-        'https://www.googleapis.com/auth/documents',
-        # Sheets
-        'https://www.googleapis.com/auth/spreadsheets',
-        # Calendar
-        'https://www.googleapis.com/auth/calendar',
-        'https://www.googleapis.com/auth/calendar.events',
-        # Contacts
-        'https://www.googleapis.com/auth/contacts',
-        'https://www.googleapis.com/auth/contacts.readonly',
-        # Tasks
-        'https://www.googleapis.com/auth/tasks',
-        # Firestore (Datastore)
-        'https://www.googleapis.com/auth/datastore',
-        # Google Ads
-        'https://www.googleapis.com/auth/adwords',
-        # YouTube
-        'https://www.googleapis.com/auth/youtube.upload',
-        # Google Cloud Platform (Vertex AI)
-        'https://www.googleapis.com/auth/cloud-platform',
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/contacts",
+        "https://www.googleapis.com/auth/contacts.readonly",
+        "https://www.googleapis.com/auth/tasks",
+        "https://www.googleapis.com/auth/datastore",
+        "https://www.googleapis.com/auth/adwords",
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/cloud-platform",
     ]
 
     def __init__(
@@ -56,178 +45,182 @@ class OAuthManager:
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
         redirect_uri: Optional[str] = None,
-        token_storage_path: Optional[str] = None
+        token_storage_path: Optional[str] = None,
     ):
-        """
-        Inicijalizacija OAuth Manager-a
-
-        Args:
-            client_id: OAuth 2.0 Client ID
-            client_secret: OAuth 2.0 Client Secret
-            redirect_uri: OAuth 2.0 Redirect URI
-            token_storage_path: Putanja za pohranu tokena
-        """
-        self.client_id = client_id or os.getenv('GOOGLE_OAUTH_CLIENT_ID')
-        self.client_secret = client_secret or os.getenv('GOOGLE_OAUTH_CLIENT_SECRET')
-        self.redirect_uri = redirect_uri or os.getenv('GOOGLE_OAUTH_REDIRECT_URI', 'http://localhost:8080/oauth2callback')
-
-        # Token storage
-        self.token_storage_path = token_storage_path or os.path.join(
-            Path.home(), '.google_workspace_adk', 'tokens.json'
+        self.client_id = client_id or os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+        self.client_secret = client_secret or os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+        self.redirect_uri = redirect_uri or os.getenv(
+            "GOOGLE_OAUTH_REDIRECT_URI",
+            "http://localhost:8080/oauth2callback",
         )
-        os.makedirs(os.path.dirname(self.token_storage_path), exist_ok=True)
+
+        resolved_token_path = (
+            token_storage_path
+            or os.getenv("OAUTH_TOKEN_STORAGE_PATH")
+            or os.path.join(Path.home(), ".google_workspace_adk", "tokens.json")
+        )
+        self.token_storage_path = str(Path(resolved_token_path).expanduser())
+        Path(self.token_storage_path).parent.mkdir(parents=True, exist_ok=True)
 
         self._credentials: Optional[Credentials] = None
+        # Serializes token load/refresh so concurrent callers don't trigger
+        # duplicate refresh requests. Reentrant: _refresh_credentials is called
+        # from within get_credentials while the lock is held.
+        self._lock = threading.RLock()
+        self._last_auth_health: Dict[str, Any] = {
+            "status": "relogin_required",
+            "token_path": self.token_storage_path,
+            "reason": "not_checked",
+        }
 
-    def get_authorization_url(self) -> str:
-        """
-        Generira OAuth 2.0 authorization URL
-
-        Returns:
-            Authorization URL za korisničku autorizaciju
-        """
-        client_config = {
-            'web': {
-                'client_id': self.client_id,
-                'client_secret': self.client_secret,
-                'redirect_uris': [self.redirect_uri],
-                'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
-                'token_uri': 'https://oauth2.googleapis.com/token',
+    def _client_config(self) -> Dict[str, Dict[str, Any]]:
+        return {
+            "web": {
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "redirect_uris": [self.redirect_uri],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
             }
         }
 
+    def get_authorization_url(self) -> str:
         flow = Flow.from_client_config(
-            client_config,
+            self._client_config(),
             scopes=self.SCOPES,
-            redirect_uri=self.redirect_uri
+            redirect_uri=self.redirect_uri,
         )
-
         auth_url, _ = flow.authorization_url(
-            access_type='offline',
-            include_granted_scopes='true',
-            prompt='consent'
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
         )
-
         return auth_url
 
     def exchange_code_for_token(self, authorization_code: str) -> Credentials:
-        """
-        Zamjenjuje authorization code za access token
-
-        Args:
-            authorization_code: Authorization code iz OAuth callback-a
-
-        Returns:
-            Google OAuth2 Credentials objekt
-        """
-        client_config = {
-            'web': {
-                'client_id': self.client_id,
-                'client_secret': self.client_secret,
-                'redirect_uris': [self.redirect_uri],
-                'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
-                'token_uri': 'https://oauth2.googleapis.com/token',
-            }
-        }
-
         flow = Flow.from_client_config(
-            client_config,
+            self._client_config(),
             scopes=self.SCOPES,
-            redirect_uri=self.redirect_uri
+            redirect_uri=self.redirect_uri,
         )
-
         flow.fetch_token(code=authorization_code)
         self._credentials = flow.credentials
-
-        # Spremi token
         self._save_token()
-
+        self._last_auth_health = {
+            "status": "valid",
+            "token_path": self.token_storage_path,
+        }
         logger.info("Successfully exchanged authorization code for token")
         return self._credentials
 
     def get_credentials(self) -> Optional[Credentials]:
-        """
-        Dohvaća važeće OAuth2 credentials
-        Automatski osvježava token ako je istekao
+        with self._lock:
+            if self._credentials and self._credentials.valid:
+                self._last_auth_health = {
+                    "status": "valid",
+                    "token_path": self.token_storage_path,
+                }
+                return self._credentials
 
-        Returns:
-            Google OAuth2 Credentials objekt ili None ako nisu dostupni
-        """
-        if self._credentials and self._credentials.valid:
-            return self._credentials
+            self._load_token()
 
-        # Učitaj spremljeni token
-        self._load_token()
+            if not self._credentials:
+                self._last_auth_health = {
+                    "status": "relogin_required",
+                    "token_path": self.token_storage_path,
+                    "reason": "token_missing",
+                }
+                return None
 
-        if self._credentials:
-            # Bez expiry ne možemo znati je li token valjan - forsiraj refresh
             if not self._credentials.expiry and self._credentials.refresh_token:
                 logger.info("Token loaded without expiry, forcing refresh")
-                try:
-                    self._credentials.refresh(Request())
-                    self._save_token()
-                    logger.info("Successfully refreshed OAuth token (missing expiry)")
-                except Exception as e:
-                    logger.error(f"Failed to refresh token (missing expiry): {e}")
-                    self._credentials = None
+                return self._refresh_credentials(reason="missing_expiry")
 
-            # Provjeri je li token istekao i osvježi ga
-            elif self._credentials.expired and self._credentials.refresh_token:
-                try:
-                    self._credentials.refresh(Request())
-                    self._save_token()
-                    logger.info("Successfully refreshed OAuth token")
-                except Exception as e:
-                    logger.error(f"Failed to refresh token: {e}")
-                    self._credentials = None
+            if self._credentials.expired and self._credentials.refresh_token:
+                return self._refresh_credentials(reason="expired")
 
-        return self._credentials
+            if self._credentials.valid:
+                self._last_auth_health = {
+                    "status": "valid",
+                    "token_path": self.token_storage_path,
+                }
+                return self._credentials
+
+            self._last_auth_health = {
+                "status": "relogin_required",
+                "token_path": self.token_storage_path,
+                "reason": "invalid_credentials",
+            }
+            return None
+
+    def _refresh_credentials(self, reason: str) -> Optional[Credentials]:
+        try:
+            self._credentials.refresh(Request())
+            self._save_token()
+            self._last_auth_health = {
+                "status": "refreshed",
+                "token_path": self.token_storage_path,
+                "reason": reason,
+            }
+            logger.info("Successfully refreshed OAuth token")
+            return self._credentials
+        except Exception as e:
+            logger.error(f"Failed to refresh token: {e}")
+            self._last_auth_health = {
+                "status": "relogin_required",
+                "token_path": self.token_storage_path,
+                "reason": f"refresh_failed: {e}",
+            }
+            self._credentials = None
+            return None
+
+    def get_auth_health_status(self) -> Dict[str, Any]:
+        self.get_credentials()
+        return dict(self._last_auth_health)
 
     def _save_token(self) -> None:
-        """Sprema OAuth token u datoteku"""
         if not self._credentials:
             return
 
         token_data = {
-            'token': self._credentials.token,
-            'refresh_token': self._credentials.refresh_token,
-            'token_uri': self._credentials.token_uri,
-            'client_id': self._credentials.client_id,
-            'client_secret': self._credentials.client_secret,
-            'scopes': self._credentials.scopes,
-            'expiry': self._credentials.expiry.isoformat() if self._credentials.expiry else None,
+            "token": self._credentials.token,
+            "refresh_token": self._credentials.refresh_token,
+            "token_uri": self._credentials.token_uri,
+            "client_id": self._credentials.client_id,
+            "client_secret": self._credentials.client_secret,
+            "scopes": self._credentials.scopes,
+            "expiry": self._credentials.expiry.isoformat() if self._credentials.expiry else None,
         }
 
         try:
-            with open(self.token_storage_path, 'w') as f:
+            with open(self.token_storage_path, "w", encoding="utf-8") as f:
                 json.dump(token_data, f)
             logger.debug(f"Token saved to {self.token_storage_path}")
         except Exception as e:
             logger.error(f"Failed to save token: {e}")
 
     def _load_token(self) -> None:
-        """Učitava OAuth token iz datoteke"""
         if not os.path.exists(self.token_storage_path):
             return
 
         try:
-            with open(self.token_storage_path, 'r') as f:
+            with open(self.token_storage_path, "r", encoding="utf-8") as f:
                 token_data = json.load(f)
 
             expiry = None
-            expiry_str = token_data.get('expiry')
+            expiry_str = token_data.get("expiry")
             if expiry_str:
                 expiry = datetime.fromisoformat(expiry_str)
-                if expiry.tzinfo is None:
-                    expiry = expiry.replace(tzinfo=timezone.utc)
+                if expiry.tzinfo is not None:
+                    expiry = expiry.replace(tzinfo=None)
 
             self._credentials = Credentials(
-                token=token_data.get('token'),
-                refresh_token=token_data.get('refresh_token'),
-                token_uri=token_data.get('token_uri'),
-                client_id=token_data.get('client_id'),
-                client_secret=token_data.get('client_secret'),
-                scopes=token_data.get('scopes'),
+                token=token_data.get("token"),
+                refresh_token=token_data.get("refresh_token"),
+                token_uri=token_data.get("token_uri"),
+                client_id=token_data.get("client_id"),
+                client_secret=token_data.get("client_secret"),
+                scopes=token_data.get("scopes"),
                 expiry=expiry,
             )
             logger.debug(f"Token loaded from {self.token_storage_path}")
@@ -235,60 +228,57 @@ class OAuthManager:
             logger.error(f"Failed to load token: {e}")
 
     def revoke_token(self) -> bool:
-        """
-        Opoziva OAuth token
-
-        Returns:
-            True ako je token uspješno opozvan
-        """
         credentials = self.get_credentials()
         if not credentials:
             return False
 
         try:
             import requests
+
             revoke = requests.post(
-                'https://oauth2.googleapis.com/revoke',
-                params={'token': credentials.token},
-                headers={'content-type': 'application/x-www-form-urlencoded'}
+                "https://oauth2.googleapis.com/revoke",
+                params={"token": credentials.token},
+                headers={"content-type": "application/x-www-form-urlencoded"},
             )
 
             if revoke.status_code == 200:
-                # Obriši spremljeni token
                 if os.path.exists(self.token_storage_path):
                     os.remove(self.token_storage_path)
                 self._credentials = None
+                self._last_auth_health = {
+                    "status": "relogin_required",
+                    "token_path": self.token_storage_path,
+                    "reason": "revoked",
+                }
                 logger.info("Token successfully revoked")
                 return True
-            else:
-                logger.error(f"Failed to revoke token: {revoke.status_code}")
-                return False
+
+            logger.error(f"Failed to revoke token: {revoke.status_code}")
+            return False
         except Exception as e:
             logger.error(f"Error revoking token: {e}")
             return False
 
     def is_authenticated(self) -> bool:
-        """
-        Provjerava je li korisnik autentificiran
-
-        Returns:
-            True ako postoje važeći credentials
-        """
         return self.get_credentials() is not None
 
 
-# Singleton instance
 _oauth_manager_instance: Optional[OAuthManager] = None
 
 
 def get_oauth_manager() -> OAuthManager:
-    """
-    Dohvaća singleton instancu OAuthManager-a
-
-    Returns:
-        OAuthManager instance
-    """
     global _oauth_manager_instance
     if _oauth_manager_instance is None:
-        _oauth_manager_instance = OAuthManager()
+        try:
+            from config.auth_config import get_auth_config
+
+            oauth_cfg = get_auth_config().oauth
+            _oauth_manager_instance = OAuthManager(
+                client_id=oauth_cfg.client_id,
+                client_secret=oauth_cfg.client_secret,
+                redirect_uri=oauth_cfg.redirect_uri,
+                token_storage_path=oauth_cfg.token_storage_path,
+            )
+        except Exception:
+            _oauth_manager_instance = OAuthManager()
     return _oauth_manager_instance

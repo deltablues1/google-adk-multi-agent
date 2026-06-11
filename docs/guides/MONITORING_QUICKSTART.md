@@ -196,20 +196,20 @@ Svaki log sadrži:
 
 ## 🔗 QUICK ACCESS LINKS
 
-Za tvoj projekt (`fabled-sector-476018-n3`):
+Za tvoj projekt (`lyrical-star-497817-m3`):
 
 ### Logging
-- **Logs Explorer:** https://console.cloud.google.com/logs?project=fabled-sector-476018-n3
-- **Log Analytics:** https://console.cloud.google.com/logs/analytics?project=fabled-sector-476018-n3
+- **Logs Explorer:** https://console.cloud.google.com/logs?project=lyrical-star-497817-m3
+- **Log Analytics:** https://console.cloud.google.com/logs/analytics?project=lyrical-star-497817-m3
 
 ### Monitoring
-- **Dashboards:** https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
-- **Metrics Explorer:** https://console.cloud.google.com/monitoring/metrics-explorer?project=fabled-sector-476018-n3
-- **Alerts:** https://console.cloud.google.com/monitoring/alerting?project=fabled-sector-476018-n3
+- **Dashboards:** https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
+- **Metrics Explorer:** https://console.cloud.google.com/monitoring/metrics-explorer?project=lyrical-star-497817-m3
+- **Alerts:** https://console.cloud.google.com/monitoring/alerting?project=lyrical-star-497817-m3
 
 ### Vertex AI
-- **Dashboard:** https://console.cloud.google.com/vertex-ai?project=fabled-sector-476018-n3
-- **Generative AI:** https://console.cloud.google.com/vertex-ai/generative?project=fabled-sector-476018-n3
+- **Dashboard:** https://console.cloud.google.com/vertex-ai?project=lyrical-star-497817-m3
+- **Generative AI:** https://console.cloud.google.com/vertex-ai/generative?project=lyrical-star-497817-m3
 
 ---
 
@@ -226,7 +226,7 @@ python main.py
 
 ### Test 2: Check logs appear in Cloud Console
 1. Go to Logs Explorer (link above)
-2. Filter: `logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"`
+2. Filter: `logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"`
 3. You should see logs for your request!
 
 ### Test 3: Check session tracking
@@ -422,4 +422,4 @@ You now have:
 **Questions?** Check:
 - Cloud Logging docs: https://cloud.google.com/logging/docs
 - Cloud Monitoring docs: https://cloud.google.com/monitoring/docs
-- Your project console: https://console.cloud.google.com/?project=fabled-sector-476018-n3
+- Your project console: https://console.cloud.google.com/?project=lyrical-star-497817-m3

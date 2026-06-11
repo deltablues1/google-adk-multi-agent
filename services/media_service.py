@@ -56,9 +56,17 @@ def save_upload(file_bytes: bytes, original_filename: str, mime_type: str) -> di
 
 
 def get_file_path(file_id: str) -> Optional[str]:
-    """Find file by ID in uploads directory (matches anywhere in filename)."""
+    """Find file by ID in uploads directory.
+
+    Filenames are either '{file_id}{ext}' (uploads) or '{prefix}_{file_id}.png'
+    (generated images), so match the stem exactly — a substring match could
+    return the wrong file for short or overlapping IDs.
+    """
+    if not file_id or not file_id.isalnum():
+        return None
     for fname in os.listdir(UPLOAD_DIR):
-        if file_id in fname:
+        stem = os.path.splitext(fname)[0]
+        if stem == file_id or stem.endswith(f"_{file_id}"):
             return os.path.join(UPLOAD_DIR, fname)
     return None
 

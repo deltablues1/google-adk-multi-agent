@@ -29,7 +29,7 @@ class VisionHandler:
         self.project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
         self.location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
         # Use standard flash model (thinking model not available in all regions)
-        self.model = os.getenv("VISION_MODEL", "gemini-2.5-flash")
+        self.model = os.getenv("VISION_MODEL", "gemini-3.5-flash")
         
         try:
             self.client = Client(project=self.project_id, location=self.location)

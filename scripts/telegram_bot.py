@@ -37,10 +37,15 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
+from config.deployment_config import is_telegram_enabled
 
 
 def check_requirements():
     """Check if required dependencies are installed."""
+    if not is_telegram_enabled():
+        logger.error("Telegram interface is disabled by deployment profile")
+        sys.exit(1)
+
     try:
         import telegram
         logger.info(f"python-telegram-bot version: {telegram.__version__}")

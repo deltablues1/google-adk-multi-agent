@@ -21,7 +21,8 @@ from services.erp.repositories.base import InvoiceReference
 from web.models import (
     PaymentRequest, VendorInvoiceCreate, StockAdjustRequest,
     CustomerCreate, ProductCreate,
-    QuoteCreate, QuoteUpdate, QuoteConvertRequest,
+    QuoteCreate, QuoteUpdate, QuoteConvertRequest, QuoteCreateInvoiceRequest,
+    OutboundB2BCreate, OutboundB2BSendRequest, OutboundB2BRejectRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,15 +78,29 @@ async def get_erp_ctx(request: Request) -> ERPRequestContext:
     In tests, override via ``app.dependency_overrides[get_erp_ctx]``.
     """
     # --- Dev fallback (explicit flag only) ---
-    if _DEV_MODE:
+    # Hardened: never engage the owner fallback in production, and require an
+    # explicitly configured ERP_COMPANY_ID (no silent "default-company"). This
+    # prevents an accidental ERP_DEV_MODE in prod from granting owner access.
+    _env = os.environ.get("ENVIRONMENT", "").lower()
+    _is_prod = _env in ("prod", "production")
+    if _DEV_MODE and not _is_prod:
         try:
             user_id, company_id = _extract_identity(request)
         except HTTPException:
-            # No headers → dev owner fallback
-            logger.debug("ERP_DEV_MODE: no identity headers, using owner fallback")
+            dev_company = os.environ.get("ERP_COMPANY_ID", "").strip()
+            if not dev_company:
+                raise HTTPException(
+                    status_code=401,
+                    detail="ERP_DEV_MODE is on but ERP_COMPANY_ID is not set; "
+                           "send X-ERP-User-Id/X-ERP-Company-Id headers.",
+                )
+            logger.warning(
+                "ERP_DEV_MODE: no identity headers — using owner fallback for "
+                "company '%s' (dev only)", dev_company,
+            )
             return ERPRequestContext(
                 user_id="dev-user",
-                company_id=os.environ.get("ERP_COMPANY_ID", "default-company"),
+                company_id=dev_company,
                 role="owner",
                 grants=["*"],
                 denies=[],
@@ -127,8 +142,12 @@ async def get_erp_ctx(request: Request) -> ERPRequestContext:
 async def erp_dev_memberships():
     """List all active erp_users docs for the dev identity picker.
 
-    NOT a production endpoint — disable or protect when real auth is in place.
+    Available only with ERP_DEV_MODE=1 outside production — returns 404 otherwise,
+    so user/email data is never exposed on a real deployment.
     """
+    _env = os.environ.get("ENVIRONMENT", "").lower()
+    if not _DEV_MODE or _env in ("prod", "production"):
+        raise HTTPException(status_code=404, detail="Not found")
     from services.erp.base_erp_service import get_firestore_db
     from google.cloud.firestore_v1.base_query import FieldFilter
     db = get_firestore_db()
@@ -342,6 +361,60 @@ async def erp_list_vendor_invoices(
     return [{k: v for k, v in d.items() if k not in _STRIP} for d in docs]
 
 
+@router.get("/vendor-invoices/overdue-fiscalizations")
+async def erp_vendor_overdue_fisc_a(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Get vendor invoices that exceeded 5-business-day fiscalization deadline."""
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    return await get_vendor_invoice_service().get_overdue_fiscalizations(ctx)
+
+
+@router.get("/vendor-invoices/pending-archive")
+async def erp_vendor_pending_archive(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """List vendor invoices with Drive files that are not yet archived (not_archived or failed)."""
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    return await get_vendor_invoice_service().list_pending_archive(ctx)
+
+
+@router.post("/vendor-invoices/retry-archive")
+async def erp_vendor_retry_archive(
+    max_retries: int = 3, ctx: ERPRequestContext = Depends(get_erp_ctx)
+):
+    """Re-attempt Drive archiving for all pending/failed invoices. Returns summary."""
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    return await get_vendor_invoice_service().retry_pending_archives(ctx, max_retries=max_retries)
+
+
+@router.get("/vendor-invoices/rejected")
+async def erp_vendor_rejected(limit: int = 100, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """List rejected inbound vendor invoices."""
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    return await get_vendor_invoice_service().list_rejected_invoices(ctx, limit=_clamp_limit(limit))
+
+
+@router.get("/vendor-invoices/inbound-compliance-report")
+async def erp_vendor_inbound_report_a(
+    year: int = None, month: int = None,
+    format: str = "json",
+    save_to_drive: bool = False,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """Monthly inbound compliance summary. format=json (default) or csv. save_to_drive=true uploads to Reports_Output/ERP/."""
+    from fastapi.responses import PlainTextResponse
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    svc = get_vendor_invoice_service()
+    report = await svc.get_inbound_compliance_report(
+        year, month, ctx, save_to_drive=save_to_drive
+    )
+    if format == "csv":
+        csv_text, filename = svc.compliance_report_to_csv(report)
+        return PlainTextResponse(
+            content=csv_text,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    return report
+
+
 @router.get("/vendor-invoices/{vendor_invoice_id}")
 async def erp_get_vendor_invoice(vendor_invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
     from services.erp.vendor_invoice_service import get_vendor_invoice_service
@@ -352,12 +425,13 @@ async def erp_get_vendor_invoice(vendor_invoice_id: str, ctx: ERPRequestContext 
 async def erp_create_vendor_invoice(req: VendorInvoiceCreate, ctx: ERPRequestContext = Depends(get_erp_ctx)):
     from services.erp.vendor_invoice_service import get_vendor_invoice_service
     data = req.model_dump()
-    if data.get("issue_date"):
-        data["issue_date"] = data["issue_date"].isoformat()
-    if data.get("due_date"):
-        data["due_date"] = data["due_date"].isoformat()
+    for date_field in ("issue_date", "due_date", "received_date"):
+        if data.get(date_field):
+            data[date_field] = data[date_field].isoformat()
     data["total_gross"] = float(data["total_gross"])
     data["vat_amount"] = float(data["vat_amount"])
+    if data.get("subtotal_net") is not None:
+        data["subtotal_net"] = float(data["subtotal_net"])
     return await get_vendor_invoice_service().create_vendor_invoice(data, ctx)
 
 
@@ -387,6 +461,44 @@ async def erp_approve_vendor_invoice(vendor_invoice_id: str, ctx: ERPRequestCont
     return await get_vendor_invoice_service().approve_vendor_invoice(vendor_invoice_id, ctx)
 
 
+@router.post("/vendor-invoices/{vendor_invoice_id}/fisc-report")
+async def erp_vendor_fisc_report(
+    vendor_invoice_id: str,
+    req: dict = None,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """Mark vendor invoice as fiscally reported to Porezna Uprava.
+
+    Optional body: {"fisc_confirmation_ref": "CIS-2026-XXXXXXX"}
+    """
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    fisc_ref = (req or {}).get("fisc_confirmation_ref", "")
+    return await get_vendor_invoice_service().mark_fisc_reported(vendor_invoice_id, ctx, fisc_ref)
+
+
+@router.post("/vendor-invoices/{vendor_invoice_id}/accept")
+async def erp_vendor_accept(vendor_invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Accept a fiscally reported vendor invoice."""
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    return await get_vendor_invoice_service().accept_vendor_invoice(vendor_invoice_id, ctx)
+
+
+@router.post("/vendor-invoices/{vendor_invoice_id}/reject")
+async def erp_vendor_reject(vendor_invoice_id: str, req: dict, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Reject a vendor invoice with mandatory reason."""
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    return await get_vendor_invoice_service().reject_vendor_invoice(
+        vendor_invoice_id, req.get("rejection_reason", ""), ctx
+    )
+
+
+@router.post("/vendor-invoices/{vendor_invoice_id}/archive-original")
+async def erp_vendor_archive_original(vendor_invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Move original Drive document into Invoices_Archive/IN/YYYY/MM/ and update archive metadata."""
+    from services.erp.vendor_invoice_service import get_vendor_invoice_service
+    return await get_vendor_invoice_service().archive_original_document(vendor_invoice_id, ctx)
+
+
 @router.post("/vendor-invoices/{vendor_invoice_id}/payment")
 async def erp_vendor_record_payment(vendor_invoice_id: str, req: PaymentRequest, ctx: ERPRequestContext = Depends(get_erp_ctx)):
     from services.erp.vendor_invoice_service import get_vendor_invoice_service
@@ -406,6 +518,241 @@ async def erp_vendor_record_payment(vendor_invoice_id: str, req: PaymentRequest,
 async def erp_payables(ctx: ERPRequestContext = Depends(get_erp_ctx)):
     from services.erp.vendor_invoice_service import get_vendor_invoice_service
     return await get_vendor_invoice_service().get_open_payables(ctx)
+
+
+# ── Outbound B2B eRačun ──────────────────────────────────────────────────────
+#
+# IMPORTANT: Static sub-paths MUST be declared before /{invoice_id}.
+#
+# Lifecycle:
+#   POST   /outbound-b2b                       — create (draft)
+#   GET    /outbound-b2b                       — list
+#   GET    /outbound-b2b/pending-ack           — awaiting buyer ack
+#   GET    /outbound-b2b/send-failures         — issued with failed send attempts
+#   POST   /outbound-b2b/retry-send-failures   — scheduler retry
+#   GET    /outbound-b2b/capabilities          — adapter capability map (2D)
+#   GET    /outbound-b2b/pending-archive       — issued/sent/etc not yet archived (2C)
+#   POST   /outbound-b2b/retry-archive         — scheduler archive retry (2C)
+#   GET    /outbound-b2b/{id}                  — get single
+#   POST   /outbound-b2b/{id}/approve
+#   POST   /outbound-b2b/{id}/issue            — UBL generated
+#   POST   /outbound-b2b/{id}/send             — real transport dispatch
+#   POST   /outbound-b2b/{id}/resend           — retry failed/re-send
+#   POST   /outbound-b2b/{id}/sync-status      — external status update
+#   POST   /outbound-b2b/{id}/delivered
+#   POST   /outbound-b2b/{id}/accept
+#   POST   /outbound-b2b/{id}/reject
+#   POST   /outbound-b2b/{id}/cancel
+#   POST   /outbound-b2b/{id}/archive
+
+
+# ── Static collection-level routes (BEFORE /{invoice_id}) ────────────────────
+
+@router.get("/outbound-b2b/pending-ack")
+async def erp_outbound_b2b_pending_ack(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """List B2B invoices in eracun_sent or delivered status awaiting buyer acknowledgement."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().list_pending_ack(ctx)
+
+
+@router.get("/outbound-b2b/send-failures")
+async def erp_outbound_b2b_send_failures(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """List issued B2B invoices where dispatch has failed at least once."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().list_send_failures(ctx)
+
+
+@router.post("/outbound-b2b/retry-send-failures")
+async def erp_outbound_b2b_retry_send(
+    max_attempts: int = 5, ctx: ERPRequestContext = Depends(get_erp_ctx)
+):
+    """Re-attempt dispatch for all send-failed invoices. Returns {attempted, succeeded, failed, skipped}."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().retry_send_failures(ctx, max_attempts=max_attempts)
+
+
+# ── 2D: Capability discovery route (BEFORE /{invoice_id}) ────────────────────
+
+@router.get("/outbound-b2b/capabilities")
+async def erp_outbound_b2b_capabilities():
+    """Return the delivery adapter capability map (no auth required — static config)."""
+    from services.erp.outbound_capabilities import ADAPTER_CAPABILITIES
+    return ADAPTER_CAPABILITIES
+
+
+# ── 2C: Archive collection-level routes (BEFORE /{invoice_id}) ────────────────
+
+@router.get("/outbound-b2b/pending-archive")
+async def erp_outbound_b2b_pending_archive(ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """
+    List issued/eracun_sent/delivered/accepted/rejected invoices with ubl_xml
+    that have not yet been archived to Drive.
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().list_pending_archive(ctx)
+
+
+@router.post("/outbound-b2b/retry-archive")
+async def erp_outbound_b2b_retry_archive(
+    max_attempts: int = 3, ctx: ERPRequestContext = Depends(get_erp_ctx)
+):
+    """Retry Drive archiving for all pending-archive invoices. Returns {attempted, succeeded, failed, skipped}."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().retry_archive(ctx, max_attempts=max_attempts)
+
+
+@router.post("/outbound-b2b")
+async def erp_create_outbound_b2b(req: OutboundB2BCreate, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Create a new outgoing B2B invoice (eRačun) in draft status."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    data = req.model_dump()
+    # Serialize dates to ISO strings for Firestore
+    for field in ("issue_date", "due_date"):
+        if data.get(field):
+            data[field] = data[field].isoformat()
+    # Serialize items
+    data["items"] = [
+        {**item, "unit_price": float(item["unit_price"]), "quantity": float(item["quantity"])}
+        for item in data.get("items", [])
+    ]
+    return await get_outbound_b2b_service().create(data, ctx)
+
+
+@router.get("/outbound-b2b")
+async def erp_list_outbound_b2b(
+    document_status: str = "", customer_id: str = "",
+    date_from: str = "", date_to: str = "",
+    limit: int = 50, offset: int = 0,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """List outgoing B2B invoices with optional filters."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    filters = {}
+    if document_status:
+        filters["document_status"] = document_status
+    if customer_id:
+        filters["customer_id"] = customer_id
+    if date_from:
+        filters["date_from"] = date_from
+    if date_to:
+        filters["date_to"] = date_to
+    return await get_outbound_b2b_service().list(ctx, filters, _clamp_limit(limit), offset)
+
+
+@router.get("/outbound-b2b/{invoice_id}")
+async def erp_get_outbound_b2b(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Fetch a single outgoing B2B invoice by ID."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().get(invoice_id, ctx)
+
+
+@router.post("/outbound-b2b/{invoice_id}/approve")
+async def erp_approve_outbound_b2b(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Approve a draft B2B invoice (draft → approved)."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().approve(invoice_id, ctx)
+
+
+@router.post("/outbound-b2b/{invoice_id}/issue")
+async def erp_issue_outbound_b2b(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """
+    Issue a B2B invoice (approved → issued).
+    Generates UBL 2.1 XML and stores it on the document.
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().issue(invoice_id, ctx)
+
+
+@router.post("/outbound-b2b/{invoice_id}/send")
+async def erp_send_outbound_b2b(
+    invoice_id: str, req: OutboundB2BSendRequest,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Send an issued B2B invoice to the buyer (issued → eracun_sent).
+    Delivery methods: email | peppol | manual
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().send(
+        invoice_id, ctx,
+        delivery_method=req.delivery_method,
+        delivery_target=req.delivery_target,
+        delivery_ref=req.delivery_ref,
+    )
+
+
+@router.post("/outbound-b2b/{invoice_id}/delivered")
+async def erp_delivered_outbound_b2b(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Confirm delivery to buyer (eracun_sent → delivered)."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().mark_delivered(invoice_id, ctx)
+
+
+@router.post("/outbound-b2b/{invoice_id}/accept")
+async def erp_accept_outbound_b2b(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Buyer confirmed receipt (delivered → accepted)."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().accept(invoice_id, ctx)
+
+
+@router.post("/outbound-b2b/{invoice_id}/reject")
+async def erp_reject_outbound_b2b(
+    invoice_id: str, req: OutboundB2BRejectRequest,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """Buyer rejected the invoice. Mandatory rejection_reason required."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().reject(invoice_id, ctx, req.rejection_reason)
+
+
+@router.post("/outbound-b2b/{invoice_id}/cancel")
+async def erp_cancel_outbound_b2b(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """Cancel a B2B invoice (allowed from draft/approved/issued/eracun_sent)."""
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().cancel(invoice_id, ctx)
+
+
+@router.post("/outbound-b2b/{invoice_id}/archive")
+async def erp_archive_outbound_b2b(invoice_id: str, ctx: ERPRequestContext = Depends(get_erp_ctx)):
+    """
+    Upload UBL XML to Drive and move it into Invoices_Archive/OUT/b2b/YYYY/MM/.
+    Requires UBL to have been generated (document_status >= issued).
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().archive_outbound(invoice_id, ctx)
+
+
+@router.post("/outbound-b2b/{invoice_id}/resend")
+async def erp_resend_outbound_b2b(
+    invoice_id: str, req: OutboundB2BSendRequest = None,
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Retry dispatch for an issued invoice (send failed) or re-send eracun_sent.
+    If delivery_method/target are omitted in body, uses values already on the doc.
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    method = (req.delivery_method if req else None) or None
+    target = (req.delivery_target if req else None) or None
+    return await get_outbound_b2b_service().resend(invoice_id, ctx, method, target)
+
+
+@router.post("/outbound-b2b/{invoice_id}/sync-status")
+async def erp_sync_status_outbound_b2b(
+    invoice_id: str, req: dict, ctx: ERPRequestContext = Depends(get_erp_ctx)
+):
+    """
+    Record an external delivery/acknowledgement status update from an AP or operator.
+
+    Body: {"external_status": "delivered|accepted|pending|failed", "external_ref": "..."}
+    Auto-transitions: delivered→mark_delivered(), accepted→accept() if SM allows.
+    """
+    from services.erp.outbound_b2b_service import get_outbound_b2b_service
+    return await get_outbound_b2b_service().sync_external_status(
+        invoice_id, ctx,
+        external_status=req.get("external_status", ""),
+        external_ref=req.get("external_ref", ""),
+    )
 
 
 # ── Payments ─────────────────────────────────────────────────────────────────
@@ -598,6 +945,33 @@ async def erp_cancel_quote(quote_id: str, ctx: ERPRequestContext = Depends(get_e
 async def erp_convert_quote(quote_id: str, req: QuoteConvertRequest, ctx: ERPRequestContext = Depends(get_erp_ctx)):
     from services.erp.quote_service import get_quote_service
     return await get_quote_service().convert_to_invoice(quote_id, req.invoice_type, ctx)
+
+
+@router.post("/quotes/{quote_id}/create-invoice")
+async def erp_create_invoice_from_quote(
+    quote_id: str,
+    req: QuoteCreateInvoiceRequest = QuoteCreateInvoiceRequest(),
+    ctx: ERPRequestContext = Depends(get_erp_ctx),
+):
+    """
+    Create a fully-structured outbound B2B invoice from an accepted quote (Faza 2E).
+
+    The quote must be in 'accepted' status.
+    Idempotent: a second call returns the already-created invoice without creating a duplicate.
+    Returns 201 for new invoices, 200 for already-existing ones.
+
+    Body fields are all optional overrides on top of quote data:
+      seller_name, seller_oib, seller_iban, seller_address, seller_city, due_date, notes
+    """
+    from fastapi.responses import JSONResponse
+    from services.erp.quote_service import get_quote_service
+    overrides = req.model_dump(exclude_none=True)
+    if "due_date" in overrides and overrides["due_date"]:
+        overrides["due_date"] = str(overrides["due_date"])
+    invoice = await get_quote_service().create_outbound_b2b_from_quote(quote_id, ctx, overrides)
+    already_exists = invoice.pop("_already_exists", False)
+    status_code = 200 if already_exists else 201
+    return JSONResponse(content=invoice, status_code=status_code)
 
 
 @router.get("/quotes/{quote_id}/print")

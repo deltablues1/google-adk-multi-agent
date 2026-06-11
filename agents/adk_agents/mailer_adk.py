@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_mailer_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     user_timezone: str = "Europe/Zagreb"
 ):
     """

@@ -52,7 +52,9 @@ def create_adk_agent(
     tools: Optional[List] = None,
     sub_agents: Optional[List] = None,
     config: Optional[Dict[str, Any]] = None,
-    load_instruction_from_file: bool = True
+    load_instruction_from_file: bool = True,
+    after_tool_callback: Optional[Any] = None,
+    before_tool_callback: Optional[Any] = None
 ) -> LlmAgent:
     """
     Factory for creating ADK LlmAgent instances.
@@ -61,7 +63,7 @@ def create_adk_agent(
 
     Args:
         name: Unique agent name (e.g., "mailer", "researcher")
-        model: Gemini model name (e.g., "gemini-2.5-flash", "gemini-2.5-pro")
+        model: Gemini model name (e.g., "gemini-3.5-flash", "gemini-2.5-pro")
         instruction: System instruction text. If None and load_instruction_from_file=True,
                     will try to load from agents/{name}/instructions.md
         description: Short description for AutoFlow routing (used when agent is a sub-agent)
@@ -78,7 +80,7 @@ def create_adk_agent(
         >>> from tools.adk_tools.gmail_adk_tools import get_gmail_adk_tools
         >>> mailer = create_adk_agent(
         ...     name="mailer",
-        ...     model="gemini-2.5-flash",
+        ...     model="gemini-3.5-flash",
         ...     description="Gmail specialist for email operations",
         ...     tools=get_gmail_adk_tools()
         ... )
@@ -110,7 +112,7 @@ def create_adk_agent(
     )
 
     # Create LlmAgent
-    agent = LlmAgent(
+    agent_kwargs = dict(
         name=name,
         model=model,
         instruction=instruction,
@@ -118,6 +120,13 @@ def create_adk_agent(
         tools=tools or [],
         sub_agents=sub_agents or []
     )
+    # Optional ADK guardrail callbacks (validate/transform tool results).
+    if after_tool_callback is not None:
+        agent_kwargs["after_tool_callback"] = after_tool_callback
+    if before_tool_callback is not None:
+        agent_kwargs["before_tool_callback"] = before_tool_callback
+
+    agent = LlmAgent(**agent_kwargs)
 
     # Apply generate_content_config from config dict
     if config:

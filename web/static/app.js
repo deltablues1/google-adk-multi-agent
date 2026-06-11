@@ -55,7 +55,9 @@ function dashboard() {
         // System state
         agents: [],
         systemStatus: {},
+        costs: {},
         traceEvents: [],
+        showCostTab: false,
 
         // Voice state
         voiceEnabled: false,
@@ -64,6 +66,14 @@ function dashboard() {
         ttsSupported: false,
         _recognition: null,
         _voiceAutoSend: false,
+
+        // Gemini Live Voice state
+        liveConnected: false,
+        liveTranscript: '',
+        _liveWs: null,
+        _liveAudioCtx: null,
+        _liveProcessor: null,
+        _liveStream: null,
 
         // Polling
         _statusInterval: null,
@@ -155,6 +165,10 @@ function dashboard() {
             } catch (e) {
                 console.error('Failed to load status:', e);
             }
+            try {
+                const res = await apiFetch('/api/costs');
+                if (res.ok) this.costs = await res.json();
+            } catch (e) { /* non-critical */ }
         },
 
         async loadHistory(sessionId) {
@@ -637,37 +651,32 @@ function dashboard() {
             this.voiceSupported = true;
             const recognition = new SpeechRecognition();
             recognition.lang = 'hr-HR';
-            recognition.continuous = false;
+            recognition.continuous = true;
             recognition.interimResults = true;
             recognition.maxAlternatives = 1;
 
+            // Accumulates all finalized segments across the entire session
+            let _finalAccumulated = '';
+
             recognition.onresult = (event) => {
-                let finalTranscript = '';
+                // Rebuild from all results (not just delta) to avoid losing earlier segments
+                let fullFinal = '';
                 let interimTranscript = '';
 
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    const transcript = event.results[i][0].transcript;
+                for (let i = 0; i < event.results.length; i++) {
                     if (event.results[i].isFinal) {
-                        finalTranscript += transcript;
+                        fullFinal += event.results[i][0].transcript + ' ';
                     } else {
-                        interimTranscript += transcript;
+                        interimTranscript += event.results[i][0].transcript;
                     }
                 }
 
-                if (finalTranscript) {
-                    this.inputMessage = finalTranscript;
-                    this._voiceAutoSend = true;
-                } else if (interimTranscript) {
-                    this.inputMessage = interimTranscript;
-                }
+                // Show full accumulated text + current interim
+                this.inputMessage = (fullFinal + interimTranscript).trim();
             };
 
             recognition.onend = () => {
                 this.voiceListening = false;
-                if (this._voiceAutoSend && this.inputMessage.trim()) {
-                    this._voiceAutoSend = false;
-                    this.sendMessage();
-                }
             };
 
             recognition.onerror = (event) => {
@@ -689,8 +698,10 @@ function dashboard() {
             if (this.voiceListening) {
                 this._recognition.stop();
                 this.voiceListening = false;
+                if (this.inputMessage.trim()) {
+                    this.sendMessage();
+                }
             } else {
-                this._voiceAutoSend = false;
                 this.inputMessage = '';
                 try {
                     this._recognition.start();
@@ -701,13 +712,13 @@ function dashboard() {
             }
         },
 
-        speakText(text) {
-            if (!this.ttsSupported || !this.voiceEnabled) return;
+        async speakText(text) {
+            if (!this.voiceEnabled) return;
 
             // Stop any current speech
-            speechSynthesis.cancel();
+            this.stopSpeaking();
 
-            // Clean text for TTS
+            // Clean text
             let clean = text;
             clean = clean.replace(/\[Error:.*?\]/g, '');
             clean = clean.replace(/\[IMAGE:[^\]]*\]/g, '');
@@ -725,51 +736,168 @@ function dashboard() {
             clean = clean.replace(/\n{2,}/g, '. ');
             clean = clean.replace(/\n/g, ' ');
             clean = clean.trim();
-
             if (!clean) return;
 
-            // Split long text into chunks (speechSynthesis has ~200 char limit in some browsers)
-            const chunks = [];
-            const sentences = clean.split(/(?<=[.!?])\s+/);
-            let current = '';
-
-            for (const sentence of sentences) {
-                if ((current + ' ' + sentence).length > 180) {
-                    if (current) chunks.push(current.trim());
-                    current = sentence;
-                } else {
-                    current += (current ? ' ' : '') + sentence;
+            // Try Gemini TTS first (natural voice)
+            try {
+                const resp = await fetch('/api/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: clean })
+                });
+                if (resp.ok) {
+                    const pcmData = await resp.arrayBuffer();
+                    const ctx = new AudioContext({ sampleRate: 24000 });
+                    this._ttsCtx = ctx;
+                    const int16 = new Int16Array(pcmData);
+                    const float32 = new Float32Array(int16.length);
+                    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+                    const buf = ctx.createBuffer(1, float32.length, 24000);
+                    buf.copyToChannel(float32, 0);
+                    const src = ctx.createBufferSource();
+                    src.buffer = buf;
+                    src.connect(ctx.destination);
+                    src.start();
+                    return;
                 }
+            } catch (e) {
+                console.warn('Gemini TTS failed, falling back to browser TTS:', e);
             }
-            if (current) chunks.push(current.trim());
 
-            // Get Croatian voice
+            // Fallback: browser speechSynthesis
+            if (!this.ttsSupported) return;
             const voices = speechSynthesis.getVoices();
             const hrVoice = voices.find(v => v.lang.startsWith('hr'));
-
-            // Speak each chunk sequentially
-            const speakChunk = (index) => {
-                if (index >= chunks.length) return;
-
-                const utterance = new SpeechSynthesisUtterance(chunks[index]);
-                utterance.lang = 'hr-HR';
-                utterance.rate = 1.0;
-                utterance.pitch = 1.0;
-                if (hrVoice) utterance.voice = hrVoice;
-
-                utterance.onend = () => speakChunk(index + 1);
-                utterance.onerror = () => speakChunk(index + 1);
-
-                speechSynthesis.speak(utterance);
+            const chunks = clean.match(/.{1,180}(?:\s|$)/g) || [clean];
+            const speakChunk = (i) => {
+                if (i >= chunks.length) return;
+                const utt = new SpeechSynthesisUtterance(chunks[i]);
+                utt.lang = 'hr-HR';
+                if (hrVoice) utt.voice = hrVoice;
+                utt.onend = () => speakChunk(i + 1);
+                utt.onerror = () => speakChunk(i + 1);
+                speechSynthesis.speak(utt);
             };
-
             speakChunk(0);
         },
 
         stopSpeaking() {
-            if (this.ttsSupported) {
-                speechSynthesis.cancel();
+            if (this._ttsCtx) {
+                try { this._ttsCtx.close(); } catch(e) {}
+                this._ttsCtx = null;
             }
+            if (this.ttsSupported) speechSynthesis.cancel();
+        },
+
+        async toggleLiveVoice() {
+            // If already connected — disconnect and clean up
+            if (this._liveWs) {
+                this._liveWs.close();
+                this._liveWs = null;
+                if (this._liveProcessor) { this._liveProcessor.disconnect(); this._liveProcessor = null; }
+                if (this._liveAudioCtx) { this._liveAudioCtx.close(); this._liveAudioCtx = null; }
+                if (this._liveStream) { this._liveStream.getTracks().forEach(t => t.stop()); this._liveStream = null; }
+                this.liveConnected = false;
+                this.liveTranscript = '';
+                return;
+            }
+
+            // Connect to backend WebSocket
+            const token = localStorage.getItem('api_token') || '';
+            const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${proto}//${location.host}/api/live${token ? '?token=' + encodeURIComponent(token) : ''}`;
+            const ws = new WebSocket(wsUrl);
+            ws.binaryType = 'arraybuffer';
+            this._liveWs = ws;
+
+            // Playback: accumulate PCM16 into a rolling buffer, flush every ~200ms
+            const playbackCtx = new AudioContext({ sampleRate: 24000 });
+            let nextStartTime = 0;
+            let pendingSamples = [];
+
+            const flushAudio = () => {
+                if (pendingSamples.length === 0) return;
+                const combined = new Float32Array(pendingSamples.length);
+                combined.set(pendingSamples);
+                pendingSamples = [];
+                const buf = playbackCtx.createBuffer(1, combined.length, 24000);
+                buf.copyToChannel(combined, 0);
+                const src = playbackCtx.createBufferSource();
+                src.buffer = buf;
+                src.connect(playbackCtx.destination);
+                const startAt = Math.max(playbackCtx.currentTime + 0.05, nextStartTime);
+                src.start(startAt);
+                nextStartTime = startAt + buf.duration;
+            };
+
+            // Flush accumulated audio every 150ms
+            const flushInterval = setInterval(flushAudio, 150);
+
+            const scheduleChunk = (pcmArrayBuffer) => {
+                const int16 = new Int16Array(pcmArrayBuffer);
+                for (let i = 0; i < int16.length; i++) {
+                    pendingSamples.push(int16[i] / 32768);
+                }
+                // If we have > 0.5s of audio buffered, flush immediately
+                if (pendingSamples.length > 12000) flushAudio();
+            };
+
+            ws.onmessage = (evt) => {
+                if (typeof evt.data === 'string') {
+                    try {
+                        const msg = JSON.parse(evt.data);
+                        if (msg.type === 'transcript') this.liveTranscript = msg.text;
+                        if (msg.type === 'error') console.error('Live error:', msg.message);
+                    } catch (e) {}
+                } else {
+                    // PCM16 audio from Gemini — schedule immediately
+                    scheduleChunk(evt.data);
+                }
+            };
+
+            ws.onopen = async () => {
+                this.liveConnected = true;
+                try {
+                    // Capture mic at 16kHz mono
+                    this._liveStream = await navigator.mediaDevices.getUserMedia({
+                        audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+                    });
+                    this._liveAudioCtx = new AudioContext({ sampleRate: 16000 });
+                    const source = this._liveAudioCtx.createMediaStreamSource(this._liveStream);
+                    const processor = this._liveAudioCtx.createScriptProcessor(8192, 1, 1);
+                    processor.onaudioprocess = (e) => {
+                        if (ws.readyState !== WebSocket.OPEN) return;
+                        const float32 = e.inputBuffer.getChannelData(0);
+                        const int16 = new Int16Array(float32.length);
+                        for (let i = 0; i < float32.length; i++) {
+                            int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+                        }
+                        ws.send(int16.buffer);
+                    };
+                    source.connect(processor);
+                    processor.connect(this._liveAudioCtx.destination);
+                    this._liveProcessor = processor;
+                } catch (err) {
+                    console.error('Live mic error:', err);
+                    alert('Ne mogu pristupiti mikrofonu: ' + err.message);
+                    ws.close();
+                }
+            };
+
+            ws.onclose = (evt) => {
+                clearInterval(flushInterval);
+                flushAudio(); // play remaining buffered audio
+                this.liveConnected = false;
+                this._liveWs = null;
+                if (evt.code === 4001) alert('Live Voice: greška autentikacije.');
+                if (evt.code === 4002) alert('Live Voice nije dostupan — GEMINI_API_KEY nije postavljen na serveru.');
+            };
+
+            ws.onerror = (e) => {
+                console.error('Live WS error:', e);
+                this.liveConnected = false;
+                alert('Live Voice: ne mogu se spojiti na server. Provjeri konzolu (F12) za detalje.');
+            };
         },
 
         scrollToBottom() {

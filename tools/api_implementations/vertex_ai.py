@@ -2,18 +2,15 @@
 Vertex AI Tool Implementation
 
 Implements tools for generating visual assets using Google's Vertex AI models:
-- Imagen 3 for images
-- Google Veo for videos
+- Imagen 4 for images (via google-genai SDK)
+- Google Veo for videos (via google-genai SDK)
 """
 
 import os
 import logging
 import time
 from typing import Dict, Any, Optional, List
-from google.cloud import aiplatform
 from google.cloud import storage
-import vertexai
-from vertexai.preview.vision_models import ImageGenerationModel
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +78,13 @@ def generate_visual_asset(
 ) -> Dict[str, Any]:
     """
     Generates an image or video using Vertex AI.
-    
+
     Args:
         credentials: OAuth credentials (passed automatically)
         prompt: Description of the asset to generate
         asset_type: 'IMAGE' or 'VIDEO'
         aspect_ratio: Aspect ratio (e.g., '1:1', '16:9')
-        
+
     Returns:
         Dictionary with status and asset URI
     """
@@ -95,36 +92,43 @@ def generate_visual_asset(
         return {"error": "GOOGLE_CLOUD_PROJECT not set"}
 
     try:
-        vertexai.init(project=PROJECT_ID, location=LOCATION)
-        
         timestamp = int(time.time())
-        
+
+        # Cost tracking
+        try:
+            from web.app import _track_imagen, _track_veo
+            _cost_hooks = {"imagen": _track_imagen, "veo": _track_veo}
+        except Exception:
+            _cost_hooks = {}
+
         if asset_type.upper() == 'IMAGE':
             logger.info(f"Generating image with prompt: {prompt}")
+            if "imagen" in _cost_hooks:
+                _cost_hooks["imagen"]()
             
-            # Use Imagen 3
-            model = ImageGenerationModel.from_pretrained("imagen-3.0-generate-002")
-            
-            images = model.generate_images(
-                prompt=prompt,
-                number_of_images=1,
-                aspect_ratio=aspect_ratio,
-                # safety_filter_level="block_some",
-                # person_generation="allow_adult"
-            )
-            
-            if not images:
-                return {"error": "No images generated"}
-                
-            image = images[0]
-            filename = f"image_{timestamp}.png"
-            
-            # Save image locally first to get bytes
-            local_path = f"temp_{filename}"
-            image.save(location=local_path)
+            # Imagen 4 (GA) via the google-genai SDK. The classic
+            # vertexai.preview.vision_models SDK is deprecated (removal
+            # ~2026-06-24), so we use the go-forward genai client here.
+            # Imagen uses a regional endpoint (LOCATION), not global.
+            from google.genai import Client as GenaiClient
+            from google.genai.types import GenerateImagesConfig
 
-            with open(local_path, "rb") as f:
-                image_data = f.read()
+            img_client = GenaiClient(vertexai=True, project=PROJECT_ID, location=LOCATION)
+            response = img_client.models.generate_images(
+                model="imagen-4.0-generate-001",
+                prompt=prompt,
+                config=GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio=aspect_ratio,
+                ),
+            )
+
+            generated = getattr(response, "generated_images", None) or []
+            if not generated:
+                return {"error": "No images generated"}
+
+            image_data = generated[0].image.image_bytes
+            filename = f"image_{timestamp}.png"
 
             # Save to GCS (best-effort, may fail on permissions)
             gcs_result = {"gs_uri": "", "public_url": ""}
@@ -142,10 +146,6 @@ def generate_visual_asset(
                 logger.info(f"Image saved locally: {local_url}")
             except Exception as local_err:
                 logger.warning(f"Local save failed: {local_err}")
-
-            # Clean up temp file
-            if os.path.exists(local_path):
-                os.remove(local_path)
 
             return {
                 "status": "SUCCESS",
@@ -189,6 +189,8 @@ def generate_visual_asset(
             for model_id in VEO_MODELS:
                 try:
                     logger.info(f"Generating video with {model_id}: {prompt[:80]}...")
+                    if "veo" in _cost_hooks:
+                        _cost_hooks["veo"]()
 
                     operation = veo_client.models.generate_videos(
                         model=model_id,

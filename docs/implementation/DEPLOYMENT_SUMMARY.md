@@ -41,12 +41,12 @@
 
 ### Step 1: Otvori Cloud Logging
 **Direct link:**
-https://console.cloud.google.com/logs/query?project=fabled-sector-476018-n3
+https://console.cloud.google.com/logs/query?project=lyrical-star-497817-m3
 
 ### Step 2: Postavi filter
 U "Query" polju, kopiraj:
 ```
-logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
 timestamp >= "2025-11-28T18:50:00Z"
 ```
 
@@ -81,7 +81,7 @@ jsonPayload.agent_name="researcher"
 Dashboard API nije dostupan automatski, ali možeš ručno kreirati:
 
 ### Opcija A: Manual Creation (5 min)
-1. **Otvori:** https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
+1. **Otvori:** https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
 2. **Klikni:** "Create Dashboard"
 3. **Dodaj widgets:**
    - Line Chart: Agent Success Rate
@@ -91,7 +91,7 @@ Dashboard API nije dostupan automatski, ali možeš ručno kreirati:
    - Line Chart: Vertex AI Calls
 
 ### Opcija B: JSON Import
-1. **Otvori:** https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
+1. **Otvori:** https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
 2. **Klikni:** "Create Dashboard" → "JSON" tab
 3. **Kopiraj** sadržaj iz `dashboards/adk_monitoring_dashboard.json`
 4. **Paste** i klikni "Save"
@@ -103,12 +103,12 @@ Dashboard API nije dostupan automatski, ali možeš ručno kreirati:
 Alerti se moraju kreirati ručno jer filter syntax nije podržan za log-based alerts preko API-ja.
 
 ### Alert 1: High Error Rate
-1. **Go to:** https://console.cloud.google.com/monitoring/alerting/policies/create?project=fabled-sector-476018-n3
+1. **Go to:** https://console.cloud.google.com/monitoring/alerting/policies/create?project=lyrical-star-497817-m3
 2. **Select:** "Log-based metric" → "Create log-based metric"
 3. **Filter:**
    ```
    resource.type="global"
-   logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+   logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
    jsonPayload.event_type="agent_request_error"
    ```
 4. **Metric Name:** `adk_agent_errors`
@@ -120,7 +120,7 @@ Alerti se moraju kreirati ručno jer filter syntax nije podržan za log-based al
 2. **Filter:**
    ```
    resource.type="global"
-   logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+   logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
    jsonPayload.event_type="agent_request_success"
    ```
 3. **Extract field:** `jsonPayload.duration_seconds`
@@ -186,7 +186,7 @@ jsonPayload.duration_seconds>20
 
 ### Count Requests by Agent (Last 24h)
 ```
-logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
 jsonPayload.event_type="agent_request_start"
 timestamp>="2025-11-27T00:00:00Z"
 ```
@@ -194,7 +194,7 @@ timestamp>="2025-11-27T00:00:00Z"
 ### All Errors
 ```
 severity="ERROR"
-logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
 ```
 
 ### Tool Performance
@@ -249,26 +249,26 @@ jsonPayload.tool_name="google_search_grounding"
 
 ## 🔗 QUICK ACCESS LINKS
 
-**Your Project:** `fabled-sector-476018-n3`
+**Your Project:** `lyrical-star-497817-m3`
 
 ### Logging
-- **Logs Explorer:** https://console.cloud.google.com/logs?project=fabled-sector-476018-n3
-- **Query Builder:** https://console.cloud.google.com/logs/query?project=fabled-sector-476018-n3
-- **Log Analytics:** https://console.cloud.google.com/logs/analytics?project=fabled-sector-476018-n3
+- **Logs Explorer:** https://console.cloud.google.com/logs?project=lyrical-star-497817-m3
+- **Query Builder:** https://console.cloud.google.com/logs/query?project=lyrical-star-497817-m3
+- **Log Analytics:** https://console.cloud.google.com/logs/analytics?project=lyrical-star-497817-m3
 
 ### Monitoring
-- **Dashboards:** https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
-- **Metrics Explorer:** https://console.cloud.google.com/monitoring/metrics-explorer?project=fabled-sector-476018-n3
-- **Alerts:** https://console.cloud.google.com/monitoring/alerting?project=fabled-sector-476018-n3
-- **Create Alert:** https://console.cloud.google.com/monitoring/alerting/policies/create?project=fabled-sector-476018-n3
+- **Dashboards:** https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
+- **Metrics Explorer:** https://console.cloud.google.com/monitoring/metrics-explorer?project=lyrical-star-497817-m3
+- **Alerts:** https://console.cloud.google.com/monitoring/alerting?project=lyrical-star-497817-m3
+- **Create Alert:** https://console.cloud.google.com/monitoring/alerting/policies/create?project=lyrical-star-497817-m3
 
 ### Vertex AI
-- **Dashboard:** https://console.cloud.google.com/vertex-ai?project=fabled-sector-476018-n3
-- **Usage:** https://console.cloud.google.com/vertex-ai/generative?project=fabled-sector-476018-n3
+- **Dashboard:** https://console.cloud.google.com/vertex-ai?project=lyrical-star-497817-m3
+- **Usage:** https://console.cloud.google.com/vertex-ai/generative?project=lyrical-star-497817-m3
 
 ### Billing
-- **Overview:** https://console.cloud.google.com/billing?project=fabled-sector-476018-n3
-- **Reports:** https://console.cloud.google.com/billing/reports?project=fabled-sector-476018-n3
+- **Overview:** https://console.cloud.google.com/billing?project=lyrical-star-497817-m3
+- **Reports:** https://console.cloud.google.com/billing/reports?project=lyrical-star-497817-m3
 
 ---
 

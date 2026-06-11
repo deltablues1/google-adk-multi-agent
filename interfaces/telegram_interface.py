@@ -31,6 +31,12 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatAction
 
 from .base_interface import BaseInterface
+from config.deployment_config import is_telegram_enabled
+from services.audio_ingress import (
+    AudioIngressError,
+    get_audio_ingress_service,
+    get_supported_audio_mime_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,7 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
+MAX_AUDIO_DURATION_SECONDS = int(os.getenv("TELEGRAM_AUDIO_MAX_DURATION_SECONDS", "120"))
 
 
 def authorized_only(func):
@@ -80,6 +87,9 @@ class TelegramInterface(BaseInterface):
     def __init__(self):
         """Initialize Telegram interface."""
         super().__init__(session_prefix="telegram")
+
+        if not is_telegram_enabled():
+            raise ValueError("Telegram interface is disabled by deployment profile")
 
         self.application: Optional[Application] = None
         self.bot_token = TELEGRAM_BOT_TOKEN
@@ -200,6 +210,9 @@ class TelegramInterface(BaseInterface):
             chunks.append(current_chunk.strip())
 
         return chunks
+
+    def _is_supported_audio_mime(self, mime_type: str) -> bool:
+        return mime_type in get_supported_audio_mime_types()
 
     # === Command Handlers ===
 
@@ -587,6 +600,96 @@ Koristi /classroom za ulazak.
                 logger.error(f"Error handling document: {e}")
                 await update.message.reply_text(f"Greska pri obradi dokumenta: {str(e)}")
 
+    @authorized_only
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle Telegram voice notes and audio files through shared STT ingress."""
+        chat_id = str(update.effective_chat.id)
+        user_id = f"telegram-user-{chat_id}"
+        session_id = self._get_session_for_chat(chat_id)
+        lock = await self._get_processing_lock(chat_id)
+
+        async with lock:
+            try:
+                voice = update.message.voice
+                audio = update.message.audio
+                audio_obj = voice or audio
+                if audio_obj is None:
+                    await update.message.reply_text("Audio poruka nije prepoznata.")
+                    return
+
+                duration = getattr(audio_obj, "duration", 0) or 0
+                mime_type = getattr(audio_obj, "mime_type", None) or "audio/ogg"
+                file_id = getattr(audio_obj, "file_id", "")
+                file_name = getattr(audio_obj, "file_name", "telegram-audio")
+                source = "telegram_voice" if voice else "telegram_audio"
+
+                if duration > MAX_AUDIO_DURATION_SECONDS:
+                    await update.message.reply_text(
+                        f"Audio je predug ({duration}s). Maksimum je {MAX_AUDIO_DURATION_SECONDS}s."
+                    )
+                    return
+
+                if not self._is_supported_audio_mime(mime_type):
+                    await update.message.reply_text(
+                        f"Nepodrzani audio format: {mime_type}. "
+                        "Podrzani su OGG/Opus, MP3, WAV, M4A i WebM."
+                    )
+                    return
+
+                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+
+                tg_file = await context.bot.get_file(file_id)
+                audio_bytes = bytes(await tg_file.download_as_bytearray())
+
+                transcript_result = await get_audio_ingress_service().transcribe_audio(
+                    audio_bytes=audio_bytes,
+                    mime_type=mime_type,
+                    source=source,
+                    metadata={
+                        "chat_id": chat_id,
+                        "duration_seconds": duration,
+                        "telegram_file_id": file_id,
+                        "file_name": file_name,
+                    },
+                )
+                transcript = transcript_result.transcript.strip()
+                if not transcript:
+                    raise AudioIngressError("Prazan transcript")
+
+                logger.info(
+                    "telegram_voice audit source=%s chat_id=%s duration=%ss transcript_chars=%s",
+                    source,
+                    chat_id,
+                    duration,
+                    len(transcript),
+                )
+
+                await update.message.reply_text(
+                    f"_Transkript:_ {transcript}",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+
+                response = await self.process_message(
+                    user_id=user_id,
+                    message=transcript,
+                    session_id=session_id,
+                )
+
+                formatted = self.format_response(response)
+                for chunk in self._split_message(formatted):
+                    await update.message.reply_text(chunk)
+
+            except AudioIngressError as e:
+                logger.warning(f"Telegram audio transcription failed: {e}")
+                await update.message.reply_text(
+                    "Nisam uspjela prepisati audio poruku. Posalji kracu i jasniju snimku ili tekst."
+                )
+            except Exception as e:
+                logger.error(f"Error handling Telegram audio: {e}")
+                await update.message.reply_text(
+                    "Dogodila se greska pri obradi audio poruke. Pokusaj ponovno."
+                )
+
     # === Application Setup ===
 
     def _setup_handlers(self):
@@ -618,7 +721,12 @@ Koristi /classroom za ulazak.
             MessageHandler(filters.Document.ALL, self.handle_document)
         )
 
-        logger.info("Handlers registered (text + photo + document)")
+        # Voice/audio messages
+        self.application.add_handler(
+            MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice)
+        )
+
+        logger.info("Handlers registered (text + photo + document + voice)")
 
     async def _setup_bot_commands(self):
         """Setup bot command menu in Telegram."""

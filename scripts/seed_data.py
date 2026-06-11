@@ -40,7 +40,7 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 SEED_DIR = Path(__file__).parent.parent / "data" / "seed"
-PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT', 'fabled-sector-476018-n3')
+PROJECT_ID = os.environ.get('GOOGLE_CLOUD_PROJECT', 'lyrical-star-497817-m3')
 
 
 async def import_company(db, dry_run=False):

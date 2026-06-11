@@ -203,7 +203,14 @@ async def monitor_drive_invoices(
             - details: List of per-file results
     """
     try:
+        from config.deployment_config import is_erp_enabled
         from scripts.monitor_drive_invoices import monitor_folder, monitor_all_folders
+
+        if not is_erp_enabled():
+            return {
+                "status": "disabled",
+                "reason": "ERP is disabled in the active deployment profile",
+            }
 
         if folder == "all":
             result = await monitor_all_folders(dry_run=dry_run)

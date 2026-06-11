@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_ask_user_agent(
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.5-flash"
 ) -> LlmAgent:
     """
     Create Ask User agent for handling failed preconditions.

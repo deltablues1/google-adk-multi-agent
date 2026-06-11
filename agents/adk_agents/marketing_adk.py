@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_marketing_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """
@@ -73,7 +73,7 @@ def create_marketing_agent(
     - Explicit confirmation required before proceeding
 
     Args:
-        model: Gemini model to use (default: "gemini-2.5-flash" for creative ideation)
+        model: Gemini model to use (default: "gemini-3.5-flash" for creative ideation)
         credentials: Optional OAuth2 credentials. If None, uses token file.
 
     Returns:
@@ -149,7 +149,7 @@ marketing_agent = None
 
 
 def get_marketing_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     credentials=None
 ) -> LlmAgent:
     """

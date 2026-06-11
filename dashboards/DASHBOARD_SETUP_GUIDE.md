@@ -9,7 +9,7 @@
 
 **Koristi:** `adk_monitoring_dashboard_simple.json` - Samo Vertex AI metrics
 
-1. **Otvori:** https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
+1. **Otvori:** https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
 
 2. **Klikni:** "Create Dashboard"
 
@@ -36,7 +36,7 @@ Za agent-specific metrics (success rate, tool executions), trebaju log-based met
 
 #### Metric 1: Agent Success Rate
 
-1. **Go to:** https://console.cloud.google.com/logs/metrics?project=fabled-sector-476018-n3
+1. **Go to:** https://console.cloud.google.com/logs/metrics?project=lyrical-star-497817-m3
 
 2. **Klikni:** "CREATE METRIC"
 
@@ -49,7 +49,7 @@ Za agent-specific metrics (success rate, tool executions), trebaju log-based met
 5. **Build filter:**
    ```
    resource.type="global"
-   logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+   logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
    jsonPayload.event_type="agent_request_success"
    ```
 
@@ -74,7 +74,7 @@ Za agent-specific metrics (success rate, tool executions), trebaju log-based met
 3. **Filter:**
    ```
    resource.type="global"
-   logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+   logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
    jsonPayload.event_type="agent_request_error"
    ```
 
@@ -96,7 +96,7 @@ Za agent-specific metrics (success rate, tool executions), trebaju log-based met
 3. **Filter:**
    ```
    resource.type="global"
-   logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+   logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
    jsonPayload.event_type="tool_execution_success"
    ```
 
@@ -121,7 +121,7 @@ Za agent-specific metrics (success rate, tool executions), trebaju log-based met
 4. **Filter:**
    ```
    resource.type="global"
-   logName="projects/fabled-sector-476018-n3/logs/adk-agent-system"
+   logName="projects/lyrical-star-497817-m3/logs/adk-agent-system"
    jsonPayload.event_type="agent_request_success"
    ```
 
@@ -275,7 +275,7 @@ Chart type: Stacked Area
 2. Wrong metric path
 
 **Fix:**
-- Check: https://console.cloud.google.com/logs/metrics?project=fabled-sector-476018-n3
+- Check: https://console.cloud.google.com/logs/metrics?project=lyrical-star-497817-m3
 - Verify metric exists
 - Copy exact metric path
 
@@ -295,7 +295,7 @@ Chart type: Stacked Area
 
 Ako ne želiš JSON import:
 
-1. **Go to:** https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
+1. **Go to:** https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
 
 2. **Create Dashboard**
 
@@ -319,9 +319,9 @@ Ako ne želiš JSON import:
 ## 🔗 USEFUL LINKS
 
 **Your Project:**
-- **Dashboards:** https://console.cloud.google.com/monitoring/dashboards?project=fabled-sector-476018-n3
-- **Metrics:** https://console.cloud.google.com/logs/metrics?project=fabled-sector-476018-n3
-- **Logs Explorer:** https://console.cloud.google.com/logs?project=fabled-sector-476018-n3
+- **Dashboards:** https://console.cloud.google.com/monitoring/dashboards?project=lyrical-star-497817-m3
+- **Metrics:** https://console.cloud.google.com/logs/metrics?project=lyrical-star-497817-m3
+- **Logs Explorer:** https://console.cloud.google.com/logs?project=lyrical-star-497817-m3
 
 **Documentation:**
 - [Cloud Monitoring Dashboards](https://cloud.google.com/monitoring/dashboards)

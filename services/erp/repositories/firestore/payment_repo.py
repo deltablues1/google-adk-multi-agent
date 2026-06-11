@@ -128,19 +128,25 @@ class FirestorePaymentRepository:
             .where(filter=FieldFilter("payment_date", "<=", date_to))
             .where(filter=FieldFilter("status", "==", "confirmed"))
         )
-        incoming = 0.0
-        outgoing = 0.0
+        # Use Decimal to avoid float accumulation errors on monetary sums.
+        from decimal import Decimal, ROUND_HALF_UP
+
+        def _q(d: Decimal) -> float:
+            return float(d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+        incoming = Decimal("0")
+        outgoing = Decimal("0")
         async for snap in query.stream():
             doc = snap.to_dict() or {}
-            amount = float(doc.get("amount", 0))
+            amount = Decimal(str(doc.get("amount", 0) or 0))
             if doc.get("type") == "incoming":
                 incoming += amount
             else:
                 outgoing += amount
         return {
-            "incoming": round(incoming, 2),
-            "outgoing": round(outgoing, 2),
-            "net": round(incoming - outgoing, 2),
+            "incoming": _q(incoming),
+            "outgoing": _q(outgoing),
+            "net": _q(incoming - outgoing),
             "date_from": date_from,
             "date_to": date_to,
         }

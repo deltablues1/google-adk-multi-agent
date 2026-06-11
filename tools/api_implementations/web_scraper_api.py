@@ -89,18 +89,27 @@ async def validate_url(url: str, timeout: int = 5) -> Dict[str, Any]:
             lambda: requests.head(url, headers=headers, timeout=timeout, allow_redirects=True)
         )
 
-        if response.status_code == 200:
-            return {"valid": True, "status_code": 200}
-        elif response.status_code == 405:
-            # HEAD not allowed, try GET with minimal data
-            response = await loop.run_in_executor(
-                None,
-                lambda: requests.get(url, headers=headers, timeout=timeout, stream=True)
-            )
-            response.close()
-            return {"valid": response.status_code == 200, "status_code": response.status_code}
-        else:
+        if response.status_code in (200, 301, 302):
+            return {"valid": True, "status_code": response.status_code}
+        elif response.status_code in (403, 405, 406, 429):
+            # Many webshops block HEAD but allow GET — try GET with stream to avoid downloading full page
+            try:
+                get_resp = await loop.run_in_executor(
+                    None,
+                    lambda: requests.get(url, headers=headers, timeout=timeout, stream=True)
+                )
+                get_resp.close()
+                valid = get_resp.status_code in (200, 301, 302)
+                return {"valid": valid, "status_code": get_resp.status_code}
+            except Exception:
+                # If GET also fails, still try scraping — validator is best-effort
+                return {"valid": True, "status_code": response.status_code, "note": "HEAD blocked, GET failed, will attempt scrape"}
+        elif response.status_code in (404, 410, 451):
+            # Definitively gone
             return {"valid": False, "status_code": response.status_code, "error": f"HTTP {response.status_code}"}
+        else:
+            # Unknown status — optimistically try scraping rather than skipping
+            return {"valid": True, "status_code": response.status_code, "note": "Unknown status, will attempt scrape"}
 
     except requests.exceptions.Timeout:
         return {"valid": False, "status_code": None, "error": "Timeout"}
@@ -291,6 +300,15 @@ async def scrape_url(
             result["html"] = str(soup)
 
         logger.info(f"Scraping completed: {word_count} words extracted from {url}")
+
+        # If too few words extracted, webshop is likely JS-rendered — auto-fallback to Jina Reader
+        if word_count < 50:
+            logger.info(f"Too few words ({word_count}) from {url} — trying Jina Reader fallback")
+            jina_result = await scrape_url_jina(None, url)
+            if jina_result.get("success") and jina_result.get("word_count", 0) > word_count:
+                logger.info(f"Jina Reader fallback successful: {jina_result['word_count']} words from {url}")
+                return jina_result
+
         return result
 
     except requests.exceptions.Timeout:
@@ -430,6 +448,98 @@ async def scrape_multiple_urls(
             "successful": 0,
             "failed": len(urls)
         }
+
+
+async def scrape_url_jina(
+    credentials,
+    url: str,
+) -> dict:
+    """
+    Scrape a URL using Jina Reader (r.jina.ai) — free, no API key required.
+    Returns clean Markdown. Handles most static and moderately dynamic pages.
+
+    Args:
+        credentials: Not used, included for API compatibility
+        url: URL to scrape
+
+    Returns:
+        Dictionary with content, word_count, url, source, success flag
+    """
+    import requests as _requests
+    jina_url = f"https://r.jina.ai/{url}"
+    headers = {
+        "Accept": "text/plain",
+        "X-Return-Format": "markdown",
+    }
+    try:
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(
+            None,
+            lambda: _requests.get(jina_url, headers=headers, timeout=30)
+        )
+        if resp.status_code != 200:
+            return {"error": f"Jina Reader returned HTTP {resp.status_code}", "url": url, "success": False}
+        content = resp.text.strip()
+        if not content or len(content) < 100:
+            return {"error": "Jina Reader returned empty or too-short content", "url": url, "success": False}
+        logger.info(f"Jina Reader scraped {url}: {len(content.split())} words")
+        return {
+            "url": url,
+            "content": content,
+            "word_count": len(content.split()),
+            "source": "jina_reader",
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"Jina Reader scrape failed for {url}: {e}")
+        return {"error": str(e), "url": url, "success": False}
+
+
+async def scrape_url_firecrawl(
+    credentials,
+    url: str,
+    formats: list = None,
+    only_main_content: bool = True
+) -> dict:
+    """
+    Scrape a URL using Firecrawl — handles JS-rendered pages, tables, price lists,
+    PDFs, and complex layouts that BeautifulSoup cannot parse.
+
+    Use when: standard scrape_url fails, page is a SPA/AJAX portal, need to extract
+    tables or price lists, or target is a PDF linked from a web page.
+
+    Requires FIRECRAWL_API_KEY environment variable.
+
+    Args:
+        credentials: Not used, included for API compatibility
+        url: URL to scrape
+        formats: Output formats list (default: ['markdown'])
+        only_main_content: Strip nav/header/footer (default: True)
+
+    Returns:
+        Dictionary with content, word_count, url, source, success flag
+    """
+    import os
+    api_key = os.getenv("FIRECRAWL_API_KEY")
+    if not api_key:
+        logger.warning("FIRECRAWL_API_KEY not set — cannot use Firecrawl scraper")
+        return {"error": "FIRECRAWL_API_KEY not set in environment", "url": url, "success": False}
+    try:
+        from firecrawl import FirecrawlApp
+        app = FirecrawlApp(api_key=api_key)
+        result = app.scrape_url(url, formats=formats or ["markdown"], onlyMainContent=only_main_content)
+        content = getattr(result, 'markdown', None) or str(result)
+        logger.info(f"Firecrawl scraped {url}: {len(content.split())} words")
+        return {
+            "url": url,
+            "content": content,
+            "word_count": len(content.split()),
+            "source": "firecrawl",
+            "success": True
+        }
+    except Exception as e:
+        logger.error(f"Firecrawl scrape failed for {url}: {e}")
+        return {"error": str(e), "url": url, "success": False}
 
 
 def register_web_scraper_tools(tool_registry) -> None:

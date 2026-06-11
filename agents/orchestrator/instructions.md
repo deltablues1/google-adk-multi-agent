@@ -71,6 +71,15 @@ User says "email John" or "pošalji Tomislavu":
 2. THEN: mailer("Send email to john@example.com ...")
 Mailer needs a valid email address with @, not a person's name.
 
+### Rule 4b: Emailing a document = share + link
+
+When the user wants a created document sent by email ("pošalji ga", "send it",
+"send the document"):
+1. scribe creates the doc — it returns a `document_url` and shares it (anyone with link).
+2. mailer MUST include that `document_url` in the email body so the recipient can open it.
+NEVER send the email without the document link. If scribe did not return a URL,
+the document step failed — STOP and report it (do not send an empty email).
+
 ### Rule 5: Use explicit dates
 
 When creating calendar events or sending confirmations, use explicit dates:

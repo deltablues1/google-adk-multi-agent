@@ -32,13 +32,14 @@ sys.path.insert(0, str(project_root))
 
 from google.adk.agents import LlmAgent
 from agents.adk_agents.adk_agent_factory import create_adk_agent
+from config.deployment_config import is_erp_enabled
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 def create_fiskalizacija_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     temperature: float = 0.1
 ) -> LlmAgent:
     """
@@ -240,11 +241,33 @@ Koji KPD kod želite koristiti? Ili unesite vlastiti kod.
         validate_kpd_code,
         calculate_tax,
     )
-    from tools.adk_tools.erp_adk_tools import (
-        erp_get_invoice,
-        erp_search_customers,
-        erp_get_product,
-    )
+    tools = [
+        execute_fiscalization,
+        get_supplier_data,
+        generate_invoice_number,
+        validate_oib,
+        search_kpd_code,
+        validate_kpd_code,
+        calculate_tax,
+    ]
+
+    if is_erp_enabled():
+        from tools.adk_tools.erp_adk_tools import (
+            erp_get_invoice,
+            erp_search_customers,
+            erp_get_product,
+        )
+        tools.extend([
+            erp_get_invoice,
+            erp_search_customers,
+            erp_get_product,
+        ])
+    else:
+        instructions += (
+            "\n\nDeployment constraint: ERP is disabled in this environment. "
+            "Do not fetch invoice, customer, or product context from ERP. "
+            "Work only from user-provided invoice data and fiscalization tools."
+        )
 
     # Create agent using factory with fiscalization tools
     agent = create_adk_agent(
@@ -252,19 +275,7 @@ Koji KPD kod želite koristiti? Ili unesite vlastiti kod.
         model=model,
         instruction=instructions,
         description="Croatian invoice fiscalization specialist. Handles complete fiscalization workflow: data preparation, validation, HITL confirmation, and deterministic execution with FINA. Keywords: fiskalizacija, racun, faktura, invoice, JIR, ZKI, FINA.",
-        tools=[
-            execute_fiscalization,  # Main entry point - complete fiscalization
-            get_supplier_data,      # Get company/supplier config
-            generate_invoice_number, # Auto-generate sequential invoice number
-            validate_oib,           # Validate OIB (Module 11)
-            search_kpd_code,        # Search KPD codes
-            validate_kpd_code,      # Validate user-provided KPD code
-            calculate_tax,          # Calculate VAT breakdown
-            # ERP lookups (read-only)
-            erp_get_invoice,        # Pull invoice data from ERP
-            erp_search_customers,   # Look up customer/buyer OIB
-            erp_get_product,        # Get KPD code and VAT rate for product
-        ],
+        tools=tools,
         sub_agents=[],
         config={
             "temperature": temperature,

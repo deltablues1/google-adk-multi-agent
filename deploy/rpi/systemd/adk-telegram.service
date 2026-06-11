@@ -1,0 +1,15 @@
+[Unit]
+Description=Google Clause Telegram Interface
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/google-clause
+EnvironmentFile=/opt/google-clause/deploy/rpi/.env.rpi
+ExecStart=/opt/google-clause/.venv/bin/python scripts/telegram_bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

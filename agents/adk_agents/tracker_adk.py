@@ -9,12 +9,13 @@ import logging
 import os
 from agents.adk_agents.adk_agent_factory import create_adk_agent
 from agents.adk_agents.datetime_context import inject_datetime_context
+from config.deployment_config import is_erp_enabled
 
 logger = logging.getLogger(__name__)
 
 
 def create_tracker_agent(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash",
     user_timezone: str = "Europe/Zagreb"
 ):
     """
@@ -55,16 +56,6 @@ def create_tracker_agent(
         tasks_complete_task
     )
 
-    from tools.adk_tools.erp_adk_tools import (
-        erp_list_open_invoices,
-        erp_record_payment,
-        erp_get_open_payables,
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        erp_list_quotes,
-        erp_get_quote,
-    )
-
     # Create list of tools
     tools = [
         tasks_list_task_lists,
@@ -73,23 +64,35 @@ def create_tracker_agent(
         tasks_update_task,
         tasks_delete_task,
         tasks_complete_task,
-        # ERP payment tracking
-        erp_list_open_invoices,
-        erp_record_payment,
-        erp_get_open_payables,
-        # ERP activity & inventory
-        erp_get_activity_feed,
-        erp_get_inventory_movements,
-        # ERP quotes
-        erp_list_quotes,
-        erp_get_quote,
     ]
+    description = "Google Tasks specialist for task and task-list management"
+
+    if is_erp_enabled():
+        from tools.adk_tools.erp_adk_tools import (
+            erp_list_open_invoices,
+            erp_record_payment,
+            erp_get_open_payables,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        )
+        tools.extend([
+            erp_list_open_invoices,
+            erp_record_payment,
+            erp_get_open_payables,
+            erp_get_activity_feed,
+            erp_get_inventory_movements,
+            erp_list_quotes,
+            erp_get_quote,
+        ])
+        description += ", plus ERP payment and activity tracking"
 
     # Create agent using factory
     agent = create_adk_agent(
         name="tracker",
         model=model,
-        description="Google Tasks specialist and ERP payment tracker: task management, open invoices, recording payments, payables tracking",
+        description=description,
         tools=tools,
         instruction=instruction,
         config={
