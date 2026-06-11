@@ -450,9 +450,8 @@ def get_agent_config(agent_name: str) -> Optional[AgentConfig]:
     Returns:
         AgentConfig objekt ili None ako agent ne postoji
     """
-    # Block ERP agents on non-ERP deployments
-    if not ENABLE_ERP and agent_name in ERP_AGENTS:
-        return None
+    # ERP gating happens at the tool-belt level (conditional ERP tools per
+    # agent), not by hiding agents from the registry — see get_worker_agent_names.
     return AGENT_REGISTRY.get(agent_name)
 
 

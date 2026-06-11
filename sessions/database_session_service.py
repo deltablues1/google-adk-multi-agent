@@ -209,6 +209,8 @@ class FirestoreSessionService(DatabaseSessionServiceBase):
 
     def create_session(self, session_id: str, metadata: Optional[Dict] = None) -> Dict[str, Any]:
         """Create new session in Firestore"""
+        from google.cloud import firestore
+
         session_data = {
             'session_id': session_id,
             'metadata': metadata or {},

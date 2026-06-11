@@ -540,7 +540,25 @@ class QuoteService(BaseERPService):
         }
 
         from .outbound_b2b_service import get_outbound_b2b_service
-        invoice = await get_outbound_b2b_service().create(payload, ctx)
+        from google.api_core.exceptions import AlreadyExists
+
+        # Deterministic doc ID + Firestore create() precondition closes the race
+        # window between the idempotency check above and the write: two
+        # concurrent requests can both pass the check, but only one create()
+        # succeeds — the loser gets AlreadyExists and returns the winner's doc.
+        deterministic_id = f"q2i-{quote_id}"
+        try:
+            invoice = await get_outbound_b2b_service().create(
+                payload, ctx, invoice_id=deterministic_id, fail_if_exists=True
+            )
+        except AlreadyExists:
+            logger.info(
+                f"[QuoteService] Concurrent create for quote {quote_id} — "
+                f"returning existing invoice {deterministic_id}."
+            )
+            existing = await get_outbound_b2b_service().get(deterministic_id, ctx)
+            existing["_already_exists"] = True
+            return existing
 
         # Link back to quote — if this fails, the next call will find the invoice
         # via the source_quote_id fallback query in _find_existing_outbound_invoice().

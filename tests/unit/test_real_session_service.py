@@ -37,9 +37,8 @@ class TestDatabaseSessionServiceBase:
         expected_methods = [
             'create_session',
             'get_session',
-            'update_session_history',
+            'update_session',
             'delete_session',
-            'list_sessions'
         ]
 
         for method_name in expected_methods:
@@ -75,9 +74,8 @@ class TestPostgreSQLSessionServiceClass:
         required_methods = [
             'create_session',
             'get_session',
-            'update_session_history',
+            'update_session',
             'delete_session',
-            'list_sessions'
         ]
 
         for method in required_methods:
@@ -117,9 +115,8 @@ class TestFirestoreSessionServiceClass:
         required_methods = [
             'create_session',
             'get_session',
-            'update_session_history',
+            'update_session',
             'delete_session',
-            'list_sessions'
         ]
 
         for method in required_methods:

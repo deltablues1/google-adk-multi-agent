@@ -118,7 +118,24 @@ class OutboundB2BService(BaseERPService):
     # Create
     # ------------------------------------------------------------------
 
-    async def create(self, data: dict, ctx: ERPRequestContext) -> dict:
+    async def create(
+        self,
+        data: dict,
+        ctx: ERPRequestContext,
+        invoice_id: Optional[str] = None,
+        fail_if_exists: bool = False,
+    ) -> dict:
+        """Create a draft outbound B2B invoice.
+
+        Args:
+            invoice_id:     Optional explicit document ID. Callers that need
+                            idempotent creation (e.g. quote→invoice) pass a
+                            deterministic ID here.
+            fail_if_exists: When True, uses Firestore's create() precondition —
+                            raises google.api_core.exceptions.AlreadyExists if a
+                            document with that ID already exists. This makes
+                            concurrent duplicate creation impossible.
+        """
         check_permission(ctx, "outbound:create")
 
         # Required field validation
@@ -142,7 +159,7 @@ class OutboundB2BService(BaseERPService):
         if data.get("total_gross") and not data.get("items"):
             total_gross = Decimal(str(data["total_gross"]))
 
-        invoice_id  = str(uuid4())
+        invoice_id  = invoice_id or str(uuid4())
         display_id  = await generate_display_id(ctx.company_id, _DISPLAY_PREFIX, self._get_db())
         now_iso     = datetime.now(timezone.utc).isoformat()
 
@@ -235,7 +252,11 @@ class OutboundB2BService(BaseERPService):
             "created_by":  ctx.user_id,
         }
 
-        await self._get_db().collection(_COL).document(invoice_id).set(doc)
+        ref = self._get_db().collection(_COL).document(invoice_id)
+        if fail_if_exists:
+            await ref.create(doc)  # atomic — raises AlreadyExists on duplicate
+        else:
+            await ref.set(doc)
         await write_audit("outbound_b2b.created", "outbound_b2b", invoice_id, display_id, ctx,
                           data={"total_gross": float(total_gross)}, db=self._get_db())
         doc["_id"] = invoice_id

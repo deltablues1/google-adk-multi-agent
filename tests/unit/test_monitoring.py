@@ -291,120 +291,89 @@ class TestMetricsDecorators:
             # Assert
             mock_decorator.assert_called_once_with("test_operation")
 
-    def test_count_calls_decorator(self):
-        """Test @count_calls decorator"""
-        # Arrange
-        with patch('monitoring.metrics.count_calls') as mock_decorator:
-            @mock_decorator("test_function")
-            def test_function():
-                return "result"
+    def test_counter_metric_increments(self):
+        """MetricsCollector.increment accumulates counter values"""
+        from monitoring.metrics import MetricsCollector
 
-            # Act
-            test_function()
-            test_function()
+        collector = MetricsCollector()
+        collector.increment("test_calls")
+        collector.increment("test_calls")
+        collector.increment("test_calls", value=3)
 
-            # Assert
-            mock_decorator.assert_called()
+        assert collector.get_metrics()["counters"]["test_calls"] == 5
 
 
-class TestAlertingService:
-    """Unit tests for alerting service"""
+class TestAlertManager:
+    """Unit tests for the real AlertManager"""
 
     @pytest.fixture
-    def mock_alerting_service(self):
-        """Create mock alerting service"""
-        with patch('monitoring.alerting.AlertingService') as MockAlerting:
-            service = MagicMock()
-            MockAlerting.return_value = service
-            yield service
+    def manager_with_handler(self):
+        """AlertManager with a capturing handler attached"""
+        from monitoring.alerting import AlertManager
 
-    def test_alerting_service_initialization(self, mock_alerting_service):
-        """Test alerting service initializes"""
-        # Assert
-        assert mock_alerting_service is not None
+        manager = AlertManager()
+        handler = MagicMock()
+        manager.add_handler(handler)
+        return manager, handler
 
-    def test_send_alert(self, mock_alerting_service):
-        """Test sending alert"""
-        # Arrange
-        alert = {
-            "severity": "ERROR",
-            "title": "High error rate",
-            "message": "Error rate exceeded threshold",
-            "timestamp": datetime.now().isoformat()
-        }
+    def test_send_alert_reaches_handler(self, manager_with_handler):
+        """send_alert delivers a structured alert dict to handlers"""
+        from monitoring.alerting import AlertSeverity
 
-        # Act
-        mock_alerting_service.send_alert(alert)
+        manager, handler = manager_with_handler
+        manager.send_alert("High error rate", "Error rate exceeded threshold",
+                           severity=AlertSeverity.ERROR)
 
-        # Assert
-        mock_alerting_service.send_alert.assert_called_once_with(alert)
+        handler.send.assert_called_once()
+        alert = handler.send.call_args[0][0]
+        assert alert["title"] == "High error rate"
+        assert alert["message"] == "Error rate exceeded threshold"
+        assert alert["severity"] == "error"
+        assert "timestamp" in alert
 
-    def test_alert_severity_levels(self, mock_alerting_service):
-        """Test different alert severity levels"""
-        # Arrange
-        severities = ["INFO", "WARNING", "ERROR", "CRITICAL"]
+    def test_alert_severity_levels(self, manager_with_handler):
+        """All severity levels are accepted and serialized to their value"""
+        from monitoring.alerting import AlertSeverity
 
-        # Act
-        for severity in severities:
-            mock_alerting_service.send_alert({"severity": severity, "message": "Test"})
+        manager, handler = manager_with_handler
+        for severity in AlertSeverity:
+            manager.send_alert("Test", "Test", severity=severity)
 
-        # Assert
-        assert mock_alerting_service.send_alert.call_count == len(severities)
+        assert handler.send.call_count == len(AlertSeverity)
+        sent = [call.args[0]["severity"] for call in handler.send.call_args_list]
+        assert sent == [s.value for s in AlertSeverity]
 
-    def test_alert_with_metadata(self, mock_alerting_service):
-        """Test alert with additional metadata"""
-        # Arrange
-        alert = {
-            "severity": "WARNING",
-            "title": "Performance degradation",
-            "message": "Response time increased",
-            "metadata": {
-                "agent": "mailer",
-                "avg_response_time_ms": 500,
-                "threshold_ms": 300
-            }
-        }
+    def test_alert_with_metadata(self, manager_with_handler):
+        """Metadata dict is passed through to the handler"""
+        from monitoring.alerting import AlertSeverity
 
-        # Act
-        mock_alerting_service.send_alert(alert)
+        manager, handler = manager_with_handler
+        manager.send_alert(
+            "Performance degradation", "Response time increased",
+            severity=AlertSeverity.WARNING,
+            metadata={"agent": "mailer", "avg_response_time_ms": 500},
+        )
 
-        # Assert
-        call_args = mock_alerting_service.send_alert.call_args[0][0]
-        assert "metadata" in call_args
-        assert call_args["metadata"]["agent"] == "mailer"
+        alert = handler.send.call_args[0][0]
+        assert alert["metadata"]["agent"] == "mailer"
+        assert alert["metadata"]["avg_response_time_ms"] == 500
 
-    def test_alert_deduplication(self, mock_alerting_service):
-        """Test alert deduplication"""
-        # Arrange
-        alert_key = "high_error_rate"
-        mock_alerting_service.should_send_alert.return_value = False
+    def test_failing_handler_does_not_raise(self, manager_with_handler):
+        """A handler that throws must not break alert delivery"""
+        manager, handler = manager_with_handler
+        handler.send.side_effect = RuntimeError("handler down")
 
-        # Act
-        if mock_alerting_service.should_send_alert(alert_key):
-            mock_alerting_service.send_alert({"key": alert_key})
+        manager.send_alert("Test", "Test")  # must not raise
 
-        # Assert - Alert not sent due to deduplication
-        mock_alerting_service.send_alert.assert_not_called()
+    def test_severity_to_log_level_mapping(self):
+        """Severity maps to the matching stdlib logging level"""
+        from monitoring.alerting import AlertManager, AlertSeverity
 
-    def test_alert_cooldown_period(self, mock_alerting_service):
-        """Test alert cooldown period"""
-        # Arrange
-        alert_key = "error_spike"
-        cooldown_seconds = 300  # 5 minutes
-
-        # First alert
-        mock_alerting_service.should_send_alert.return_value = True
-        mock_alerting_service.send_alert({"key": alert_key})
-
-        # Second alert within cooldown
-        mock_alerting_service.should_send_alert.return_value = False
-
-        # Act
-        if mock_alerting_service.should_send_alert(alert_key):
-            mock_alerting_service.send_alert({"key": alert_key})
-
-        # Assert - Only one alert sent
-        assert mock_alerting_service.send_alert.call_count == 1
+        manager = AlertManager()
+        assert manager._severity_to_log_level(AlertSeverity.INFO) == logging.INFO
+        assert manager._severity_to_log_level(AlertSeverity.WARNING) == logging.WARNING
+        assert manager._severity_to_log_level(AlertSeverity.ERROR) == logging.ERROR
+        assert manager._severity_to_log_level(AlertSeverity.CRITICAL) == logging.CRITICAL
 
 
 class TestAlertConditions:
