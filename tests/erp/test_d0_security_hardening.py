@@ -242,6 +242,11 @@ class TestPeppolParticipantIdUniqueness:
         assert result["name"] == "Theta updated"
         mock_col.where.assert_not_called()
 
+
+# ---------------------------------------------------------------------------
+# Outbound webhook verification — fail-closed in prod/staging
+# ---------------------------------------------------------------------------
+
 class TestOutboundWebhookVerifyFailClosed:
     """peppol_status_service.verify_webhook_request"""
 

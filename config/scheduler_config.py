@@ -7,14 +7,26 @@ Jobs are stored in config/scheduled_jobs.json.
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional, List
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
+def _resolve_jobs_file() -> Path:
+    """Select scheduler job file based on deployment profile when available."""
+    base_dir = Path(__file__).parent
+    profile = os.getenv("DEPLOYMENT_PROFILE", "full").strip().lower()
+    if profile:
+        profile_path = base_dir / f"scheduled_jobs.{profile}.json"
+        if profile_path.exists():
+            return profile_path
+    return base_dir / "scheduled_jobs.json"
+
+
 # Default path for job persistence
-JOBS_FILE = Path(__file__).parent / "scheduled_jobs.json"
+JOBS_FILE = _resolve_jobs_file()
 
 
 class JobTrigger(BaseModel):

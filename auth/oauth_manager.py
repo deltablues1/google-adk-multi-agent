@@ -72,6 +72,7 @@ class OAuthManager:
             "token_path": self.token_storage_path,
             "reason": "not_checked",
         }
+        self._pending_flow: Optional[Flow] = None
 
     def _client_config(self) -> Dict[str, Dict[str, Any]]:
         return {
@@ -84,12 +85,18 @@ class OAuthManager:
             }
         }
 
-    def get_authorization_url(self) -> str:
-        flow = Flow.from_client_config(
+    def _build_flow(self) -> Flow:
+        """Create a configured OAuth flow instance."""
+        return Flow.from_client_config(
             self._client_config(),
             scopes=self.SCOPES,
             redirect_uri=self.redirect_uri,
         )
+
+    def get_authorization_url(self) -> str:
+        flow = self._build_flow()
+        # Reuse the same flow during token exchange so the PKCE code_verifier survives.
+        self._pending_flow = flow
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
@@ -98,13 +105,21 @@ class OAuthManager:
         return auth_url
 
     def exchange_code_for_token(self, authorization_code: str) -> Credentials:
-        flow = Flow.from_client_config(
-            self._client_config(),
-            scopes=self.SCOPES,
-            redirect_uri=self.redirect_uri,
-        )
-        flow.fetch_token(code=authorization_code)
-        self._credentials = flow.credentials
+        # Reuse the flow created in get_authorization_url so the PKCE
+        # code_verifier matches; a fresh Flow here would fail the exchange.
+        flow = self._pending_flow
+        if flow is None:
+            raise RuntimeError(
+                "OAuth authorization flow state is missing. Start authorization and "
+                "exchange the callback code in the same process."
+            )
+
+        try:
+            flow.fetch_token(code=authorization_code)
+            self._credentials = flow.credentials
+        finally:
+            self._pending_flow = None
+
         self._save_token()
         self._last_auth_health = {
             "status": "valid",

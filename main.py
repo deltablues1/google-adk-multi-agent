@@ -82,6 +82,9 @@ def sanitize_emojis(text: str) -> str:
 from dotenv import load_dotenv
 load_dotenv()
 
+from config.runtime_patches import apply_runtime_patches
+apply_runtime_patches()
+
 # Import configurations
 from config.agent_registry import (
     get_worker_agent_names,
@@ -223,7 +226,11 @@ class WorkspaceADKSystem:
         logger.info("  - Creating Smart Orchestrator agent...")
 
         self.orchestrator = create_smart_orchestrator(
-            model="gemini-3.5-flash",  # Tier 2: GA, fast routing — no need for costly Pro here
+            # Env override for Pi/Vertex runtime; GA Flash default — no need for costly Pro
+            model=os.getenv(
+                "ORCHESTRATOR_MODEL",
+                os.getenv("FLASH_MODEL", "gemini-3.5-flash"),
+            ),
             worker_agents=self.worker_agents,  # For documentation/routing
             validator_agent=self.decision_validator,  # For documentation
             ask_user_agent=self.ask_user  # For documentation

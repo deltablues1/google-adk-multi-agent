@@ -15,6 +15,7 @@ import time
 from typing import Optional, Dict, List, Any, AsyncGenerator
 
 from .base_interface import BaseInterface
+from config.deployment_config import is_web_scheduler_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,13 @@ class WebInterface(BaseInterface):
         ))
         return sessions
 
-    async def chat(self, user_id: str, message: str) -> Dict[str, Any]:
+    async def chat(
+        self,
+        user_id: str,
+        message: str,
+        route_hint: Optional[str] = None,
+        response_mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Process a chat message (non-streaming).
         Returns dict with response text, session_id, trace.
@@ -213,7 +220,9 @@ class WebInterface(BaseInterface):
             response = await self.process_message(
                 user_id=user_id,
                 message=message,
-                session_id=session_id
+                session_id=session_id,
+                route_hint=route_hint,
+                response_mode=response_mode,
             )
 
             # Record assistant message
@@ -555,19 +564,23 @@ class WebInterface(BaseInterface):
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self.initialize_system)
 
-        # Start scheduler for recurring jobs (Drive monitoring, etc.)
-        try:
-            from interfaces.scheduler_interface import SchedulerInterface
-            from tools.adk_tools.scheduler_adk_tools import set_scheduler_instance
-            self.system.scheduler = SchedulerInterface()
-            self.system.scheduler.system = self.system
-            self.system.scheduler._load_saved_jobs()
-            self.system.scheduler.scheduler.start()
-            set_scheduler_instance(self.system.scheduler)
-            job_count = len(self.system.scheduler.config.jobs)
-            logger.info(f"Scheduler started with {job_count} jobs")
-        except Exception as e:
-            logger.error(f"Failed to start scheduler: {e}")
+        # Start scheduler for recurring jobs only when explicitly enabled.
+        # On rpi-home we keep scheduler out of the web process by default.
+        if is_web_scheduler_enabled():
+            try:
+                from interfaces.scheduler_interface import SchedulerInterface
+                from tools.adk_tools.scheduler_adk_tools import set_scheduler_instance
+                self.system.scheduler = SchedulerInterface()
+                self.system.scheduler.system = self.system
+                self.system.scheduler._load_saved_jobs()
+                self.system.scheduler.scheduler.start()
+                set_scheduler_instance(self.system.scheduler)
+                job_count = len(self.system.scheduler.config.jobs)
+                logger.info(f"Scheduler started with {job_count} jobs")
+            except Exception as e:
+                logger.error(f"Failed to start scheduler: {e}")
+        else:
+            logger.info("Embedded web scheduler disabled (ENABLE_WEB_SCHEDULER=false)")
 
         # Load sessions from Firestore
         try:

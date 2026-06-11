@@ -89,8 +89,8 @@ def create_tracker_agent(
         description += ", plus ERP payment and activity tracking"
 
     # ERP tools — only on full deployment
-    from config.deployment_config import ENABLE_ERP
-    if ENABLE_ERP:
+    from config.deployment_config import is_erp_enabled
+    if is_erp_enabled():
         from tools.adk_tools.erp_adk_tools import (
             erp_list_open_invoices,
             erp_record_payment,

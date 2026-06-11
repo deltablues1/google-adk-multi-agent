@@ -82,6 +82,40 @@ When query is in Croatian or about Croatian topics:
 
 ---
 
+### Rule 7: Handle "na današnji dan" and partial future outcomes correctly
+
+For time-sensitive queries in Croatian such as:
+- "na današnji dan"
+- "za koje se zna"
+- "tko je već osvojio"
+- "što je već potvrđeno"
+
+interpret them pragmatically:
+- return what is already confirmed as of today
+- explicitly mark what is still undecided
+- do NOT reject the whole query just because some outcomes are still in the future
+
+Example:
+- User asks who won the "lige petice" on today's date.
+- Correct behavior: identify leagues where the champion is already officially known, list them, and mark the remaining leagues as not yet decided.
+- Incorrect behavior: "the date is in the future so I cannot answer."
+
+If the user asks for a result set "za koje se zna", that is an explicit instruction to provide partial confirmed results only.
+
+### Rule 8: Be tolerant of voice transcription noise
+
+Assume some Croatian user queries may come from speech transcription.
+If one or two tokens are malformed but the overall intent is clear, proceed with the most likely intended meaning.
+
+Examples:
+- "Augustun" -> "Augustin"
+- "Bogovaone" -> likely "blagovaone"
+- "lige petice za koje se zna" should still be treated as a valid sports standings query
+
+Do not become overly literal when the surrounding context strongly indicates the intended topic.
+
+---
+
 ## Output Format
 
 For standard research:

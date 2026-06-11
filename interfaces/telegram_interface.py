@@ -475,7 +475,7 @@ Koristi /classroom za ulazak.
                 logger.info(f"Voice message from {chat_id}: {transcript[:80]}...")
 
                 response = await self.process_message(
-                    user_id=user_id,
+                    user_id=f"telegram-voice-{user_id}",
                     message=transcript,
                     session_id=session_id
                 )
@@ -567,8 +567,8 @@ Koristi /classroom za ulazak.
                     f"OCR podaci (JSON): {json.dumps(receipt_data, ensure_ascii=False)}. "
                     f"Confidence: {confidence:.2f}. "
                 )
-                from config.deployment_config import ENABLE_ERP
-                if confidence >= 0.8 and ENABLE_ERP:
+                from config.deployment_config import is_erp_enabled
+                if confidence >= 0.8 and is_erp_enabled():
                     save_instruction += "Confidence je visok, spremi automatski u Firestore i napravi vendor invoice DRAFT."
                 elif confidence >= 0.8:
                     save_instruction += "Confidence je visok. Spremi podatke o racunu."

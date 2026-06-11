@@ -1,5 +1,22 @@
 """
 Deployment profile and feature flag configuration.
+
+Profiles:
+  - "dev"      : Local development (all features, no API token)
+  - "web"      : Web/server deployment (all features)
+  - "rpi-home" : Raspberry Pi smart-home runtime — wake word + selected
+                 Google Workspace + conversational agents, ERP disabled.
+
+Environment variables (override profile defaults):
+  DEPLOYMENT_PROFILE     - "dev" (default), "web" or "rpi-home"
+  ERP_ENABLED            - force ERP on/off
+  TELEGRAM_ENABLED       - force Telegram interface on/off
+  WAKE_WORD_ENABLED      - enable the wake word listener
+  VOICE_MODE_DEFAULT     - "agent" or "live"
+  API_TOKEN_REQUIRED     - require bearer token on /api/*
+  VOICE_DIRECT_ROUTING   - direct-route wake-word requests to home/christian/socrates
+  DISABLE_ADK_TELEMETRY  - disable flaky ADK tracing that can crash on bytes payloads
+  ENABLE_WEB_SCHEDULER   - allow web process to start embedded APScheduler
 """
 
 from __future__ import annotations
@@ -29,6 +46,9 @@ class DeploymentConfig:
     wake_word_enabled: bool
     voice_mode_default: str
     api_token_required: bool
+    voice_direct_routing: bool
+    adk_telemetry_disabled: bool
+    web_scheduler_enabled: bool
 
     def to_public_dict(self) -> Dict[str, object]:
         return asdict(self)
@@ -41,6 +61,9 @@ _DEFAULTS = {
         "wake_word_enabled": False,
         "voice_mode_default": "agent",
         "api_token_required": False,
+        "voice_direct_routing": False,
+        "adk_telemetry_disabled": False,
+        "web_scheduler_enabled": True,
     },
     "web": {
         "erp_enabled": True,
@@ -48,6 +71,9 @@ _DEFAULTS = {
         "wake_word_enabled": False,
         "voice_mode_default": "agent",
         "api_token_required": False,
+        "voice_direct_routing": False,
+        "adk_telemetry_disabled": False,
+        "web_scheduler_enabled": True,
     },
     "rpi-home": {
         "erp_enabled": False,
@@ -55,7 +81,32 @@ _DEFAULTS = {
         "wake_word_enabled": True,
         "voice_mode_default": "agent",
         "api_token_required": True,
+        "voice_direct_routing": True,
+        "adk_telemetry_disabled": True,
+        "web_scheduler_enabled": False,
     },
+}
+
+# RPi home profile should not load every non-ERP agent by default.
+# Keep it focused on smart-home, Google Workspace, research, and conversational use.
+RPI_HOME_ALLOWED_AGENTS = {
+    "orchestrator",
+    "decision_validator",
+    "ask_user",
+    "mailer",
+    "librarian",
+    "analyst",
+    "secretary",
+    "rolodex",
+    "tracker",
+    "researcher",
+    "scribe",
+    "scraper",
+    "synthesizer",
+    "voice_qa",
+    "socrates",
+    "christian_guide",
+    "smart_home",
 }
 
 _deployment_config: DeploymentConfig | None = None
@@ -87,6 +138,9 @@ def get_deployment_config() -> DeploymentConfig:
         wake_word_enabled=_env_bool("WAKE_WORD_ENABLED", defaults["wake_word_enabled"]),
         voice_mode_default=voice_mode_default,
         api_token_required=_env_bool("API_TOKEN_REQUIRED", defaults["api_token_required"]),
+        voice_direct_routing=_env_bool("VOICE_DIRECT_ROUTING", defaults["voice_direct_routing"]),
+        adk_telemetry_disabled=_env_bool("DISABLE_ADK_TELEMETRY", defaults["adk_telemetry_disabled"]),
+        web_scheduler_enabled=_env_bool("ENABLE_WEB_SCHEDULER", defaults["web_scheduler_enabled"]),
     )
     return _deployment_config
 
@@ -105,3 +159,26 @@ def is_wake_word_enabled() -> bool:
 
 def is_api_token_required() -> bool:
     return get_deployment_config().api_token_required
+
+
+def is_rpi_home() -> bool:
+    return get_deployment_config().profile == "rpi-home"
+
+
+def is_voice_direct_routing() -> bool:
+    return get_deployment_config().voice_direct_routing
+
+
+def is_adk_telemetry_disabled() -> bool:
+    return get_deployment_config().adk_telemetry_disabled
+
+
+def is_web_scheduler_enabled() -> bool:
+    return get_deployment_config().web_scheduler_enabled
+
+
+def get_allowed_agent_names(all_names: "list[str] | None" = None) -> "set[str] | None":
+    """Agent whitelist for the active profile, or None when unrestricted."""
+    if is_rpi_home():
+        return set(RPI_HOME_ALLOWED_AGENTS)
+    return None

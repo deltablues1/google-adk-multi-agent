@@ -14,6 +14,7 @@ from .librarian_adk import create_librarian_agent
 from .rolodex_adk import create_rolodex_agent
 from .tracker_adk import create_tracker_agent
 from .scraper_adk import create_scraper_agent
+from .voice_qa_adk import create_voice_qa_agent
 
 # Fiskalizacija 2.0 agents
 from .fiskalni_pripremac_adk import create_fiskalni_pripremac_agent
@@ -31,6 +32,7 @@ __all__ = [
     'create_rolodex_agent',
     'create_tracker_agent',
     'create_scraper_agent',
+    'create_voice_qa_agent',
     # Fiskalizacija 2.0
     'create_fiskalni_pripremac_agent',
     'create_fiskalni_validator_agent',

@@ -1,57 +1,72 @@
 """
-Ingest Philosophy Datasets
+Ingest starter philosophy sources into the configured Vertex AI RAG corpus.
+
+This script uploads:
+- Plato's Republic from Project Gutenberg
+- a small sample from the Hugging Face `wikitext` dataset
 """
 
-import asyncio
+from __future__ import annotations
+
 import os
 import sys
+from pathlib import Path
+
 from dotenv import load_dotenv
 
-# Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from agents.curator.curator_agent import CuratorAgent
+from tools.ingestion_tools import (  # noqa: E402
+    fetch_gutenberg_text,
+    fetch_huggingface_dataset,
+    upload_to_rag_corpus,
+)
 
-# Load environment variables
-load_dotenv()
 
-async def ingest_data():
+def ingest_data() -> int:
+    load_dotenv()
+
     corpus_id = os.getenv("PHILOSOPHY_CORPUS_ID")
     if not corpus_id:
-        print("❌ Error: PHILOSOPHY_CORPUS_ID is not set in .env")
-        print("Please create a RAG Corpus in Vertex AI and add its ID to .env")
-        return
+        print("Error: PHILOSOPHY_CORPUS_ID is not set in .env")
+        print("Please create a RAG corpus and add its ID to .env")
+        return 1
 
-    print(f"📚 Initializing Curator Agent for Corpus: {corpus_id}...")
-    curator = CuratorAgent()
+    print(f"Initializing philosophy ingest for corpus: {corpus_id}")
 
-    # 1. Ingest a sample book from Gutenberg (Plato's Republic)
-    # ID 1497 is "The Republic"
-    print("\n🏛️ Task 1: Ingesting Plato's Republic from Gutenberg...")
+    # 1. Plato's Republic from Gutenberg.
+    print("\nTask 1: Ingesting Plato's Republic from Gutenberg...")
     try:
-        response = ""
-        async for chunk in curator.run_async(f"Ingest book with ID 1497 (Plato's Republic) from Gutenberg into the RAG corpus '{corpus_id}'. Title it 'Plato - The Republic'."):
-            if isinstance(chunk, str):
-                response += chunk
-            elif hasattr(chunk, 'text'):
-                response += chunk.text
-        print(f"Curator Response: {response}")
-    except Exception as e:
-        print(f"❌ Failed to ingest book: {e}")
+        republic_text = fetch_gutenberg_text("1497")
+        upload_to_rag_corpus(
+            republic_text,
+            title="Plato - The Republic",
+            corpus_name=corpus_id,
+        )
+        print("Uploaded: Plato - The Republic")
+    except Exception as exc:
+        print(f"Failed to ingest Plato's Republic: {exc}")
 
-    # 2. Ingest a sample dataset from Hugging Face (wikitext)
-    # We'll take a tiny slice just to prove it works
-    print("\n💾 Task 2: Ingesting sample from 'wikitext' dataset...")
+    # 2. Small general-purpose text sample.
+    print("\nTask 2: Ingesting sample from Hugging Face dataset 'wikitext'...")
     try:
-        response = ""
-        async for chunk in curator.run_async(f"Ingest the first 100 rows of 'wikitext' dataset (subset 'wikitext-2-v1') into the RAG corpus '{corpus_id}'."):
-            if isinstance(chunk, str):
-                response += chunk
-            elif hasattr(chunk, 'text'):
-                response += chunk.text
-        print(f"Curator Response: {response}")
-    except Exception as e:
-        print(f"❌ Failed to ingest dataset: {e}")
+        wikitext_sample = fetch_huggingface_dataset(
+            "wikitext",
+            subset="wikitext-2-v1",
+            limit=100,
+        )
+        upload_to_rag_corpus(
+            wikitext_sample,
+            title="Wikitext Sample",
+            corpus_name=corpus_id,
+        )
+        print("Uploaded: Wikitext Sample")
+    except Exception as exc:
+        print(f"Failed to ingest wikitext sample: {exc}")
+
+    print("\nDone.")
+    return 0
+
 
 if __name__ == "__main__":
-    asyncio.run(ingest_data())
+    raise SystemExit(ingest_data())

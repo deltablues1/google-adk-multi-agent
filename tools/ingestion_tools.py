@@ -1,16 +1,37 @@
-"""
-Ingestion Tools for Curator Agent
-"""
+"""Ingestion tools for dataset and RAG import workflows."""
 
-import os
-import requests
 import logging
-from typing import Optional, List, Dict, Any
+import os
+import shutil
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from time import sleep
+from typing import Any, Dict, Iterable, List, Optional
+
+import requests
 from bs4 import BeautifulSoup
-import datasets
-from google.cloud import aiplatform
 
 logger = logging.getLogger(__name__)
+
+
+def _init_vertex_rag():
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+    location = os.getenv("VERTEX_AI_LOCATION") or os.getenv(
+        "GOOGLE_CLOUD_LOCATION", "us-central1"
+    )
+
+    import vertexai
+    from vertexai.preview import rag
+
+    vertexai.init(project=project_id, location=location)
+    return rag
+
+
+def _safe_title(title: str) -> str:
+    return "".join(
+        [c for c in title if c.isalnum() or c in (" ", "-", "_")]
+    ).strip().replace(" ", "_")
 
 def fetch_gutenberg_text(book_id: str) -> str:
     """
@@ -73,6 +94,8 @@ def fetch_huggingface_dataset(dataset_name: str, subset: Optional[str] = None, s
         Concatenated text from the dataset.
     """
     try:
+        import datasets
+
         # Load dataset in streaming mode to avoid downloading everything
         ds = datasets.load_dataset(dataset_name, subset, split=split, streaming=True)
         
@@ -106,41 +129,30 @@ def upload_to_rag_corpus(text: str, title: str, corpus_name: str) -> str:
     Returns:
         The created RagFile resource name.
     """
+    file_path = None
     try:
-        # Initialize Vertex AI
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-        # Check VERTEX_AI_LOCATION first, then GOOGLE_CLOUD_LOCATION, then default to us-central1
-        location = os.getenv("VERTEX_AI_LOCATION") or os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-        
-        # Initialize vertexai (required for rag)
-        import vertexai
-        from vertexai.preview import rag
-        
-        vertexai.init(project=project_id, location=location)
-        
+        rag = _init_vertex_rag()
+
         # Create a temporary file to upload
-        safe_title = "".join([c for c in title if c.isalnum() or c in (' ', '-', '_')]).strip().replace(' ', '_')
-        file_path = f"{safe_title}.txt"
-        
-        with open(file_path, "w", encoding="utf-8") as f:
+        safe_title = _safe_title(title)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=".txt",
+            prefix=f"{safe_title[:40]}_",
+            delete=False,
+        ) as f:
             f.write(text)
-            
-        # Import to Corpus using vertexai.preview.rag
+            file_path = f.name
+
         try:
-            # Note: rag.RagCorpus constructor takes the resource name
-            corpus = rag.RagCorpus(corpus_name)
-            
-            # import_files takes a list of paths
-            rag_file = corpus.import_files(
-                paths=[file_path],
-                chunk_size=512,
-                chunk_overlap=50
+            rag.upload_file(
+                corpus_name=corpus_name,
+                path=file_path,
+                display_name=f"{safe_title}.txt",
             )
             logger.info(f"Successfully imported {file_path} to {corpus_name}")
-            
-            # Clean up
-            os.remove(file_path)
-            
+
             return f"Successfully uploaded {title}."
             
         except Exception as e:
@@ -150,3 +162,64 @@ def upload_to_rag_corpus(text: str, title: str, corpus_name: str) -> str:
     except Exception as e:
         logger.error(f"Failed to upload to RAG: {e}")
         raise
+    finally:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                logger.warning(f"Failed to remove temp file: {file_path}")
+
+
+def upload_many_to_rag_corpus(
+    documents: Iterable[dict[str, str]],
+    corpus_name: str,
+    *,
+    batch_size: int = 1,
+    max_workers: int = 1,
+    pause_seconds: float = 1.5,
+) -> dict[str, int]:
+    """Bulk-upload normalized text documents into a Vertex RAG corpus."""
+    rag = _init_vertex_rag()
+    temp_dir = Path(tempfile.mkdtemp(prefix="christian_rag_"))
+    uploaded = 0
+    batches = 0
+
+    try:
+        paths: list[str] = []
+        for index, document in enumerate(documents):
+            safe_title = _safe_title(document["title"]) or f"document_{index:05d}"
+            file_path = temp_dir / f"{index:05d}_{safe_title[:80]}.txt"
+            file_path.write_text(document["text"], encoding="utf-8")
+            paths.append(str(file_path))
+
+        if not paths:
+            return {"documents": 0, "batches": 0}
+
+        for start in range(0, len(paths), batch_size):
+            batch = paths[start : start + batch_size]
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        rag.upload_file,
+                        corpus_name=corpus_name,
+                        path=path,
+                        display_name=Path(path).name,
+                    )
+                    for path in batch
+                ]
+                for future in as_completed(futures):
+                    future.result()
+            batches += 1
+            uploaded += len(batch)
+            logger.info(
+                "Imported %s/%s files into %s",
+                uploaded,
+                len(paths),
+                corpus_name,
+            )
+            if uploaded < len(paths):
+                sleep(pause_seconds)
+
+        return {"documents": uploaded, "batches": batches}
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)

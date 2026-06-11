@@ -12,6 +12,7 @@ import os
 from typing import Dict, Any, Optional
 from functools import wraps
 from collections import defaultdict
+from collections import deque
 from datetime import datetime, timezone
 
 # Import Google Cloud Logging
@@ -32,12 +33,17 @@ class MetricsCollector:
         self.metrics = defaultdict(int)
         self.timings = defaultdict(list)
         self.errors = defaultdict(int)
+        self.structured_events = deque(
+            maxlen=max(50, int(os.getenv("MONITORING_EVENT_BUFFER_SIZE", "400")))
+        )
         self.cloud_logger = None
         
         # Initialize Cloud Logging if available and configured
-        if GCP_LOGGING_AVAILABLE and os.getenv("USE_CLOUD_LOGGING", "false").lower() == "true":
+        use_cloud_logging = os.getenv("USE_CLOUD_LOGGING", "").lower() == "true"
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+        if GCP_LOGGING_AVAILABLE and (use_cloud_logging or project_id):
             try:
-                client = google.cloud.logging.Client()
+                client = google.cloud.logging.Client(project=project_id or None)
                 self.cloud_logger = client.logger("adk-agent-system")
                 logger.info("Cloud Logging initialized for metrics")
             except Exception as e:
@@ -55,6 +61,37 @@ class MetricsCollector:
                 self.cloud_logger.log_struct(payload)
             except Exception as e:
                 logger.debug(f"Failed to send log to Cloud: {e}")
+
+    def log_event(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        *,
+        store_local: bool = True,
+    ):
+        """Store and export a structured event."""
+        event = dict(payload)
+        event["event_type"] = event_type
+        event["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+        if store_local:
+            self.structured_events.append(event)
+
+        self._log_to_cloud(event_type, dict(payload))
+
+    def get_recent_events(
+        self,
+        event_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[Dict[str, Any]]:
+        """Return recent structured events, newest first."""
+        items = list(self.structured_events)
+        if event_type:
+            items = [item for item in items if item.get("event_type") == event_type]
+        if limit > 0:
+            items = items[-limit:]
+        items.reverse()
+        return items
 
     def increment(self, metric_name: str, value: int = 1, labels: Optional[Dict] = None):
         """Increment a counter metric"""
@@ -120,6 +157,7 @@ class MetricsCollector:
                 for k, v in self.timings.items()
             },
             "errors": dict(self.errors),
+            "recent_event_count": len(self.structured_events),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
@@ -132,6 +170,7 @@ class MetricsCollector:
         self.metrics.clear()
         self.timings.clear()
         self.errors.clear()
+        self.structured_events.clear()
 
     def _make_key(self, name: str, labels: Optional[Dict] = None) -> str:
         """Create metric key with labels"""
