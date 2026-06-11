@@ -30,7 +30,9 @@ fi
 
 source "${APP_DIR}/.venv/bin/activate"
 python -m pip install --upgrade pip wheel
-pip install -r "${APP_DIR}/requirements.txt"
+# RPi subset — full requirements.txt pulls weasyprint/playwright which are
+# heavy or unbuildable on Pi and not needed for the rpi-home profile.
+pip install -r "${APP_DIR}/requirements-rpi.txt"
 
 mkdir -p "${APP_DIR}/state/oauth"
 mkdir -p "${APP_DIR}/logs"

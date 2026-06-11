@@ -69,7 +69,8 @@ Pillow>=10.0.0
 # ==========================================
 # RPi-specific: Wake Word & Audio
 # ==========================================
-openwakeword>=0.6.0
-pyaudio>=0.2.14
-webrtcvad>=2.0.10
+# Canonical wakeword stack: Porcupine + sounddevice
+# (see interfaces/wakeword_interface.py and scripts/run_wakeword.py)
+pvporcupine>=3.0.0
+sounddevice>=0.4.6
 numpy>=1.24.0
