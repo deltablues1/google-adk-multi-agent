@@ -4,7 +4,9 @@ Raspberry Pi wake-word runner.
 Modes:
 - --stdin: manual transcript mode for local testing
 - --audio-file: transcribe and route one file through shared STT
-- --wakeword: live microphone loop using Porcupine + sounddevice
+- --wakeword: live microphone loop. Engine via WAKEWORD_ENGINE env:
+    openwakeword (default, free/Apache-2.0, no key) or porcupine (needs
+    PICOVOICE_ACCESS_KEY). Both use sounddevice for mic + RMS capture.
 """
 
 from __future__ import annotations
@@ -341,41 +343,45 @@ class PorcupineWakeWordRunner:
 
                     keyword = self.keywords[keyword_index] if keyword_index < len(self.keywords) else str(keyword_index)
                     logger.info("Wake word detected: %s", keyword)
-
-                    if self.interface.voice_mode == "live":
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.live_bridge.run_session(),
-                            self.loop,
-                        )
-                        future.result()
-                        continue
-
-                    utterance_wav = self._capture_utterance(stream, sample_rate, frame_length)
-                    if not utterance_wav:
-                        logger.warning("Wake-word detected but no usable speech was captured")
-                        continue
-
-                    future = asyncio.run_coroutine_threadsafe(
-                        self.interface.process_audio(
-                            audio_bytes=utterance_wav,
-                            mime_type="audio/wav",
-                            source="wakeword",
-                        ),
-                        self.loop,
-                    )
-                    result = future.result()
-                    logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
-
-                    if result["mode"] == "live":
-                        future = asyncio.run_coroutine_threadsafe(
-                            self.live_bridge.run_session(),
-                            self.loop,
-                        )
-                        future.result()
-                    elif self.tts_enabled:
-                        self._speak_response(result["response"])
+                    self._process_wake_event(stream, sample_rate, frame_length)
         finally:
             porcupine.delete()
+
+    def _process_wake_event(self, stream, sample_rate: int, frame_length: int) -> None:
+        """Shared post-detection flow used by every wake-word engine:
+        live bridge, or capture utterance -> agent -> TTS playback."""
+        if self.interface.voice_mode == "live":
+            future = asyncio.run_coroutine_threadsafe(
+                self.live_bridge.run_session(),
+                self.loop,
+            )
+            future.result()
+            return
+
+        utterance_wav = self._capture_utterance(stream, sample_rate, frame_length)
+        if not utterance_wav:
+            logger.warning("Wake-word detected but no usable speech was captured")
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.interface.process_audio(
+                audio_bytes=utterance_wav,
+                mime_type="audio/wav",
+                source="wakeword",
+            ),
+            self.loop,
+        )
+        result = future.result()
+        logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
+
+        if result["mode"] == "live":
+            future = asyncio.run_coroutine_threadsafe(
+                self.live_bridge.run_session(),
+                self.loop,
+            )
+            future.result()
+        elif self.tts_enabled:
+            self._speak_response(result["response"])
 
     def _capture_utterance(self, stream, sample_rate: int, frame_length: int) -> Optional[bytes]:
         frames: list[bytes] = []
@@ -451,6 +457,87 @@ class PorcupineWakeWordRunner:
             logger.warning("Failed to play TTS audio: %s", e)
 
 
+class OpenWakeWordRunner(PorcupineWakeWordRunner):
+    """Free, offline wake-word engine (openWakeWord, Apache-2.0, no access key).
+
+    Reuses PorcupineWakeWordRunner's mic capture (sounddevice + RMS), utterance
+    capture, TTS playback and post-detection flow; only the detection loop and
+    dependency check differ. Selected by default (WAKEWORD_ENGINE=openwakeword).
+    """
+
+    def __init__(self, interface, loop: asyncio.AbstractEventLoop):
+        super().__init__(interface, loop)
+        # openWakeWord ships pretrained models; "hey_jarvis" is bundled.
+        self.model_name = os.getenv("WAKEWORD_MODEL", "hey_jarvis").strip() or "hey_jarvis"
+        # Reuse WAKEWORD_THRESHOLD (0..1); openWakeWord scores are probabilities.
+        self.threshold = float(os.getenv("WAKEWORD_THRESHOLD", "0.5"))
+
+    def _require_dependencies(self):
+        try:
+            import openwakeword  # noqa: F401
+            import sounddevice  # noqa: F401
+            import numpy  # noqa: F401
+            import requests  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "openWakeWord mode requires openwakeword, sounddevice and numpy "
+                "(see requirements-rpi.txt)."
+            ) from e
+        # No access key required — that is the point of choosing openWakeWord.
+
+    def run_forever(self) -> None:
+        self._require_dependencies()
+
+        import numpy as np
+        import sounddevice as sd
+        import openwakeword
+        from openwakeword.model import Model
+
+        # Bundled models download once and cache; no-op afterwards.
+        try:
+            openwakeword.utils.download_models()
+        except Exception as e:
+            logger.warning("openWakeWord model download skipped: %s", e)
+
+        model = Model(wakeword_models=[self.model_name], inference_framework="onnx")
+
+        sample_rate = 16000
+        frame_length = 1280  # 80 ms @ 16 kHz — openWakeWord's expected chunk size
+        logger.info(
+            "openWakeWord loop started: model=%s threshold=%.2f sample_rate=%s frame_length=%s",
+            self.model_name, self.threshold, sample_rate, frame_length,
+        )
+
+        with sd.RawInputStream(
+            samplerate=sample_rate,
+            blocksize=frame_length,
+            dtype="int16",
+            channels=1,
+            device=self.input_device,
+        ) as stream:
+            while True:
+                pcm_frame, _overflowed = stream.read(frame_length)
+                samples = np.frombuffer(bytes(pcm_frame), dtype=np.int16)
+
+                scores = model.predict(samples)
+                top = max(scores.values()) if scores else 0.0
+                if top < self.threshold:
+                    continue
+
+                logger.info("Wake word detected: %s (score=%.2f)", self.model_name, top)
+                self._process_wake_event(stream, sample_rate, frame_length)
+                # Reset model state so the speech tail doesn't immediately retrigger.
+                model.reset()
+
+
+def _make_wakeword_runner(interface, loop):
+    """Pick the wake-word engine from WAKEWORD_ENGINE (default: openwakeword)."""
+    engine = os.getenv("WAKEWORD_ENGINE", "openwakeword").strip().lower()
+    if engine in {"porcupine", "pv", "picovoice"}:
+        return PorcupineWakeWordRunner(interface, loop)
+    return OpenWakeWordRunner(interface, loop)
+
+
 async def _run_stdin(interface) -> None:
     print("Wakeword stdin mode. Type transcript lines. Ctrl+C to stop.")
     loop = asyncio.get_running_loop()
@@ -474,7 +561,8 @@ async def _run_audio_file(interface, path: str, mime_type: str) -> None:
 
 async def _run_wakeword(interface) -> None:
     loop = asyncio.get_running_loop()
-    runner = PorcupineWakeWordRunner(interface, loop)
+    runner = _make_wakeword_runner(interface, loop)
+    logger.info("Wake-word engine: %s", type(runner).__name__)
     await loop.run_in_executor(None, runner.run_forever)
 
 
@@ -483,7 +571,7 @@ async def main() -> None:
     parser.add_argument("--stdin", action="store_true", help="Manual transcript mode for local testing")
     parser.add_argument("--audio-file", help="Transcribe and route a single audio file")
     parser.add_argument("--mime-type", default="audio/ogg", help="MIME type for --audio-file input")
-    parser.add_argument("--wakeword", action="store_true", help="Live Pi microphone loop with Porcupine wake word")
+    parser.add_argument("--wakeword", action="store_true", help="Live Pi microphone loop (engine via WAKEWORD_ENGINE: openwakeword default, or porcupine)")
     args = parser.parse_args()
 
     from interfaces.wakeword_interface import WakeWordInterface

@@ -69,7 +69,6 @@ nano /opt/google-clause/deploy/rpi/.env.rpi
 Minimum required values:
 - `API_TOKEN`
 - `GEMINI_API_KEY`
-- `PICOVOICE_ACCESS_KEY`
 - `GOOGLE_CLOUD_PROJECT`
 - `GOOGLE_APPLICATION_CREDENTIALS`
 - `GOOGLE_OAUTH_CLIENT_ID`
@@ -80,7 +79,12 @@ Minimum required values:
 Voice defaults:
 - `GEMINI_VOICE_NAME=Charon`
 - `VOICE_ASSISTANT_NAME=Jarvis`
-- `WAKEWORD_KEYWORDS=jarvis`
+- `WAKEWORD_ENGINE=openwakeword` (free, no key; default)
+- `WAKEWORD_MODEL=hey_jarvis`
+- `WAKEWORD_THRESHOLD=0.5`
+
+To use Porcupine instead: set `WAKEWORD_ENGINE=porcupine`, provide
+`PICOVOICE_ACCESS_KEY`, and `pip install pvporcupine`.
 
 HA MQTT Discovery defaults:
 - `HA_MQTT_DISCOVERY_ENABLED=true`
