@@ -82,7 +82,18 @@ class AudioIngressService:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self.api_key)
+        # Transcribe via Vertex AI using the service account (project quota),
+        # not the Developer API key — that key routes to a billing/quota that
+        # can be depleted (RESOURCE_EXHAUSTED) or blocked for Vertex. Remove the
+        # api key from env so the Vertex client authenticates via ADC/SA and
+        # reads GOOGLE_CLOUD_PROJECT/GOOGLE_CLOUD_LOCATION (global) just like the
+        # ADK chat path that is already working.
+        _kkeys = ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+        _kbackup = {k: os.environ.pop(k) for k in _kkeys if k in os.environ}
+        try:
+            client = genai.Client(vertexai=True)
+        finally:
+            os.environ.update(_kbackup)
         response = client.models.generate_content(
             model=self.model,
             contents=[

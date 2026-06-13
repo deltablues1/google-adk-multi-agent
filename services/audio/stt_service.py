@@ -61,7 +61,17 @@ class STTService:
         if _stt_use_vertex():
             project = get_google_cloud_project(required=True)
             location = get_gemini_location(default="global")
-            return _genai.Client(vertexai=True, project=project, location=location)
+            # If an API key is present in the env, google-genai would attach it
+            # to Vertex requests ("express mode"), which fails when the key is
+            # not enabled for aiplatform.googleapis.com (API_KEY_SERVICE_BLOCKED).
+            # Remove it during construction so the client authenticates via the
+            # service account (ADC), exactly like the ADK agent path.
+            _kkeys = ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+            _kbackup = {k: os.environ.pop(k) for k in _kkeys if k in os.environ}
+            try:
+                return _genai.Client(vertexai=True, project=project, location=location)
+            finally:
+                os.environ.update(_kbackup)
 
         api_key = get_google_api_key()
         if not api_key:

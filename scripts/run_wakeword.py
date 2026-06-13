@@ -23,6 +23,11 @@ from array import array
 from pathlib import Path
 from typing import Iterable, Optional
 
+# This script lives in scripts/; put the repo root on sys.path so `services`,
+# `interfaces`, etc. import whether launched as `python scripts/run_wakeword.py`
+# or from systemd.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from dotenv import load_dotenv
 from services.audio_ingress import get_audio_ingress_service
 
@@ -349,39 +354,49 @@ class PorcupineWakeWordRunner:
 
     def _process_wake_event(self, stream, sample_rate: int, frame_length: int) -> None:
         """Shared post-detection flow used by every wake-word engine:
-        live bridge, or capture utterance -> agent -> TTS playback."""
-        if self.interface.voice_mode == "live":
+        live bridge, or capture utterance -> agent -> TTS playback.
+
+        Any failure in a single turn (empty transcript, transient network/DNS,
+        STT/agent/TTS error) MUST be caught here so the wake loop keeps
+        listening instead of crashing the whole assistant.
+        """
+        try:
+            if self.interface.voice_mode == "live":
+                future = asyncio.run_coroutine_threadsafe(
+                    self.live_bridge.run_session(),
+                    self.loop,
+                )
+                future.result()
+                return
+
+            utterance_wav = self._capture_utterance(stream, sample_rate, frame_length)
+            if not utterance_wav:
+                logger.warning("Wake-word detected but no usable speech was captured")
+                return
+
             future = asyncio.run_coroutine_threadsafe(
-                self.live_bridge.run_session(),
+                self.interface.process_audio(
+                    audio_bytes=utterance_wav,
+                    mime_type="audio/wav",
+                    source="wakeword",
+                ),
                 self.loop,
             )
-            future.result()
-            return
+            result = future.result()
+            logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
 
-        utterance_wav = self._capture_utterance(stream, sample_rate, frame_length)
-        if not utterance_wav:
-            logger.warning("Wake-word detected but no usable speech was captured")
-            return
-
-        future = asyncio.run_coroutine_threadsafe(
-            self.interface.process_audio(
-                audio_bytes=utterance_wav,
-                mime_type="audio/wav",
-                source="wakeword",
-            ),
-            self.loop,
-        )
-        result = future.result()
-        logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
-
-        if result["mode"] == "live":
-            future = asyncio.run_coroutine_threadsafe(
-                self.live_bridge.run_session(),
-                self.loop,
-            )
-            future.result()
-        elif self.tts_enabled:
-            self._speak_response(result["response"])
+            if result["mode"] == "live":
+                future = asyncio.run_coroutine_threadsafe(
+                    self.live_bridge.run_session(),
+                    self.loop,
+                )
+                future.result()
+            elif self.tts_enabled:
+                self._speak_response(result["response"])
+        except Exception as exc:
+            # Log and recover — never let one bad turn kill the wake loop.
+            logger.warning("Wake turn failed (continuing to listen): %s: %s",
+                           type(exc).__name__, str(exc)[:200])
 
     def _capture_utterance(self, stream, sample_rate: int, frame_length: int) -> Optional[bytes]:
         frames: list[bytes] = []

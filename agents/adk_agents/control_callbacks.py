@@ -18,6 +18,11 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# ADK control-flow tools that hand control to a sub-agent. They return an empty
+# tool result by design (the response comes from the target agent), so the
+# empty-result guardrail must never fire on them.
+_CONTROL_FLOW_TOOLS = {"transfer_to_agent"}
+
 
 def _is_empty_result(tool_response: Any) -> bool:
     """True when a worker AgentTool result is empty/missing.
@@ -56,6 +61,12 @@ def validate_worker_result(
     stop and report), or None to keep the original response.
     """
     tool_name = getattr(tool, "name", "unknown")
+
+    # ADK control-flow tools hand control to a sub-agent and legitimately return
+    # an empty tool result — the real response is produced by the target agent.
+    # Treating that as a failure wrongly hijacks the turn with an error message.
+    if tool_name in _CONTROL_FLOW_TOOLS:
+        return None
 
     if _is_empty_result(tool_response):
         logger.error(

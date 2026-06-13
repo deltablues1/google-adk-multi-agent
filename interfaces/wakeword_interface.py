@@ -158,6 +158,7 @@ class WakeWordInterface(BaseInterface):
             source=source,
             metadata={"session_id": self.session_id},
         )
+        logger.info("STT transcript: %r", transcript_result.transcript)
         result = await self.process_transcript(transcript_result.transcript)
         result["metadata"] = transcript_result.metadata
         return result

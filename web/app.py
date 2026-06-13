@@ -140,7 +140,12 @@ def _voice_assistant_gender() -> str:
 
 
 def _default_tts_model() -> str:
-    return os.environ.get("TTS_MODEL", "gemini-2.5-flash-tts").strip()
+    explicit = os.environ.get("TTS_MODEL", "").strip()
+    if explicit:
+        return explicit
+    # The Gemini Developer API exposes TTS under the "-preview-" name (v1beta);
+    # Vertex AI uses the GA name. Pick the right default for the active backend.
+    return "gemini-2.5-flash-tts" if _tts_use_vertex() else "gemini-2.5-flash-preview-tts"
 
 
 def _tts_language_code() -> str:

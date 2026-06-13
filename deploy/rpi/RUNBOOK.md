@@ -131,10 +131,28 @@ List sounddevice devices:
 ```
 
 Then set:
-- `WAKEWORD_INPUT_DEVICE`
-- `WAKEWORD_OUTPUT_DEVICE`
+- `WAKEWORD_INPUT_DEVICE`   (e.g. `0` — raw wm8960 capture, 16 kHz mono)
+- `WAKEWORD_OUTPUT_DEVICE`  (use `default`, NOT the raw card — see note)
 
 If left empty, the default devices are used.
+
+### WM8960 audio HAT (important)
+
+The wm8960 powers up with output mixers routed OFF and a capture gain that
+makes speech untranscribable. Configure it once:
+
+```bash
+bash deploy/rpi/setup_audio.sh
+```
+
+Two gotchas this solves (both cost real debugging time):
+- **Playback silent**: the raw card (`hw:2,0`, device index `0`) rejects the
+  24 kHz TTS audio (`Invalid sample rate`). Set `WAKEWORD_OUTPUT_DEVICE=default`
+  so ALSA's plug layer resamples. The DAC→output-mixer routing
+  (`Left/Right Output Mixer PCM`) must also be `on` or nothing comes out.
+- **STT hears garbage** (e.g. "Waqfati" for Croatian): capture gain wrong.
+  Full boost CLIPS (empty transcript); too low mishears. `Capture 50%` with no
+  input boost gives clean transcripts.
 
 If you are using a `ReSpeaker 2-Mics Pi HAT`, read:
 - `deploy/rpi/MIC2_HAT.md`
