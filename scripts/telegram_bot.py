@@ -26,6 +26,12 @@ import sys
 import asyncio
 import logging
 import argparse
+from pathlib import Path
+
+# This script lives in scripts/; put the repo root on sys.path so `config`,
+# `interfaces`, etc. import whether launched as `python scripts/telegram_bot.py`
+# or from systemd (where CWD is the repo root but sys.path[0] is scripts/).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Setup logging before imports
 logging.basicConfig(

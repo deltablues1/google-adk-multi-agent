@@ -100,6 +100,7 @@ from agents.adk_agents.smart_orchestrator import create_smart_orchestrator
 from agents.adk_agents.decision_validator import create_decision_validator
 from agents.adk_agents.ask_user_agent import create_ask_user_agent
 from agents.adk_agents.runner_utils import RunnerHelper
+from agents.adk_agents.plan_execute import run_plan_execute
 # Philosophy agents using custom BaseAgent instead of ADK
 from agents.philosophy.philosophy_agents_custom import socrates_agent, termination_checker
 
@@ -262,6 +263,24 @@ class WorkspaceADKSystem:
         else:
             logger.info("Scheduler startup skipped (start_scheduler=False). Use run_scheduler.py for background jobs.")
 
+    async def run_orchestration(self, message: str) -> str:
+        """Single entry point for orchestrating a user request.
+
+        When USE_PLAN_EXECUTE is enabled, genuine multi-step chains are decomposed
+        and executed deterministically step-by-step (plan-execute), while single /
+        special requests fall back to the Smart Orchestrator. When the flag is off,
+        every request goes straight to the Smart Orchestrator (legacy behavior).
+        """
+        if os.getenv("USE_PLAN_EXECUTE", "false").lower() == "true":
+            return await run_plan_execute(
+                message,
+                self.worker_agents,
+                fallback=self.orchestrator_helper.run,
+                session_id=self.orchestrator_helper.session_id,
+                user_id=self.user_id,
+            )
+        return await self.orchestrator_helper.run(message)
+
     def verify_authentication(self) -> bool:
         """
         Provjerava je li autentifikacija konfigurirana
@@ -380,7 +399,7 @@ class WorkspaceADKSystem:
                         # - Multi-step workflows (calls tools one-by-one)
                         # - Conditional logic (IF-THEN-ELSE)
                         logger.info(sanitize_emojis("📋 Using Smart Orchestrator (AgentTool pattern)"))
-                        result = await self.orchestrator_helper.run(user_input)
+                        result = await self.run_orchestration(user_input)
                         print(sanitize_emojis(f"\n✅ Result:\n{result}"))
 
             except KeyboardInterrupt:

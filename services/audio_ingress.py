@@ -59,13 +59,23 @@ class AudioIngressService:
         if not self.api_key:
             raise AudioIngressError("GEMINI_API_KEY is not configured")
 
-        loop = asyncio.get_running_loop()
-        transcript = await loop.run_in_executor(
-            None,
-            self._transcribe_sync,
-            audio_bytes,
-            mime_type,
-        )
+        # Native Cloud STT (Chirp) path — native per-language ASR, far more
+        # reliable for Croatian than Gemini multimodal (which drifts to other
+        # languages on short utterances). Delegated to STTService so there is a
+        # single Chirp implementation shared by every voice path.
+        engine = os.getenv("STT_ENGINE", "gemini").strip().lower()
+        if engine in {"chirp", "chirp_2", "chirp2", "cloud"}:
+            from services.audio.stt_service import STTService
+
+            transcript = await STTService().transcribe(audio_bytes, mime_type)
+        else:
+            loop = asyncio.get_running_loop()
+            transcript = await loop.run_in_executor(
+                None,
+                self._transcribe_sync,
+                audio_bytes,
+                mime_type,
+            )
         transcript = (transcript or "").strip()
         if not transcript:
             raise AudioIngressError("Model returned an empty transcript")

@@ -88,28 +88,6 @@ def create_tracker_agent(
         ])
         description += ", plus ERP payment and activity tracking"
 
-    # ERP tools — only on full deployment
-    from config.deployment_config import is_erp_enabled
-    if is_erp_enabled():
-        from tools.adk_tools.erp_adk_tools import (
-            erp_list_open_invoices,
-            erp_record_payment,
-            erp_get_open_payables,
-            erp_get_activity_feed,
-            erp_get_inventory_movements,
-            erp_list_quotes,
-            erp_get_quote,
-        )
-        tools.extend([
-            erp_list_open_invoices,
-            erp_record_payment,
-            erp_get_open_payables,
-            erp_get_activity_feed,
-            erp_get_inventory_movements,
-            erp_list_quotes,
-            erp_get_quote,
-        ])
-
     # Create agent using factory
     agent = create_adk_agent(
         name="tracker",

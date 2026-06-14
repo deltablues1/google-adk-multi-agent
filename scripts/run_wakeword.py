@@ -55,6 +55,19 @@ def pcm16_rms(frame_bytes: bytes) -> float:
     return (square_sum / len(samples)) ** 0.5
 
 
+def looks_like_noise_transcript(text: str) -> bool:
+    """Heuristic for background/appliance noise that the STT hallucinated into a
+    string of isolated digits (e.g. "3 7 1 2 0 6 8 3 8 3" from a washing
+    machine). Used to end follow-up turns cleanly instead of answering and
+    looping on garbage. Real speech with a number ("koliko je 2 i 2", "21:23")
+    has few isolated-digit tokens and is not flagged."""
+    tokens = (text or "").split()
+    if not tokens:
+        return True
+    digit_tokens = sum(1 for token in tokens if token.isdigit())
+    return digit_tokens >= 4 and digit_tokens >= 0.6 * len(tokens)
+
+
 def pcm16_to_wav_bytes(
     frames: Iterable[bytes],
     sample_rate: int,
@@ -290,6 +303,19 @@ class PorcupineWakeWordRunner:
         self.tts_enabled = os.getenv("WAKEWORD_TTS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
         self.tts_timeout_seconds = float(os.getenv("WAKEWORD_TTS_TIMEOUT_SECONDS", "30"))
         self.live_bridge = PiLiveVoiceBridge(interface)
+        # Multi-turn follow-up. After an answer, optionally re-prompt
+        # ("Treba li jos nesto?") and keep listening without a new wake word for
+        # up to N more turns. The interface reuses one ADK session_id across
+        # turns, so conversation context carries over between them.
+        self.follow_up_mode = os.getenv("VOICE_FOLLOW_UP_MODE", "false").strip().lower() in {"1", "true", "yes", "on"}
+        self.follow_up_max_turns = int(os.getenv("VOICE_FOLLOW_UP_MAX_TURNS", "4"))
+        self.follow_up_prompt = os.getenv("VOICE_FOLLOW_UP_PROMPT_TEXT", "Treba li jos nesto?").strip()
+        self.wake_prompt = os.getenv("VOICE_WAKE_PROMPT_TEXT", "").strip()
+        # Open-mic echo guard: this hardware has no acoustic echo cancellation,
+        # so right after the assistant speaks, the mic still holds the tail of
+        # its own TTS. Before each follow-up capture we settle briefly and flush
+        # the buffered audio, otherwise Jarvis transcribes itself and loops.
+        self.follow_up_guard_seconds = float(os.getenv("VOICE_FOLLOW_UP_GUARD_SECONDS", "0.4"))
 
     def _require_dependencies(self):
         try:
@@ -356,47 +382,107 @@ class PorcupineWakeWordRunner:
         """Shared post-detection flow used by every wake-word engine:
         live bridge, or capture utterance -> agent -> TTS playback.
 
+        With VOICE_FOLLOW_UP_MODE enabled, after the first answer Jarvis
+        re-prompts ("Treba li jos nesto?") and keeps listening for up to
+        VOICE_FOLLOW_UP_MAX_TURNS more turns without a new wake word. The same
+        ADK session_id is reused across turns, so context carries over. Silence
+        after a prompt ends the conversation and returns to wake-word waiting.
+
         Any failure in a single turn (empty transcript, transient network/DNS,
         STT/agent/TTS error) MUST be caught here so the wake loop keeps
         listening instead of crashing the whole assistant.
         """
         try:
             if self.interface.voice_mode == "live":
-                future = asyncio.run_coroutine_threadsafe(
-                    self.live_bridge.run_session(),
-                    self.loop,
-                )
-                future.result()
+                self._run_live_bridge()
                 return
 
-            utterance_wav = self._capture_utterance(stream, sample_rate, frame_length)
-            if not utterance_wav:
+            # Optional "I'm listening" cue right after the wake word.
+            if self.wake_prompt and self.tts_enabled:
+                self._speak_response(self.wake_prompt)
+
+            handled = self._run_agent_turn(stream, sample_rate, frame_length)
+            if not handled:
                 logger.warning("Wake-word detected but no usable speech was captured")
                 return
+            if self.interface.voice_mode == "live":
+                self._run_live_bridge()
+                return
 
-            future = asyncio.run_coroutine_threadsafe(
-                self.interface.process_audio(
-                    audio_bytes=utterance_wav,
-                    mime_type="audio/wav",
-                    source="wakeword",
-                ),
-                self.loop,
-            )
-            result = future.result()
-            logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
+            if not self.follow_up_mode:
+                return
 
-            if result["mode"] == "live":
-                future = asyncio.run_coroutine_threadsafe(
-                    self.live_bridge.run_session(),
-                    self.loop,
-                )
-                future.result()
-            elif self.tts_enabled:
-                self._speak_response(result["response"])
+            for _turn in range(max(0, self.follow_up_max_turns)):
+                if self.follow_up_prompt and self.tts_enabled:
+                    self._speak_response(self.follow_up_prompt)
+                handled = self._run_agent_turn(stream, sample_rate, frame_length, drain_first=True)
+                if not handled:
+                    # Silence after the re-prompt = user is done.
+                    logger.info("Follow-up ended: no further speech")
+                    break
+                if self.interface.voice_mode == "live":
+                    self._run_live_bridge()
+                    break
         except Exception as exc:
             # Log and recover — never let one bad turn kill the wake loop.
             logger.warning("Wake turn failed (continuing to listen): %s: %s",
                            type(exc).__name__, str(exc)[:200])
+
+    def _run_live_bridge(self) -> None:
+        future = asyncio.run_coroutine_threadsafe(
+            self.live_bridge.run_session(),
+            self.loop,
+        )
+        future.result()
+
+    def _drain_input(self, stream, frame_length: int) -> None:
+        """Settle briefly, then discard any buffered mic audio so the next
+        capture starts clean. Without acoustic echo cancellation the buffer
+        holds the tail of the assistant's own TTS plus ambient noise that would
+        otherwise be (mis)transcribed during follow-up turns."""
+        try:
+            time.sleep(self.follow_up_guard_seconds)
+            while getattr(stream, "read_available", 0) >= frame_length:
+                stream.read(frame_length)
+        except Exception:
+            pass
+
+    def _run_agent_turn(self, stream, sample_rate: int, frame_length: int,
+                        drain_first: bool = False) -> bool:
+        """Capture one utterance, route it through the agent, speak the reply.
+
+        Returns True if speech was captured and a turn ran; False on silence
+        (the signal the follow-up loop uses to stop). When the turn switches the
+        interface into live mode, the caller starts the live bridge instead of
+        speaking.
+        """
+        if drain_first:
+            self._drain_input(stream, frame_length)
+        utterance_wav = self._capture_utterance(stream, sample_rate, frame_length)
+        if not utterance_wav:
+            return False
+
+        future = asyncio.run_coroutine_threadsafe(
+            self.interface.process_audio(
+                audio_bytes=utterance_wav,
+                mime_type="audio/wav",
+                source="wakeword",
+            ),
+            self.loop,
+        )
+        result = future.result()
+        logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
+
+        # In a follow-up turn (open mic, no wake word), reject noise that the STT
+        # hallucinated into digits so we don't answer it and loop on garbage.
+        if drain_first and looks_like_noise_transcript(result.get("transcript", "")):
+            logger.info("Follow-up noise rejected, ending conversation: %r",
+                        result.get("transcript", "")[:80])
+            return False
+
+        if result["mode"] != "live" and self.tts_enabled:
+            self._speak_response(result["response"])
+        return True
 
     def _capture_utterance(self, stream, sample_rate: int, frame_length: int) -> Optional[bytes]:
         frames: list[bytes] = []

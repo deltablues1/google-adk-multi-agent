@@ -229,6 +229,83 @@ def _extract_pcm_from_tts_response(response) -> bytes:
     return response.candidates[0].content.parts[0].inline_data.data
 
 
+# --- Cloud Text-to-Speech (Chirp3-HD native voices) ----------------------
+# Used when the requested voice is a full Cloud TTS voice id such as
+# "hr-HR-Chirp3-HD-Charon". These are native, per-language voices and sound far
+# more natural for Croatian than the Gemini prebuilt voices (which speak
+# Croatian with a foreign accent). We call the REST API with the service-account
+# token via google.auth (no extra dependency) and return raw PCM16 @ 24 kHz to
+# match the existing player path. Gemini voices (bare names like "Charon") keep
+# using the original generate_content path untouched.
+_cloud_tts_creds = None
+
+
+def _is_cloud_tts_voice(voice_name: str) -> bool:
+    import re
+
+    name = (voice_name or "").strip()
+    # Cloud TTS ids look like "<lang>-<REGION>-..."; Gemini voices are bare names.
+    return bool(re.match(r"^[a-z]{2,3}-[A-Z]{2}-", name))
+
+
+def _cloud_tts_language_code(voice_name: str) -> str:
+    import re
+
+    match = re.match(r"^([a-z]{2,3}-[A-Z]{2})-", voice_name or "")
+    if match:
+        return match.group(1)
+    return _tts_language_code() or "hr-HR"
+
+
+def _cloud_access_token() -> str:
+    global _cloud_tts_creds
+    import google.auth
+    from google.auth.transport.requests import Request as _AuthRequest
+
+    if _cloud_tts_creds is None:
+        _cloud_tts_creds, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+    if not _cloud_tts_creds.valid:
+        _cloud_tts_creds.refresh(_AuthRequest())
+    return _cloud_tts_creds.token
+
+
+def _synthesize_cloud_tts_pcm(text: str, voice_name: str) -> bytes:
+    """Synthesize via Cloud TTS REST and return raw PCM16 @ 24 kHz mono."""
+    import base64
+    import io
+    import json as _json
+    import urllib.request
+    import wave
+
+    payload = {
+        "input": {"text": text},
+        "voice": {
+            "languageCode": _cloud_tts_language_code(voice_name),
+            "name": voice_name,
+        },
+        "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": 24000},
+    }
+    req = urllib.request.Request(
+        "https://texttospeech.googleapis.com/v1/text:synthesize",
+        data=_json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer %s" % _cloud_access_token(),
+            "Content-Type": "application/json; charset=utf-8",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = _json.loads(resp.read().decode("utf-8"))
+    audio_b64 = body.get("audioContent")
+    if not audio_b64:
+        raise RuntimeError("Cloud TTS returned no audioContent")
+    # LINEAR16 comes back as a WAV container; return the raw PCM frames only.
+    with wave.open(io.BytesIO(base64.b64decode(audio_b64)), "rb") as wav:
+        return wav.readframes(wav.getnframes())
+
+
 def _iter_tts_stream_chunks(text: str, voice_name: str, model_name: str):
     config = _build_tts_config(voice_name)
     retry_config = RetryConfig(max_retries=1, base_delay=1.0, max_delay=4.0)
@@ -476,6 +553,45 @@ def create_app(interface) -> FastAPI:
 
         if not text:
             raise HTTPException(status_code=400, detail="Text is empty after cleanup")
+
+        # Native Cloud TTS (Chirp3-HD) path — selected by a full voice id like
+        # "hr-HR-Chirp3-HD-Charon". Always unary (returns full PCM16 @ 24 kHz).
+        if _is_cloud_tts_voice(voice_name):
+            try:
+                _track_tts(len(text))
+                pcm_data = await asyncio.get_event_loop().run_in_executor(
+                    None, _synthesize_cloud_tts_pcm, text, voice_name
+                )
+                duration_s = _time.time() - started_at
+                _metrics.record_timing(
+                    "web_tts_latency",
+                    duration_s,
+                    labels={"mode": "cloud", "vertex": "cloud_tts"},
+                )
+                _metrics.log_event(
+                    "web_tts_request",
+                    {
+                        "voice_name": voice_name,
+                        "model": "cloud-tts-chirp3hd",
+                        "stream": False,
+                        "vertex": False,
+                        "text_chars": len(text),
+                        "duration_ms": int(duration_s * 1000),
+                        "success": True,
+                    },
+                )
+                return Response(
+                    content=pcm_data,
+                    media_type="audio/L16;codec=pcm;rate=24000",
+                    headers={"X-TTS-Mode": "cloud", "X-TTS-Voice": voice_name},
+                )
+            except Exception as exc:
+                logger.error(f"Cloud TTS error: {exc}")
+                _metrics.record_error(
+                    "web_tts_error",
+                    labels={"mode": "cloud", "error_type": "cloud_tts"},
+                )
+                raise HTTPException(status_code=502, detail=f"Cloud TTS failed: {exc}")
 
         try:
             _ = _create_tts_client()

@@ -48,12 +48,78 @@ def _stt_use_vertex() -> bool:
     }
 
 
+# --- Cloud Speech-to-Text v2 (Chirp) credentials --------------------------
+# Cloud STT uses native per-language ASR (Chirp), far more reliable for
+# Croatian than Gemini multimodal, especially on short utterances. We call the
+# REST API with the service-account token via google.auth (no extra dependency).
+_cloud_stt_creds = None
+
+
+def _cloud_stt_access_token() -> str:
+    global _cloud_stt_creds
+    import google.auth
+    from google.auth.transport.requests import Request as _AuthRequest
+
+    if _cloud_stt_creds is None:
+        _cloud_stt_creds, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+    if not _cloud_stt_creds.valid:
+        _cloud_stt_creds.refresh(_AuthRequest())
+    return _cloud_stt_creds.token
+
+
 class STTService:
     """Speech-to-Text via Gemini multimodal audio input."""
 
     def __init__(self, model: str | None = None):
         self.model = model or os.getenv("STT_MODEL", "gemini-2.5-flash")
         self.default_language = os.getenv("STT_LANGUAGE", "Croatian").strip() or "Croatian"
+        # STT engine: "gemini" (default, multimodal) or "chirp"/"cloud"
+        # (Cloud Speech-to-Text v2, native Croatian ASR).
+        self.engine = os.getenv("STT_ENGINE", "gemini").strip().lower()
+        self.cloud_model = os.getenv("STT_CLOUD_MODEL", "chirp_2").strip() or "chirp_2"
+        self.cloud_location = os.getenv("STT_CLOUD_LOCATION", "us-central1").strip() or "us-central1"
+        self.cloud_language_code = os.getenv("STT_LANGUAGE_CODE", "hr-HR").strip() or "hr-HR"
+
+    def _transcribe_cloud_sync(self, audio_bytes: bytes) -> str:
+        """Transcribe via Cloud Speech-to-Text v2 (Chirp). Returns plain text."""
+        import base64
+        import json as _json
+        import urllib.request
+
+        project = get_google_cloud_project(required=True)
+        location = self.cloud_location
+        url = (
+            "https://%s-speech.googleapis.com/v2/projects/%s/locations/%s"
+            "/recognizers/_:recognize" % (location, project, location)
+        )
+        payload = {
+            "config": {
+                "model": self.cloud_model,
+                "languageCodes": [self.cloud_language_code],
+                "features": {"enableAutomaticPunctuation": True},
+                "autoDecodingConfig": {},
+            },
+            "content": base64.b64encode(audio_bytes).decode("ascii"),
+        }
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer %s" % _cloud_stt_access_token(),
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+        parts = []
+        for result in body.get("results", []):
+            alternatives = result.get("alternatives") or []
+            if alternatives and alternatives[0].get("transcript"):
+                parts.append(alternatives[0]["transcript"].strip())
+        return " ".join(parts).strip()
 
     def _get_client(self):
         from google import genai as _genai
@@ -113,12 +179,34 @@ class STTService:
         if mime_type not in SUPPORTED_MIME_TYPES:
             logger.warning(f"Unsupported MIME type {mime_type}, attempting anyway")
 
+        # Native Cloud STT (Chirp) path — native Croatian ASR.
+        if self.engine in {"chirp", "chirp_2", "chirp2", "cloud"}:
+            async def _call_cloud():
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, self._transcribe_cloud_sync, audio_bytes
+                )
+
+            transcript = await run_with_bounded_retry(
+                "stt_cloud_recognize",
+                _call_cloud,
+                config=RetryConfig(max_retries=1, base_delay=1.0, max_delay=4.0),
+                log=logger,
+            )
+            logger.info(
+                f"STT[{self.cloud_model}] transcription ({len(audio_bytes)} bytes): {transcript[:100]}"
+            )
+            return transcript
+
         client = self._get_client()
         from google.genai import types as _types
         target_language = (language or self.default_language).strip() or self.default_language
 
         prompt = (
             f"Transcribe this {target_language} audio message exactly as spoken. "
+            f"The speaker is speaking {target_language}; do NOT interpret it as a "
+            "different language (e.g. Polish, Russian, Serbian or Slovenian) and "
+            "do NOT translate it. Preserve native orthography and diacritics "
+            "(for Croatian: č, ć, š, ž, đ). "
             "Return ONLY the transcription text, nothing else. "
             "If the audio is unclear or empty, return '[nečujno]'."
         )

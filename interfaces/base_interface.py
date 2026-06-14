@@ -481,7 +481,7 @@ class BaseInterface(ABC):
                             response_mode=response_mode,
                         )
                     else:
-                        result = await self.system.orchestrator_helper.run(message)
+                        result = await self.system.run_orchestration(message)
                 elif direct_agent == "socrates":
                     self.system.active_mode = "CLASSROOM"
                     result = await self._process_classroom_mode(message, first_entry=True)

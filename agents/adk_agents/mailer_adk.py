@@ -75,7 +75,11 @@ def create_mailer_agent(
         instruction=instruction,
         config={
             "temperature": 0.7,  # Higher for natural email composition
-            "max_tokens": 2048,
+            # Email bodies are emitted as gmail_send_message tool-call arguments,
+            # so the whole body counts against the output budget. 2048 truncated
+            # long reports mid-call -> invalid function_call -> empty result ->
+            # the orchestrator guard halted the send. 8192 fits full reports.
+            "max_tokens": 8192,
         }
     )
 

@@ -56,14 +56,24 @@ async def google_search_grounding(
     try:
         logger.info(f"Executing Google Search Grounding: {query}")
 
-        # Configure Vertex AI client
+        # Configure Vertex AI client.
+        # Grounding with gemini-3.x must use the GLOBAL endpoint (the regional
+        # VERTEX_AI_LOCATION like us-west1 only exposes 2.5 and returns 404 for
+        # the 3.x preview models), so force global here rather than the regional
+        # location from get_vertex_ai_config().
+        import os
         from tools.google_api_client import get_vertex_ai_config
         config = get_vertex_ai_config()
+        grounding_location = os.getenv("GOOGLE_CLOUD_LOCATION", "global").strip() or "global"
+        grounding_model = (
+            os.getenv("GROUNDING_MODEL", os.getenv("FLASH_MODEL", "gemini-3.5-flash")).strip()
+            or "gemini-3.5-flash"
+        )
 
         client = genai.Client(
             vertexai=True,
             project=config.get("project_id"),
-            location=config.get("location", "global")
+            location=grounding_location,
         )
 
         # Create grounding tool configuration
@@ -75,7 +85,7 @@ async def google_search_grounding(
         # Generate content with grounding
         # The model will automatically search and cite sources
         response = client.models.generate_content(
-            model="gemini-3.5-flash",
+            model=grounding_model,
             contents=f"Search the web and answer: {query}",
             config=types.GenerateContentConfig(
                 tools=[google_search_tool],
