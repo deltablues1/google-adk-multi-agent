@@ -33,22 +33,31 @@ _DRIVE_NOISE_WORDS = {
 
 
 def _relax_name_query(query: str) -> Optional[str]:
-    """Build a looser fallback for a `name contains '<phrase>'` query that found
-    nothing: drop filler words and OR the distinctive tokens, so a request like
-    "customers tablicu" still matches a file named "Customers (1).xlsx".
+    """Build a looser fallback for a name query that found nothing.
+
+    Handles both `name = '<phrase>'` (exact match — the most common reason a
+    lookup wrongly returns zero, since the real file is "Sales Q4 2025 (1).xlsx"
+    not exactly "sales q4 2025") and `name contains '<phrase>'`. Drops filler
+    words and ORs the distinctive tokens as a `contains` search.
 
     Returns the relaxed Drive query, or None when there is nothing to relax.
     """
-    m = re.search(r"name\s+contains\s+'([^']+)'", query, re.IGNORECASE)
+    m = re.search(r"name\s*(=|contains)\s*'([^']+)'", query, re.IGNORECASE)
     if not m:
         return None
-    phrase = m.group(1).strip()
+    op = m.group(1)
+    phrase = m.group(2).strip()
     tokens = [t for t in re.split(r"\s+", phrase) if len(t) >= 3 and "'" not in t]
-    if len(tokens) <= 1:
-        return None  # already a single token — primary query was optimal
-    significant = [t for t in tokens if t.lower() not in _DRIVE_NOISE_WORDS] or tokens
-    clauses = " or ".join(f"name contains '{t}'" for t in significant)
-    return f"({clauses}) and trashed = false"
+    if not tokens:
+        return None
+    # Exact `=` is brittle (case + whole-name), so always relax it. A multi-word
+    # `contains` that missed gets split into tokens. A single-token `contains` is
+    # already optimal, so leave it alone.
+    if op == "=" or len(tokens) > 1:
+        significant = [t for t in tokens if t.lower() not in _DRIVE_NOISE_WORDS] or tokens
+        clauses = " or ".join(f"name contains '{t}'" for t in significant)
+        return f"({clauses}) and trashed = false"
+    return None
 
 
 # ============================================================================
