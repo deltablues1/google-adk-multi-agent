@@ -54,6 +54,9 @@ async def docs_create_document(
         content: Document body. Plain text or Markdown
             (# headings, **bold**, - lists, [text](url)). Strongly recommended.
         share: If True, share the document as "anyone with link" (default False).
+            Note: when a created document is emailed, the mailer auto-shares it
+            with the actual recipient (least privilege), so public link-sharing
+            is normally unnecessary.
         share_role: Permission when sharing: "reader" (default), "commenter", or "writer".
 
     Returns:

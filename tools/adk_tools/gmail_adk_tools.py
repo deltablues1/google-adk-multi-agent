@@ -5,6 +5,7 @@ ADK-compatible wrappers for Gmail operations.
 """
 
 from typing import Optional, List
+import re
 import logging
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,72 @@ def _get_credentials():
     except Exception as e:
         logger.error(f"Failed to get credentials: {e}")
         return None
+
+
+# ============================================================================
+# RECIPIENT-SCOPED DOC SHARING (least privilege)
+# ============================================================================
+# When an outgoing email links a Google Doc/Drive file, the recipient must be
+# able to open it. Rather than making the document public ("anyone with link"),
+# we share it directly with the actual recipient(s) at send time. This is
+# deterministic (runs in code, not at the LLM's discretion) and least-privilege.
+
+# Capture the file ID from the common Google Docs/Sheets/Slides/Drive link forms.
+_DRIVE_LINK_PATTERNS = [
+    re.compile(r"https?://docs\.google\.com/(?:document|spreadsheets|presentation)/d/([a-zA-Z0-9_-]+)"),
+    re.compile(r"https?://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)"),
+    re.compile(r"https?://drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)"),
+]
+
+
+def _extract_drive_file_ids(text: str) -> List[str]:
+    """Return de-duplicated Google Drive/Docs file IDs linked in *text*."""
+    ids: List[str] = []
+    if not text:
+        return ids
+    for pattern in _DRIVE_LINK_PATTERNS:
+        for fid in pattern.findall(text):
+            if fid not in ids:
+                ids.append(fid)
+    return ids
+
+
+def _parse_recipients(*fields: Optional[str]) -> List[str]:
+    """Flatten comma/semicolon-separated to/cc fields into unique email addresses."""
+    emails: List[str] = []
+    for field in fields:
+        if not field:
+            continue
+        for part in str(field).replace(";", ",").split(","):
+            addr = part.strip()
+            if "@" in addr and addr not in emails:
+                emails.append(addr)
+    return emails
+
+
+async def _autoshare_linked_docs(creds, body: str, recipients: List[str]) -> None:
+    """Share any Google Doc/Drive file linked in *body* with *recipients* (reader).
+
+    Best-effort: failures are logged and swallowed — sharing must never block the
+    send. Only files owned/shareable by the sending account will actually share.
+    """
+    file_ids = _extract_drive_file_ids(body)
+    if not file_ids or not recipients:
+        return
+    try:
+        from tools.api_implementations.drive_api import drive_share_file as drive_share_impl
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[autoshare] drive_api import failed: {e}")
+        return
+    for fid in file_ids:
+        for email in recipients:
+            try:
+                # send_notification=False: we are about to email the recipient
+                # ourselves, so suppress Drive's duplicate "shared with you" mail.
+                await drive_share_impl(creds, fid, email, "reader", "user", send_notification=False)
+                logger.info(f"[autoshare] shared {fid} with {email} (reader, no notify)")
+            except Exception as e:
+                logger.warning(f"[autoshare] could not share {fid} with {email}: {e}")
 
 
 # ============================================================================
@@ -154,6 +221,10 @@ async def gmail_send_message(
             "status": "invalid_email"
         }
 
+    # Least-privilege: share any linked Google Doc/Drive file with the actual
+    # recipients before sending, so the emailed link opens (no public sharing).
+    await _autoshare_linked_docs(creds, body, _parse_recipients(to, cc))
+
     try:
         from tools.api_implementations.gmail_api import gmail_send_message as gmail_send_impl
         result = await gmail_send_impl(creds, to, subject, body, thread_id, cc, bcc, attachment_path)
@@ -200,6 +271,10 @@ async def gmail_create_draft(
             "error": f"Invalid recipient email: '{to}'. Must be valid email address",
             "status": "invalid_email"
         }
+
+    # Share linked docs with recipients now so the link works the moment the
+    # draft is sent (same least-privilege approach as direct sends).
+    await _autoshare_linked_docs(creds, body, _parse_recipients(to, cc))
 
     try:
         from tools.api_implementations.gmail_api import gmail_create_draft as gmail_create_draft_impl

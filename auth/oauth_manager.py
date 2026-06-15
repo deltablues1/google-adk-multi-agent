@@ -34,10 +34,14 @@ class OAuthManager:
         "https://www.googleapis.com/auth/contacts",
         "https://www.googleapis.com/auth/contacts.readonly",
         "https://www.googleapis.com/auth/tasks",
-        "https://www.googleapis.com/auth/datastore",
         "https://www.googleapis.com/auth/adwords",
         "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/cloud-platform",
+        # NOTE: cloud-platform and datastore are intentionally NOT requested on
+        # the user OAuth token. They trigger Google's reauth (RAPT) policy, which
+        # forces interactive re-login roughly daily and breaks headless token
+        # refresh ("Reauthentication is needed ... gcloud auth ..."). Vertex AI
+        # (Gemini/grounding) and Firestore use the Service Account, not this
+        # user token, so dropping these scopes is safe.
     ]
 
     def __init__(
@@ -99,7 +103,10 @@ class OAuthManager:
         self._pending_flow = flow
         auth_url, _ = flow.authorization_url(
             access_type="offline",
-            include_granted_scopes="true",
+            # Keep the issued token to exactly SCOPES. With "true", a previously
+            # granted cloud-platform scope would be folded back in via incremental
+            # auth and re-trigger the reauth policy we are removing.
+            include_granted_scopes="false",
             prompt="consent",
         )
         return auth_url

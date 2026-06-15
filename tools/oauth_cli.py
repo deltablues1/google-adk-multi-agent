@@ -259,6 +259,66 @@ def start_oauth_flow(oauth_manager: Optional[OAuthManager] = None) -> bool:
     return True
 
 
+def _extract_auth_code(raw: str) -> Optional[str]:
+    """Pull the OAuth `code` out of a pasted redirect URL, query string, or raw code."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    if "code=" in raw:
+        query = urlparse(raw).query or raw.split("?", 1)[-1]
+        params = parse_qs(query)
+        if params.get("code"):
+            return params["code"][0]
+    return raw  # assume the user pasted just the code
+
+
+def start_oauth_flow_manual(oauth_manager: Optional[OAuthManager] = None) -> bool:
+    """OAuth flow for headless hosts: no callback server, no browser on this box.
+
+    Prints the auth URL to open on ANY browser (laptop/phone), then accepts the
+    redirect URL/code pasted back. Avoids the localhost:8080 callback entirely.
+    """
+    if oauth_manager is None:
+        oauth_manager = get_oauth_manager()
+
+    print("\n" + "=" * 60)
+    print("Google Workspace ADK - OAuth 2.0 (manual / headless)")
+    print("=" * 60 + "\n")
+
+    try:
+        auth_url = oauth_manager.get_authorization_url()
+    except Exception as e:
+        print(f"✗ Failed to generate authorization URL: {e}")
+        return False
+
+    print("1) Open this URL in a real browser WITH JavaScript (laptop/phone):\n")
+    print(auth_url + "\n")
+    print("2) Sign in (info@lux-tech.hr) and approve access.")
+    print("3) Your browser will then try to load a URL like:")
+    print("     http://localhost:8080/oauth2callback?code=XXXX&scope=...")
+    print("   It will show a 'can't reach the site' error — THAT IS FINE.")
+    print("   Copy the FULL URL from the address bar.\n")
+
+    raw = input("Paste the full redirect URL (or just the code): ").strip()
+    code = _extract_auth_code(raw)
+    if not code:
+        print("✗ No authorization code found in what you pasted.")
+        return False
+
+    print("\nExchanging authorization code for access token...")
+    try:
+        oauth_manager.exchange_code_for_token(code)
+    except Exception as e:
+        print(f"✗ Failed to exchange authorization code: {e}")
+        return False
+
+    print("\n" + "=" * 60)
+    print("✓ Authorization Successful!")
+    print("=" * 60)
+    print(f"Token saved to: {oauth_manager.token_storage_path}\n")
+    return True
+
+
 def check_oauth_status(oauth_manager: Optional[OAuthManager] = None) -> bool:
     """
     Check OAuth authentication status
@@ -353,7 +413,12 @@ def main():
     parser.add_argument(
         '--auth',
         action='store_true',
-        help='Start OAuth authorization flow'
+        help='Start OAuth authorization flow (local callback server on :8080)'
+    )
+    parser.add_argument(
+        '--manual',
+        action='store_true',
+        help='Headless OAuth: print URL, paste redirect code back (no callback server)'
     )
     parser.add_argument(
         '--status',
@@ -382,7 +447,10 @@ def main():
         sys.exit(1)
 
     # Execute command
-    if args.auth:
+    if args.manual:
+        success = start_oauth_flow_manual()
+        sys.exit(0 if success else 1)
+    elif args.auth:
         success = start_oauth_flow()
         sys.exit(0 if success else 1)
     elif args.status:

@@ -33,6 +33,16 @@ Typical chains:
 ### Mandatory pre-lookup rules
 - Email to a PERSON named (no @ address given): add a `rolodex` step BEFORE `mailer`.
 - Analyze a FILE named (no ID given): add a `librarian` step BEFORE `analyst`.
+- Find a PERSON / ROW / DATA **inside a named spreadsheet or table** ("nađi
+  kontakt X iz customers tablice", "podatak iz tablice Y"): this is NOT a
+  `rolodex` job. Route `librarian` (find the file) -> `analyst` (read the sheet
+  and extract the row). `rolodex` only searches Google Contacts / ERP, never a
+  spreadsheet. `analyst` handles .xlsx files automatically (no convert step).
+
+### Search hygiene
+When writing a `librarian` task to find a file, use the **distinctive keyword
+only** ("customers"), not the user's full phrase with filler words ("customers
+tablicu"). Extra words like "tablicu/datoteku/file" cause the name search to miss.
 
 ---
 

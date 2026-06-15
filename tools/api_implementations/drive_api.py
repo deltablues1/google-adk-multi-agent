@@ -9,6 +9,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 import io
+import re
 import logging
 
 from tools.resilience.retry_handler import with_retry, RetryConfig
@@ -18,6 +19,36 @@ from tools.resilience.cache import with_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
+
+
+# Croatian/English filler words that creep into a "find the X file" request and
+# pollute a `name contains '...'` Drive query (e.g. "customers tablicu").
+_DRIVE_NOISE_WORDS = {
+    "tablicu", "tablica", "tablice", "tablicom",
+    "datoteku", "datoteka", "datoteke", "dokument", "dokumenta",
+    "file", "fajl", "fajla", "spreadsheet", "sheet", "excel",
+    "find", "search", "nadji", "nađi", "pronadji", "pronađi", "otvori",
+    "the", "mi", "na", "u", "od",
+}
+
+
+def _relax_name_query(query: str) -> Optional[str]:
+    """Build a looser fallback for a `name contains '<phrase>'` query that found
+    nothing: drop filler words and OR the distinctive tokens, so a request like
+    "customers tablicu" still matches a file named "Customers (1).xlsx".
+
+    Returns the relaxed Drive query, or None when there is nothing to relax.
+    """
+    m = re.search(r"name\s+contains\s+'([^']+)'", query, re.IGNORECASE)
+    if not m:
+        return None
+    phrase = m.group(1).strip()
+    tokens = [t for t in re.split(r"\s+", phrase) if len(t) >= 3 and "'" not in t]
+    if len(tokens) <= 1:
+        return None  # already a single token — primary query was optimal
+    significant = [t for t in tokens if t.lower() not in _DRIVE_NOISE_WORDS] or tokens
+    clauses = " or ".join(f"name contains '{t}'" for t in significant)
+    return f"({clauses}) and trashed = false"
 
 
 # ============================================================================
@@ -94,6 +125,22 @@ async def drive_search_files(
             # Stop if no more pages or reached max_results
             if not page_token or len(all_files) >= max_results:
                 break
+
+        # Fallback: a name-contains search that found nothing usually means the
+        # query carried filler words (e.g. "customers tablicu"). Retry with the
+        # distinctive tokens only so the real file still matches.
+        if not all_files:
+            relaxed = _relax_name_query(query)
+            if relaxed and relaxed != query:
+                logger.info(f"Drive search empty — retrying relaxed query: {relaxed!r}")
+                fb = await aexecute(service.files().list(
+                    q=relaxed,
+                    pageSize=page_size,
+                    fields='files(id, name, mimeType, modifiedTime, size, webViewLink, owners)',
+                ))
+                all_files = fb.get('files', [])
+                if all_files:
+                    query = relaxed  # report the query that actually matched
 
         # Trim to max_results if needed
         if len(all_files) > max_results:
@@ -446,7 +493,8 @@ async def drive_share_file(
     file_id: str,
     email: Optional[str] = None,
     role: str = "reader",
-    type: str = "user"
+    type: str = "user",
+    send_notification: bool = True,
 ) -> Dict[str, Any]:
     """
     Share a file with users or make it publicly accessible
@@ -457,6 +505,9 @@ async def drive_share_file(
         email: Email address to share with (omit for public sharing)
         role: Permission role ('reader', 'writer', 'commenter')
         type: Permission type ('user', 'group', 'domain', 'anyone')
+        send_notification: For user/group shares, whether Drive sends its own
+            notification email to the recipient (default True). Set False when
+            the app already emails the recipient, to avoid a duplicate message.
 
     Returns:
         Dictionary with sharing details
@@ -481,12 +532,18 @@ async def drive_share_file(
         if email and type in ['user', 'group']:
             permission['emailAddress'] = email
 
-        # Create permission
-        created_permission = await aexecute(service.permissions().create(
+        # Create permission. For user/group shares, control whether Google Drive
+        # sends its own "X shared a document with you" notification email — when
+        # the app already emails the recipient (e.g. mailer), suppress it to avoid
+        # a duplicate message. sendNotificationEmail is not applicable to "anyone".
+        create_kwargs = dict(
             fileId=file_id,
             body=permission,
-            fields='id, type, role, emailAddress'
-        ))
+            fields='id, type, role, emailAddress',
+        )
+        if type in ['user', 'group']:
+            create_kwargs['sendNotificationEmail'] = send_notification
+        created_permission = await aexecute(service.permissions().create(**create_kwargs))
 
         logger.info(f"File shared successfully: {file_id}")
 

@@ -66,6 +66,46 @@ def _get_credentials() -> Optional[Credentials]:
 
 
 # ============================================================================
+# TRANSPARENT XLSX HANDLING
+# ============================================================================
+# The Sheets API only works on native Google Sheets. When the analyst is pointed
+# at an uploaded .xlsx/.xls/.csv it fails with "not supported for this document".
+# Rather than relying on the LLM to notice and convert, the read tools below do
+# it deterministically: on that error they convert the file to a native Sheet
+# (once, cached per process) and retry the read.
+
+# Original (xlsx/xls/csv) file id -> converted native Google Sheet id.
+_CONVERTED_SHEET_IDS: Dict[str, str] = {}
+
+
+def _is_unsupported_doc(result: Any) -> bool:
+    """True when a Sheets read failed because the file is not a native Sheet."""
+    if not isinstance(result, dict) or not result.get("error"):
+        return False
+    msg = str(result.get("error", "")).lower()
+    return "not supported for this document" in msg or "operation is not supported" in msg
+
+
+async def _to_native_sheet_id(spreadsheet_id: str) -> Optional[str]:
+    """Convert a non-native spreadsheet to a Google Sheet, returning the new id
+    (cached per process). Returns None on failure."""
+    if spreadsheet_id in _CONVERTED_SHEET_IDS:
+        return _CONVERTED_SHEET_IDS[spreadsheet_id]
+    try:
+        from tools.adk_tools.drive_adk_tools import drive_convert_to_sheets
+        conv = await drive_convert_to_sheets(spreadsheet_id)
+        new_id = conv.get("new_file_id") if isinstance(conv, dict) else None
+        if new_id:
+            _CONVERTED_SHEET_IDS[spreadsheet_id] = new_id
+            logger.info(f"[sheets] auto-converted {spreadsheet_id} -> native sheet {new_id}")
+            return new_id
+        logger.warning(f"[sheets] conversion returned no new_file_id for {spreadsheet_id}: {conv}")
+    except Exception as e:
+        logger.error(f"[sheets] auto-convert failed for {spreadsheet_id}: {e}")
+    return None
+
+
+# ============================================================================
 # ADK TOOL FUNCTIONS
 # ============================================================================
 
@@ -104,17 +144,22 @@ async def sheets_get_spreadsheet(
             "status": "unauthenticated"
         }
 
-    try:
-        from tools.api_implementations.sheets_api import sheets_get_spreadsheet as sheets_get_impl
-        result = await sheets_get_impl(creds, spreadsheet_id, include_grid_data)
-        return result
+    from tools.api_implementations.sheets_api import sheets_get_spreadsheet as sheets_get_impl
+    spreadsheet_id = _CONVERTED_SHEET_IDS.get(spreadsheet_id, spreadsheet_id)
 
-    except Exception as e:
-        logger.error(f"Error getting spreadsheet: {e}")
-        return {
-            "error": str(e),
-            "status": "failed"
-        }
+    async def _read(sid):
+        try:
+            return await sheets_get_impl(creds, sid, include_grid_data)
+        except Exception as e:
+            logger.error(f"Error getting spreadsheet: {e}")
+            return {"error": str(e), "status": "failed"}
+
+    result = await _read(spreadsheet_id)
+    if _is_unsupported_doc(result):
+        native = await _to_native_sheet_id(spreadsheet_id)
+        if native:
+            result = await _read(native)
+    return result
 
 
 async def sheets_get_values(
@@ -153,17 +198,22 @@ async def sheets_get_values(
             "status": "unauthenticated"
         }
 
-    try:
-        from tools.api_implementations.sheets_api import sheets_get_values as sheets_get_vals_impl
-        result = await sheets_get_vals_impl(creds, spreadsheet_id, range, value_render_option)
-        return result
+    from tools.api_implementations.sheets_api import sheets_get_values as sheets_get_vals_impl
+    spreadsheet_id = _CONVERTED_SHEET_IDS.get(spreadsheet_id, spreadsheet_id)
 
-    except Exception as e:
-        logger.error(f"Error getting values: {e}")
-        return {
-            "error": str(e),
-            "status": "failed"
-        }
+    async def _read(sid):
+        try:
+            return await sheets_get_vals_impl(creds, sid, range, value_render_option)
+        except Exception as e:
+            logger.error(f"Error getting values: {e}")
+            return {"error": str(e), "status": "failed"}
+
+    result = await _read(spreadsheet_id)
+    if _is_unsupported_doc(result):
+        native = await _to_native_sheet_id(spreadsheet_id)
+        if native:
+            result = await _read(native)
+    return result
 
 
 async def sheets_update_values(
@@ -490,7 +540,19 @@ async def read_sheets_schema(
         # A1 notation for first row with wide column range
         range_name = f"{sheet_name}!A1:ZZ1"
 
-        result = await sheets_get_vals_impl(creds, spreadsheet_id, range_name, "FORMATTED_VALUE")
+        spreadsheet_id = _CONVERTED_SHEET_IDS.get(spreadsheet_id, spreadsheet_id)
+
+        async def _read(sid):
+            try:
+                return await sheets_get_vals_impl(creds, sid, range_name, "FORMATTED_VALUE")
+            except Exception as e:
+                return {"error": str(e), "status": "failed"}
+
+        result = await _read(spreadsheet_id)
+        if _is_unsupported_doc(result):
+            native = await _to_native_sheet_id(spreadsheet_id)
+            if native:
+                result = await _read(native)
 
         headers = result.get('values', [[]])[0] if result.get('values') else []
 

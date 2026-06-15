@@ -486,7 +486,7 @@ class BaseInterface(ABC):
                     self.system.active_mode = "CLASSROOM"
                     result = await self._process_classroom_mode(message, first_entry=True)
                 else:
-                    result = await self.system.orchestrator_helper.run(message)
+                    result = await self.system.run_orchestration(message)
 
             return result
 
