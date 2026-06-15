@@ -105,6 +105,28 @@ async def _to_native_sheet_id(spreadsheet_id: str) -> Optional[str]:
     return None
 
 
+def _is_bad_range(result: Any) -> bool:
+    """True when a Sheets read failed because the tab/range name doesn't exist."""
+    if not isinstance(result, dict) or not result.get("error"):
+        return False
+    return "unable to parse range" in str(result.get("error", "")).lower()
+
+
+async def _first_sheet_title(creds, spreadsheet_id: str) -> Optional[str]:
+    """Title of the first tab of a spreadsheet. A converted .xlsx keeps the source
+    sheet's tab name (NOT 'Sheet1'), so callers must resolve it instead of guessing.
+    Returns None if it cannot be resolved."""
+    try:
+        from tools.api_implementations.sheets_api import sheets_get_spreadsheet as sheets_meta_impl
+        meta = await sheets_meta_impl(creds, spreadsheet_id, False)
+        sheets = meta.get("sheets") if isinstance(meta, dict) else None
+        if sheets:
+            return sheets[0].get("title")
+    except Exception as e:
+        logger.warning(f"[sheets] could not resolve first tab for {spreadsheet_id}: {e}")
+    return None
+
+
 # ============================================================================
 # ADK TOOL FUNCTIONS
 # ============================================================================
@@ -537,22 +559,33 @@ async def read_sheets_schema(
         # Read first row (headers) using sheets_get_values
         from tools.api_implementations.sheets_api import sheets_get_values as sheets_get_vals_impl
 
-        # A1 notation for first row with wide column range
-        range_name = f"{sheet_name}!A1:ZZ1"
-
         spreadsheet_id = _CONVERTED_SHEET_IDS.get(spreadsheet_id, spreadsheet_id)
 
-        async def _read(sid):
+        async def _read_headers(sid, tab):
             try:
-                return await sheets_get_vals_impl(creds, sid, range_name, "FORMATTED_VALUE")
+                return await sheets_get_vals_impl(creds, sid, f"{tab}!A1:ZZ1", "FORMATTED_VALUE")
             except Exception as e:
                 return {"error": str(e), "status": "failed"}
 
-        result = await _read(spreadsheet_id)
+        result = await _read_headers(spreadsheet_id, sheet_name)
+
+        # .xlsx/.csv: convert to a native Sheet. The converted tab is named after the
+        # source sheet (not "Sheet1"), so resolve the real tab before re-reading —
+        # this avoids the doomed "Sheet1" read that spammed "Unable to parse range".
         if _is_unsupported_doc(result):
             native = await _to_native_sheet_id(spreadsheet_id)
             if native:
-                result = await _read(native)
+                spreadsheet_id = native
+                sheet_name = await _first_sheet_title(creds, spreadsheet_id) or sheet_name
+                result = await _read_headers(spreadsheet_id, sheet_name)
+
+        # Safety net: a wrong tab name -> fall back to the actual first tab.
+        if _is_bad_range(result):
+            real_tab = await _first_sheet_title(creds, spreadsheet_id)
+            if real_tab and real_tab != sheet_name:
+                logger.info(f"[sheets] tab '{sheet_name}' not found; using first tab '{real_tab}'")
+                sheet_name = real_tab
+                result = await _read_headers(spreadsheet_id, sheet_name)
 
         headers = result.get('values', [[]])[0] if result.get('values') else []
 

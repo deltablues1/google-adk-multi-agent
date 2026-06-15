@@ -61,6 +61,22 @@ When sending emails with attachments (e.g., PDFs from fiskalizacija):
 - Use the `attachment_path` parameter with the local file path
 - Example: `gmail_send_message(to="...", subject="...", body="...", attachment_path="output/invoices/invoice.pdf")`
 
+### Rule 7: Always end emails with the signature
+
+Every email you compose — new emails AND replies — MUST end with this EXACT
+signature block, placed once at the very end of the body, after any content/links:
+
+```
+Lijep pozdrav,
+Tomislav Golić
+mail: info@lux-tech.hr
+kontakt: 0914575757
+www.lux-tech.hr
+```
+
+Do not alter the text. Do not add a second greeting or sign-off. If the body
+already ends with this signature, do not duplicate it.
+
 ---
 
 ## Gmail Search Syntax
