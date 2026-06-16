@@ -266,6 +266,7 @@ async def run_plan_execute(
     user_id: str = "default-user",
     planner_model: str = FLASH_MODEL,
     summarizer_model: str = FLASH_MODEL,
+    record_turn: Optional[Callable[[str, str], Awaitable[None]]] = None,
 ) -> str:
     """Run a request via plan-execute, falling back to ``fallback`` when it is not a
     genuine multi-step chain (or if anything goes wrong).
@@ -276,6 +277,11 @@ async def run_plan_execute(
         fallback: Async callable (the existing Smart Orchestrator run) used for
             single-step / special / error cases. MUST be awaitable -> str.
         session_id/user_id: Base identifiers; each step gets its own derived session.
+        record_turn: Optional async callable ``(user_message, answer) -> None`` used
+            to persist a genuine multi-step turn into the caller's conversation
+            session. NOT called on the fallback paths — the fallback (orchestrator)
+            already records into its own session — so cross-turn context is kept
+            without double-recording.
 
     Returns:
         Final user-facing answer text.
@@ -340,6 +346,7 @@ async def run_plan_execute(
         logger.info("[STEP %s] %s OK (%d chars)", sid, agent_name, len(result))
 
     # --- 3. SUMMARIZE ---
+    answer: Optional[str] = None
     try:
         summarizer = create_workflow_summarizer(model=summarizer_model)
         final = await run_agent_simple(
@@ -349,17 +356,29 @@ async def run_plan_execute(
             user_id=user_id,
         )
         if final and final.strip():
-            return final
+            answer = final
     except Exception as e:
         logger.error(f"[SUMMARY] Summarizer failed: {e}")
 
     # Summarizer fallback: stitch the ledger together plainly so we never return empty.
-    if ledger.failure:
-        last = ledger.results.get(ledger.done[-1]) if ledger.done else None
-        done_note = f" Zadnji uspješan korak: {last['agent']}." if last else ""
-        return (
-            f"Dio zadatka je odrađen, ali korak {ledger.failure['id']} "
-            f"({ledger.failure['agent']}) nije uspio: {ledger.failure['reason']}.{done_note}"
-        )
-    last = ledger.results.get(ledger.done[-1]) if ledger.done else None
-    return last["result"] if last else "No response generated"
+    if answer is None:
+        if ledger.failure:
+            last = ledger.results.get(ledger.done[-1]) if ledger.done else None
+            done_note = f" Zadnji uspješan korak: {last['agent']}." if last else ""
+            answer = (
+                f"Dio zadatka je odrađen, ali korak {ledger.failure['id']} "
+                f"({ledger.failure['agent']}) nije uspio: {ledger.failure['reason']}.{done_note}"
+            )
+        else:
+            last = ledger.results.get(ledger.done[-1]) if ledger.done else None
+            answer = last["result"] if last else "No response generated"
+
+    # Persist this turn into the caller's conversation session so a follow-up
+    # (e.g. answering a clarifying question this workflow asked) keeps context.
+    if record_turn is not None:
+        try:
+            await record_turn(user_message, answer)
+        except Exception as e:
+            logger.warning(f"[PLAN] Could not record turn into session: {e}")
+
+    return answer

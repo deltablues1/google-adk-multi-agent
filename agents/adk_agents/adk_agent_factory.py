@@ -5,13 +5,56 @@ Factory functions for creating ADK-compliant agents using LlmAgent primitives.
 Replaces custom BaseAgent with native Google ADK agents.
 """
 
-from typing import List, Optional, Dict, Any
+import os
+from typing import List, Optional, Dict, Any, Union
 from pathlib import Path
 import logging
 from google.adk.agents import LlmAgent
+from google.adk.models import Gemini
 from google.genai import types
 
 logger = logging.getLogger(__name__)
+
+
+def _build_model(model: str) -> Union[str, Gemini]:
+    """Wrap a model name in a Gemini model that retries transient LLM failures.
+
+    The Vertex AI Gemini endpoint returns 429 RESOURCE_EXHAUSTED when the
+    per-minute quota bucket is momentarily empty (bursts of requests). Those
+    calls are made by the ADK runner itself, so our Workspace-tool retry layer
+    (tools/resilience/retry_handler) never sees them. Attaching HttpRetryOptions
+    retries ONLY the failed generate_content HTTP call with backoff — the agent
+    loop is not re-run, so tool side effects are never duplicated.
+
+    Configurable via env (defaults cover a ~60s per-minute quota window):
+      LLM_RETRY_ATTEMPTS (default 5; <=1 disables and uses the plain string)
+      LLM_RETRY_INITIAL_DELAY (s, default 2)
+      LLM_RETRY_MAX_DELAY (s, default 60)
+      LLM_RETRY_EXP_BASE (default 2)
+    """
+    try:
+        attempts = int(os.getenv("LLM_RETRY_ATTEMPTS", "5"))
+    except ValueError:
+        attempts = 5
+
+    if attempts <= 1:
+        return model
+
+    try:
+        retry_options = types.HttpRetryOptions(
+            attempts=attempts,
+            initial_delay=float(os.getenv("LLM_RETRY_INITIAL_DELAY", "2")),
+            max_delay=float(os.getenv("LLM_RETRY_MAX_DELAY", "60")),
+            exp_base=float(os.getenv("LLM_RETRY_EXP_BASE", "2")),
+            http_status_codes=[429, 503],
+        )
+        return Gemini(model=model, retry_options=retry_options)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(
+            f"Could not build Gemini model with retry_options ({e}); "
+            "using plain model string (no LLM retry)"
+        )
+        return model
 
 
 def load_instruction_file(agent_name: str) -> Optional[str]:
@@ -111,10 +154,10 @@ def create_adk_agent(
         }
     )
 
-    # Create LlmAgent
+    # Create LlmAgent (wrap the model so transient LLM 429/503s are retried)
     agent_kwargs = dict(
         name=name,
-        model=model,
+        model=_build_model(model),
         instruction=instruction,
         description=description,
         tools=tools or [],

@@ -278,6 +278,7 @@ class WorkspaceADKSystem:
                 fallback=self.orchestrator_helper.run,
                 session_id=self.orchestrator_helper.session_id,
                 user_id=self.user_id,
+                record_turn=self.orchestrator_helper.record_exchange,
             )
         return await self.orchestrator_helper.run(message)
 

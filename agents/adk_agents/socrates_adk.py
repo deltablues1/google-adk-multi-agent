@@ -102,9 +102,11 @@ Pravila:
     if rag_tool is not None:
         instruction += "\nKoristi bazu znanja (PhilosophyKnowledgeBase) da pronađeš relevantne koncepte, ali ih preformuliraj u pitanja."
 
+    from agents.adk_agents.adk_agent_factory import _build_model
+
     fallback_agent = LlmAgent(
         name="Socrates",
-        model=model or "gemini-3.5-flash",
+        model=_build_model(model or "gemini-3.5-flash"),
         tools=tools,
         instruction=instruction,
     )

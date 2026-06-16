@@ -39,9 +39,11 @@ def create_christian_guide_agent(
             "izvore, ali odgovori formuliraj prirodno i razgovorno."
         )
 
+    from agents.adk_agents.adk_agent_factory import _build_model
+
     agent = LlmAgent(
         name="christian_guide",
-        model=model or "gemini-3-flash-preview",
+        model=_build_model(model or "gemini-3-flash-preview"),
         tools=tools,
         instruction=instruction,
         description=(

@@ -331,6 +331,55 @@ class RunnerHelper:
             app_name=self.app_name
         )
 
+    async def record_exchange(self, user_text: str, assistant_text: str) -> None:
+        """Persist one (user -> assistant) turn into this helper's session.
+
+        Used when a turn was handled OUTSIDE this runner — e.g. by the
+        plan-execute layer, which runs in its own isolated per-step sessions and
+        therefore never updates the orchestrator's persistent session. Without
+        this, a follow-up that falls back to the orchestrator (e.g. answering a
+        clarifying question the workflow asked) has no record of the previous
+        turn and the context is lost.
+        """
+        if not (user_text or assistant_text):
+            return
+        try:
+            from google.adk.events import Event
+
+            session = await self.session_service.get_session(
+                app_name=self.app_name,
+                user_id=self.user_id,
+                session_id=self.session_id,
+            )
+            if session is None:
+                session = await self.session_service.create_session(
+                    app_name=self.app_name,
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                )
+
+            user_event = Event(
+                author="user",
+                content=types.Content(
+                    role="user", parts=[types.Part(text=user_text)]
+                ),
+            )
+            await self.session_service.append_event(session, user_event)
+
+            model_event = Event(
+                author=getattr(self.agent, "name", "assistant"),
+                content=types.Content(
+                    role="model", parts=[types.Part(text=assistant_text)]
+                ),
+            )
+            await self.session_service.append_event(session, model_event)
+            logger.info(
+                f"Recorded external turn into session '{self.session_id}' "
+                f"(user={len(user_text)} chars, assistant={len(assistant_text)} chars)"
+            )
+        except Exception as e:
+            logger.warning(f"Could not record exchange into session: {e}")
+
     async def stream(self, user_message: str) -> AsyncGenerator[Any, None]:
         """
         Stream agent execution with message.
