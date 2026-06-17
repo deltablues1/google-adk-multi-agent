@@ -49,13 +49,12 @@ def _enable_litellm_prompt_cache() -> None:
     if getattr(ll, "_prompt_cache_patched", False):
         return
 
+    import inspect
+
     original = ll._get_completion_inputs
 
-    def _patched(*args, **kwargs):
-        # Arity-agnostic: ADK versions differ in this function's signature, so
-        # pass everything through and return the original result unchanged in
-        # shape — we only mutate the messages list in place.
-        result = original(*args, **kwargs)
+    def _mark(result):
+        """Mark the system message content for Anthropic prompt caching, in place."""
         try:
             messages = result[0] if isinstance(result, (tuple, list)) else None
             for msg in messages or []:
@@ -71,9 +70,7 @@ def _enable_litellm_prompt_cache() -> None:
                             "text": content,
                             "cache_control": {"type": "ephemeral"},
                         }]
-                        # LiteLLM's Anthropic transformation only collects the
-                        # system param (and reads cache_control) from role=="system"
-                        # messages — ADK emits role=="developer", so normalize it.
+                        # LiteLLM reads cache_control only from role=="system".
                         if isinstance(msg, dict):
                             msg["content"] = block
                             msg["role"] = "system"
@@ -88,9 +85,21 @@ def _enable_litellm_prompt_cache() -> None:
             logger.debug("prompt-cache marking skipped: %s", exc)
         return result
 
+    # ADK versions differ: _get_completion_inputs may be sync or async, and take
+    # 1 or 2 positional args. Handle both, passing args straight through.
+    if inspect.iscoroutinefunction(original):
+        async def _patched(*args, **kwargs):
+            return _mark(await original(*args, **kwargs))
+    else:
+        def _patched(*args, **kwargs):
+            return _mark(original(*args, **kwargs))
+
     ll._get_completion_inputs = _patched
     ll._prompt_cache_patched = True
-    logger.info("LiteLLM Anthropic prompt-caching patch applied (system block cache_control)")
+    logger.info(
+        "LiteLLM Anthropic prompt-caching patch applied (async=%s)",
+        inspect.iscoroutinefunction(original),
+    )
 
 
 def _disable_adk_telemetry() -> None:
