@@ -102,14 +102,20 @@ Pravila:
     if rag_tool is not None:
         instruction += "\nKoristi bazu znanja (PhilosophyKnowledgeBase) da pronađeš relevantne koncepte, ali ih preformuliraj u pitanja."
 
-    from agents.adk_agents.adk_agent_factory import _build_model
+    from agents.adk_agents.adk_agent_factory import _build_model, _make_usage_callback
 
-    fallback_agent = LlmAgent(
+    _model = model or "gemini-3.5-flash"
+    _kwargs = dict(
         name="Socrates",
-        model=_build_model(model or "gemini-3.5-flash"),
+        model=_build_model(_model),
         tools=tools,
         instruction=instruction,
     )
+    # Token accounting (built outside the factory, so wire the callback here too).
+    if os.getenv("TOKEN_STATS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+        _kwargs["after_model_callback"] = _make_usage_callback("Socrates", _model)
+
+    fallback_agent = LlmAgent(**_kwargs)
     logger.info(f"Socrates agent created (model={model}, RAG={'yes' if rag_tool else 'no'})")
     return fallback_agent
 

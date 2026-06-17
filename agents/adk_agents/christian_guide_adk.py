@@ -39,11 +39,12 @@ def create_christian_guide_agent(
             "izvore, ali odgovori formuliraj prirodno i razgovorno."
         )
 
-    from agents.adk_agents.adk_agent_factory import _build_model
+    from agents.adk_agents.adk_agent_factory import _build_model, _make_usage_callback
 
-    agent = LlmAgent(
+    _model = model or "gemini-3-flash-preview"
+    _kwargs = dict(
         name="christian_guide",
-        model=_build_model(model or "gemini-3-flash-preview"),
+        model=_build_model(_model),
         tools=tools,
         instruction=instruction,
         description=(
@@ -51,6 +52,11 @@ def create_christian_guide_agent(
             "reflection, discernment, prayer, and guided exercises"
         ),
     )
+    # Token accounting (built outside the factory, so wire the callback here too).
+    if os.getenv("TOKEN_STATS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+        _kwargs["after_model_callback"] = _make_usage_callback("christian_guide", _model)
+
+    agent = LlmAgent(**_kwargs)
     logger.info(
         "christian_guide agent created (model=%s, RAG=%s)",
         model,
