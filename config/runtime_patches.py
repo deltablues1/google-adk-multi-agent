@@ -71,10 +71,18 @@ def _enable_litellm_prompt_cache() -> None:
                             "text": content,
                             "cache_control": {"type": "ephemeral"},
                         }]
+                        # LiteLLM's Anthropic transformation only collects the
+                        # system param (and reads cache_control) from role=="system"
+                        # messages — ADK emits role=="developer", so normalize it.
                         if isinstance(msg, dict):
                             msg["content"] = block
+                            msg["role"] = "system"
                         else:
                             msg.content = block
+                            try:
+                                msg.role = "system"
+                            except Exception:
+                                pass
                     break  # only the (single) system/developer message
         except Exception as exc:  # never break the request over caching
             logger.debug("prompt-cache marking skipped: %s", exc)
