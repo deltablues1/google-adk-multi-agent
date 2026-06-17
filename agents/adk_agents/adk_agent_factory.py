@@ -28,8 +28,40 @@ def _gemini_pinned_agents() -> set:
     return base
 
 
-def _claude_model_for(model: str) -> str:
-    """Map a Gemini tier to a Claude tier (configurable via env)."""
+# Content/reasoning workers default to the stronger ("pro") Claude tier; glue
+# and routing agents (planner, summarizer, orchestrator, secretary, tracker,
+# rolodex, librarian, scraper, voice_qa) fall through to the cheap tier map.
+# Fully overridable per agent via CLAUDE_AGENT_MODELS.
+_DEFAULT_STRONG_AGENTS = {
+    "analyst", "mailer", "researcher", "scribe",
+    "marketing", "synthesizer", "expense",
+}
+
+
+def _claude_agent_overrides() -> Dict[str, str]:
+    """Parse CLAUDE_AGENT_MODELS='mailer=claude-sonnet-4-6,researcher=claude-opus-4-8'."""
+    out: Dict[str, str] = {}
+    for pair in os.getenv("CLAUDE_AGENT_MODELS", "").split(","):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            k, v = k.strip().lower(), v.strip()
+            if k and v:
+                out[k] = v
+    return out
+
+
+def _claude_model_for(model: str, agent_name: Optional[str] = None) -> str:
+    """Pick the Claude model for an agent: explicit env override > built-in
+    strong-agent default > Gemini-tier mapping."""
+    name = (agent_name or "").lower()
+
+    override = _claude_agent_overrides().get(name)
+    if override:
+        return override
+
+    if name in _DEFAULT_STRONG_AGENTS:
+        return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-4-6")
+
     m = (model or "").lower()
     if "pro" in m:
         return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-4-6")
@@ -47,7 +79,7 @@ def _use_anthropic(agent_name: Optional[str]) -> bool:
 def _effective_model_name(model, agent_name: Optional[str] = None) -> str:
     """The model string we actually run with — for logging and token labels."""
     if isinstance(model, str) and _use_anthropic(agent_name):
-        return "anthropic/" + _claude_model_for(model)
+        return "anthropic/" + _claude_model_for(model, agent_name)
     return model if isinstance(model, str) else getattr(model, "model", str(model))
 
 
@@ -78,7 +110,7 @@ def _build_model(model: str, agent_name: Optional[str] = None):
         try:
             from google.adk.models.lite_llm import LiteLlm
 
-            claude = _claude_model_for(model)
+            claude = _claude_model_for(model, agent_name)
             logger.info(
                 "Routing agent '%s' to Claude via LiteLLM: anthropic/%s",
                 agent_name, claude,
