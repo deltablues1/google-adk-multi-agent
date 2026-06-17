@@ -107,7 +107,7 @@ Pravila:
     _model = model or "gemini-3.5-flash"
     _kwargs = dict(
         name="Socrates",
-        model=_build_model(_model),
+        model=_build_model(_model, "Socrates"),
         tools=tools,
         instruction=instruction,
     )

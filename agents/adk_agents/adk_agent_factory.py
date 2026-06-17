@@ -16,8 +16,49 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 
-def _build_model(model: str) -> Union[str, Gemini]:
-    """Wrap a model name in a Gemini model that retries transient LLM failures.
+# ---- Provider routing (Gemini default; Claude via LiteLLM when enabled) ----
+
+def _gemini_pinned_agents() -> set:
+    """Agents that must stay on Gemini/Vertex (e.g. Vertex RAG tools)."""
+    base = {"socrates", "christian_guide"}
+    for a in os.getenv("CLAUDE_GEMINI_ONLY_AGENTS", "").split(","):
+        a = a.strip().lower()
+        if a:
+            base.add(a)
+    return base
+
+
+def _claude_model_for(model: str) -> str:
+    """Map a Gemini tier to a Claude tier (configurable via env)."""
+    m = (model or "").lower()
+    if "pro" in m:
+        return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-4-6")
+    if "lite" in m:
+        return os.getenv("CLAUDE_LITE_MODEL", "claude-haiku-4-5")
+    return os.getenv("CLAUDE_FLASH_MODEL", "claude-haiku-4-5")
+
+
+def _use_anthropic(agent_name: Optional[str]) -> bool:
+    if os.getenv("LLM_PROVIDER", "gemini").lower() != "anthropic":
+        return False
+    return (agent_name or "").lower() not in _gemini_pinned_agents()
+
+
+def _effective_model_name(model, agent_name: Optional[str] = None) -> str:
+    """The model string we actually run with — for logging and token labels."""
+    if isinstance(model, str) and _use_anthropic(agent_name):
+        return "anthropic/" + _claude_model_for(model)
+    return model if isinstance(model, str) else getattr(model, "model", str(model))
+
+
+def _build_model(model: str, agent_name: Optional[str] = None):
+    """Build the model object for an agent.
+
+    Provider is chosen by ``LLM_PROVIDER`` (default ``gemini``). When set to
+    ``anthropic``, agents not pinned to Gemini are routed to Claude through
+    ADK's LiteLLM wrapper; everything else keeps the Gemini path below.
+
+    Wrap a model name in a Gemini model that retries transient LLM failures.
 
     The Vertex AI Gemini endpoint returns 429 RESOURCE_EXHAUSTED when the
     per-minute quota bucket is momentarily empty (bursts of requests). Those
@@ -32,6 +73,23 @@ def _build_model(model: str) -> Union[str, Gemini]:
       LLM_RETRY_MAX_DELAY (s, default 60)
       LLM_RETRY_EXP_BASE (default 2)
     """
+    # Provider routing: Claude via LiteLLM when enabled and not pinned to Gemini.
+    if _use_anthropic(agent_name):
+        try:
+            from google.adk.models.lite_llm import LiteLlm
+
+            claude = _claude_model_for(model)
+            logger.info(
+                "Routing agent '%s' to Claude via LiteLLM: anthropic/%s",
+                agent_name, claude,
+            )
+            return LiteLlm(model=f"anthropic/{claude}")
+        except Exception as e:
+            logger.warning(
+                "LiteLLM/Claude unavailable for '%s' (%s); falling back to Gemini.",
+                agent_name, e,
+            )
+
     try:
         attempts = int(os.getenv("LLM_RETRY_ATTEMPTS", "5"))
     except ValueError:
@@ -183,10 +241,11 @@ def create_adk_agent(
         }
     )
 
-    # Create LlmAgent (wrap the model so transient LLM 429/503s are retried)
+    # Create LlmAgent (wrap the model so transient LLM 429/503s are retried;
+    # routes to Claude via LiteLLM when LLM_PROVIDER=anthropic and not pinned).
     agent_kwargs = dict(
         name=name,
-        model=_build_model(model),
+        model=_build_model(model, name),
         instruction=instruction,
         description=description,
         tools=tools or [],
@@ -200,8 +259,9 @@ def create_adk_agent(
 
     # Per-agent token accounting (provider-agnostic; disable with TOKEN_STATS_ENABLED=false).
     if os.getenv("TOKEN_STATS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
-        model_label = model if isinstance(model, str) else getattr(model, "model", str(model))
-        agent_kwargs["after_model_callback"] = _make_usage_callback(name, model_label)
+        agent_kwargs["after_model_callback"] = _make_usage_callback(
+            name, _effective_model_name(model, name)
+        )
 
     agent = LlmAgent(**agent_kwargs)
 

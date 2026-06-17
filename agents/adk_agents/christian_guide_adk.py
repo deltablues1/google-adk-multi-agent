@@ -44,7 +44,7 @@ def create_christian_guide_agent(
     _model = model or "gemini-3-flash-preview"
     _kwargs = dict(
         name="christian_guide",
-        model=_build_model(_model),
+        model=_build_model(_model, "christian_guide"),
         tools=tools,
         instruction=instruction,
         description=(

@@ -2,6 +2,10 @@
 google-adk>=0.1.0
 google-genai>=0.3.0
 
+# Multi-provider model routing (Claude/OpenAI via ADK LiteLlm). Optional:
+# only needed when LLM_PROVIDER=anthropic (or openai).
+litellm>=1.40.0
+
 # Google API Clients
 google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
