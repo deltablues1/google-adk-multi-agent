@@ -452,6 +452,14 @@ class BaseInterface(ABC):
                     session_service=existing_service,
                 )
 
+        _token_marker = None
+        try:
+            from tools.observability.token_stats import get_token_stats, token_stats_enabled
+            if token_stats_enabled():
+                _token_marker = get_token_stats().mark()
+        except Exception:
+            _token_marker = None
+
         try:
             # Check for mode routing (CLASSROOM vs LEGACY)
             if self.system.active_mode == "CLASSROOM" and not self._should_use_voice_direct_routing(user_id):
@@ -493,6 +501,17 @@ class BaseInterface(ABC):
         except Exception as e:
             logger.error(f"Error processing message: {e}")
             return f"Error processing request: {str(e)}"
+        finally:
+            if _token_marker is not None:
+                try:
+                    from tools.observability.token_stats import get_token_stats
+                    report = get_token_stats().report(
+                        start=_token_marker,
+                        title=f"TOKEN USAGE (turn) user={user_id}",
+                    )
+                    logger.info("[TOKENS]\n%s", report)
+                except Exception:
+                    pass
 
     async def _process_classroom_mode(self, message: str, first_entry: bool = False) -> str:
         """

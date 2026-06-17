@@ -57,6 +57,35 @@ def _build_model(model: str) -> Union[str, Gemini]:
         return model
 
 
+def _make_usage_callback(agent_name: str, model_str: str):
+    """Build an ADK after_model_callback that records per-agent token usage.
+
+    Framework-level, provider-agnostic — fires for Gemini today and for any
+    LiteLLM-routed model (Claude/GPT) later, so the numbers compare directly.
+    Fully defensive: any extraction failure is swallowed so it can never break
+    a model turn.
+    """
+
+    def _after_model(callback_context, llm_response):
+        try:
+            from tools.observability.token_stats import get_token_stats
+
+            um = getattr(llm_response, "usage_metadata", None)
+            if um is None:
+                return None
+            prompt = getattr(um, "prompt_token_count", 0) or 0
+            output = getattr(um, "candidates_token_count", 0) or 0
+            cached = getattr(um, "cached_content_token_count", 0) or 0
+            total = getattr(um, "total_token_count", 0) or 0
+            name = getattr(callback_context, "agent_name", None) or agent_name
+            get_token_stats().record(name, model_str, prompt, output, cached, total)
+        except Exception:  # never let accounting break inference
+            pass
+        return None  # do not modify the response
+
+    return _after_model
+
+
 def load_instruction_file(agent_name: str) -> Optional[str]:
     """
     Load agent instructions from markdown file.
@@ -168,6 +197,11 @@ def create_adk_agent(
         agent_kwargs["after_tool_callback"] = after_tool_callback
     if before_tool_callback is not None:
         agent_kwargs["before_tool_callback"] = before_tool_callback
+
+    # Per-agent token accounting (provider-agnostic; disable with TOKEN_STATS_ENABLED=false).
+    if os.getenv("TOKEN_STATS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+        model_label = model if isinstance(model, str) else getattr(model, "model", str(model))
+        agent_kwargs["after_model_callback"] = _make_usage_callback(name, model_label)
 
     agent = LlmAgent(**agent_kwargs)
 

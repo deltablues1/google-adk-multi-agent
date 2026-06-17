@@ -277,6 +277,21 @@ ADK Migration: {status.get('adk_migration', 'N/A')}
         )
 
     @authorized_only
+    async def cmd_tokens(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /tokens command - per-agent token usage (cumulative). /tokens reset clears it."""
+        from tools.observability.token_stats import get_token_stats
+
+        stats = get_token_stats()
+        if context.args and context.args[0].lower() == "reset":
+            stats.reset()
+            await update.message.reply_text("Token statistika resetirana.")
+            return
+
+        report = stats.report(title="TOKEN USAGE (cumulative)")
+        safe = html.escape(report)
+        await update.message.reply_text(f"<pre>{safe}</pre>", parse_mode=ParseMode.HTML)
+
+    @authorized_only
     async def cmd_agents(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /agents command."""
         agents_info = self.get_agents_info()
@@ -773,6 +788,7 @@ Koristi /classroom za ulazak.
         # Commands
         self.application.add_handler(CommandHandler("start", self.cmd_start))
         self.application.add_handler(CommandHandler("status", self.cmd_status))
+        self.application.add_handler(CommandHandler("tokens", self.cmd_tokens))
         self.application.add_handler(CommandHandler("agents", self.cmd_agents))
         self.application.add_handler(CommandHandler("classroom", self.cmd_classroom))
         self.application.add_handler(CommandHandler("leave", self.cmd_leave))
@@ -811,6 +827,7 @@ Koristi /classroom za ulazak.
         commands = [
             BotCommand("start", "Pokreni bot"),
             BotCommand("status", "Status sustava"),
+            BotCommand("tokens", "Potrošnja tokena po agentima"),
             BotCommand("agents", "Lista agenata"),
             BotCommand("classroom", "Philosophy Classroom"),
             BotCommand("leave", "Izađi iz Classroom-a"),
