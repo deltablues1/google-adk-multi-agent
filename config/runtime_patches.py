@@ -51,9 +51,13 @@ def _enable_litellm_prompt_cache() -> None:
 
     original = ll._get_completion_inputs
 
-    def _patched(llm_request):
-        messages, tools, response_format, gen = original(llm_request)
+    def _patched(*args, **kwargs):
+        # Arity-agnostic: ADK versions differ in this function's signature, so
+        # pass everything through and return the original result unchanged in
+        # shape — we only mutate the messages list in place.
+        result = original(*args, **kwargs)
         try:
+            messages = result[0] if isinstance(result, (tuple, list)) else None
             for msg in messages or []:
                 role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
                 if role in ("system", "developer"):
@@ -74,7 +78,7 @@ def _enable_litellm_prompt_cache() -> None:
                     break  # only the (single) system/developer message
         except Exception as exc:  # never break the request over caching
             logger.debug("prompt-cache marking skipped: %s", exc)
-        return messages, tools, response_format, gen
+        return result
 
     ll._get_completion_inputs = _patched
     ll._prompt_cache_patched = True
