@@ -86,13 +86,19 @@ class _Agg:
         if r.model:
             self.model = r.model
 
+    # Cache-read input tokens bill at ~0.1x of base input price (Anthropic).
+    CACHE_READ_RATE = float(os.getenv("CACHE_READ_RATE", "0.1"))
+
     def cost(self) -> Optional[float]:
         price = _price_for(self.model)
         if price is None:
             return None
-        # Cached input tokens are billed cheaper on most providers; we count
-        # them at full input price here for a conservative (upper-bound) estimate.
-        return (self.prompt * price[0] + self.output * price[1]) / 1_000_000.0
+        # 'cached' = cache-read tokens (billed ~0.1x); the rest at full input price.
+        # First-call cache-write premium (~1.25x) is not separately tracked, so
+        # this is a close approximation, not exact billing.
+        uncached = max(self.prompt - self.cached, 0)
+        input_cost = uncached * price[0] + self.cached * price[0] * self.CACHE_READ_RATE
+        return (input_cost + self.output * price[1]) / 1_000_000.0
 
 
 class TokenStats:
