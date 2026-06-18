@@ -76,6 +76,15 @@ def _use_anthropic(agent_name: Optional[str]) -> bool:
     return (agent_name or "").lower() not in _gemini_pinned_agents()
 
 
+def _claude_retries() -> int:
+    """LiteLLM num_retries — retries Anthropic 429/5xx with exponential backoff
+    (honors the retry-after header). Helps burst rate-limits self-heal."""
+    try:
+        return int(os.getenv("CLAUDE_RETRY_ATTEMPTS", "4"))
+    except ValueError:
+        return 4
+
+
 def _effective_model_name(model, agent_name: Optional[str] = None) -> str:
     """The model string we actually run with — for logging and token labels."""
     if isinstance(model, str) and _use_anthropic(agent_name):
@@ -115,7 +124,7 @@ def _build_model(model: str, agent_name: Optional[str] = None):
                 "Routing agent '%s' to Claude via LiteLLM: anthropic/%s",
                 agent_name, claude,
             )
-            return LiteLlm(model=f"anthropic/{claude}")
+            return LiteLlm(model=f"anthropic/{claude}", num_retries=_claude_retries())
         except Exception as e:
             logger.warning(
                 "LiteLLM/Claude unavailable for '%s' (%s); falling back to Gemini.",
