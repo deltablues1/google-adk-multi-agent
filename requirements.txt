@@ -6,6 +6,10 @@ google-genai>=0.3.0
 # only needed when LLM_PROVIDER=anthropic (or openai).
 litellm>=1.40.0
 
+# OpenAI SDK — used directly for the optional OpenAI voice engine
+# (STT_ENGINE=openai / TTS_ENGINE=openai). Also a litellm dependency.
+openai>=1.40.0
+
 # Google API Clients
 google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0

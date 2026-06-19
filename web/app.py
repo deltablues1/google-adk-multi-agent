@@ -170,6 +170,63 @@ def _get_tts_api_key() -> str:
     return get_google_api_key()
 
 
+# --- OpenAI TTS engine (opt-in via TTS_ENGINE=openai) ---------------------
+# Additive: the default Gemini/Cloud paths are untouched. When TTS_ENGINE is
+# "openai", /api/tts routes here. OpenAI's response_format="pcm" returns raw
+# 24 kHz / 16-bit / mono PCM — exactly the format the existing player expects
+# (audio/L16;rate=24000), so no resampling or container handling is needed.
+_openai_client = None
+
+
+def _tts_engine() -> str:
+    return os.environ.get("TTS_ENGINE", "").strip().lower()
+
+
+def _openai_api_key() -> str:
+    return os.environ.get("OPENAI_API_KEY", "").strip()
+
+
+def _openai_tts_model() -> str:
+    return os.environ.get("OPENAI_TTS_MODEL", "").strip() or "gpt-4o-mini-tts"
+
+
+def _openai_tts_voice() -> str:
+    # "alloy" is a known-good default; set OPENAI_TTS_VOICE to a business voice
+    # (e.g. "marin"/"cedar") once confirmed available on the account.
+    return os.environ.get("OPENAI_TTS_VOICE", "").strip() or "alloy"
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+
+        key = _openai_api_key()
+        if not key:
+            raise RuntimeError("OPENAI_API_KEY not set — required for TTS_ENGINE=openai")
+        _openai_client = OpenAI(api_key=key)
+    return _openai_client
+
+
+def _synthesize_openai_tts_pcm(text: str, voice_name: str) -> bytes:
+    """Synthesize via OpenAI TTS and return raw PCM16 @ 24 kHz mono."""
+    client = _get_openai_client()
+    kwargs = {
+        "model": _openai_tts_model(),
+        "voice": voice_name or _openai_tts_voice(),
+        "input": text,
+        "response_format": "pcm",
+    }
+    instructions = os.environ.get("OPENAI_TTS_INSTRUCTIONS", "").strip()
+    if instructions:
+        kwargs["instructions"] = instructions
+    resp = client.audio.speech.create(**kwargs)
+    # openai 2.x returns a binary response wrapper; .read() yields the bytes.
+    if hasattr(resp, "read"):
+        return resp.read()
+    return resp.content
+
+
 def _sanitize_tts_text(text: str) -> str:
     import re
 
@@ -553,6 +610,47 @@ def create_app(interface) -> FastAPI:
 
         if not text:
             raise HTTPException(status_code=400, detail="Text is empty after cleanup")
+
+        # OpenAI TTS engine (opt-in via TTS_ENGINE=openai). Voice is controlled by
+        # OPENAI_TTS_VOICE (Gemini/Cloud voice ids do not apply here). Returns
+        # PCM16 @ 24 kHz to match the existing player path. Default path untouched.
+        if _tts_engine() == "openai":
+            ov = _openai_tts_voice()
+            try:
+                _track_tts(len(text))
+                pcm_data = await asyncio.get_event_loop().run_in_executor(
+                    None, _synthesize_openai_tts_pcm, text, ov
+                )
+                duration_s = _time.time() - started_at
+                _metrics.record_timing(
+                    "web_tts_latency",
+                    duration_s,
+                    labels={"mode": "openai", "vertex": "openai_tts"},
+                )
+                _metrics.log_event(
+                    "web_tts_request",
+                    {
+                        "voice_name": ov,
+                        "model": _openai_tts_model(),
+                        "stream": False,
+                        "vertex": False,
+                        "text_chars": len(text),
+                        "duration_ms": int(duration_s * 1000),
+                        "success": True,
+                    },
+                )
+                return Response(
+                    content=pcm_data,
+                    media_type="audio/L16;codec=pcm;rate=24000",
+                    headers={"X-TTS-Mode": "openai", "X-TTS-Voice": ov},
+                )
+            except Exception as exc:
+                logger.error(f"OpenAI TTS error: {exc}")
+                _metrics.record_error(
+                    "web_tts_error",
+                    labels={"mode": "openai", "error_type": "openai_tts"},
+                )
+                raise HTTPException(status_code=502, detail=f"OpenAI TTS failed: {exc}")
 
         # Native Cloud TTS (Chirp3-HD) path — selected by a full voice id like
         # "hr-HR-Chirp3-HD-Charon". Always unary (returns full PCM16 @ 24 kHz).

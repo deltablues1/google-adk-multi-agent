@@ -121,6 +121,39 @@ class STTService:
                 parts.append(alternatives[0]["transcript"].strip())
         return " ".join(parts).strip()
 
+    def _openai_model(self) -> str:
+        return os.getenv("OPENAI_STT_MODEL", "").strip() or "gpt-4o-transcribe"
+
+    def _transcribe_openai_sync(self, audio_bytes: bytes, mime_type: str) -> str:
+        """Transcribe via OpenAI audio transcriptions. Returns plain text."""
+        import io
+        from openai import OpenAI
+
+        key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError("OPENAI_API_KEY not set - required for STT_ENGINE=openai")
+        client = OpenAI(api_key=key)
+
+        ext = {
+            "audio/ogg": "ogg",
+            "audio/wav": "wav",
+            "audio/x-wav": "wav",
+            "audio/mpeg": "mp3",
+            "audio/webm": "webm",
+            "audio/L16": "wav",
+        }.get(mime_type, "wav")
+        buf = io.BytesIO(audio_bytes)
+        buf.name = "audio.%s" % ext
+
+        # ISO-639-1 code; default Croatian. Overridable via OPENAI_STT_LANGUAGE.
+        lang = os.getenv("OPENAI_STT_LANGUAGE", "").strip() or "hr"
+        resp = client.audio.transcriptions.create(
+            model=self._openai_model(),
+            file=buf,
+            language=lang,
+        )
+        return (getattr(resp, "text", "") or "").strip()
+
     def _get_client(self):
         from google import genai as _genai
 
@@ -178,6 +211,26 @@ class STTService:
 
         if mime_type not in SUPPORTED_MIME_TYPES:
             logger.warning(f"Unsupported MIME type {mime_type}, attempting anyway")
+
+        # OpenAI STT path (opt-in via STT_ENGINE=openai). gpt-4o-transcribe has
+        # strong Croatian accuracy; the Gemini/Chirp defaults are untouched.
+        if self.engine == "openai":
+            async def _call_openai():
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, self._transcribe_openai_sync, audio_bytes, mime_type
+                )
+
+            transcript = await run_with_bounded_retry(
+                "stt_openai_transcribe",
+                _call_openai,
+                config=RetryConfig(max_retries=1, base_delay=1.0, max_delay=4.0),
+                log=logger,
+            )
+            logger.info(
+                f"STT[openai:{self._openai_model()}] transcription "
+                f"({len(audio_bytes)} bytes): {transcript[:100]}"
+            )
+            return transcript
 
         # Native Cloud STT (Chirp) path — native Croatian ASR.
         if self.engine in {"chirp", "chirp_2", "chirp2", "cloud"}:

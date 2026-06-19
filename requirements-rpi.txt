@@ -12,6 +12,10 @@ google-genai>=0.3.0
 # LLM_PROVIDER=anthropic.
 litellm>=1.40.0
 
+# OpenAI SDK — optional OpenAI voice engine (STT_ENGINE/TTS_ENGINE=openai).
+# Also a litellm dependency, pinned here so the Pi voice path is explicit.
+openai>=1.40.0
+
 # Google API Clients
 google-auth>=2.23.0
 google-auth-oauthlib>=1.1.0
