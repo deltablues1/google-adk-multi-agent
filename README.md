@@ -6,6 +6,8 @@ Enterprise multi-agent system built with [Google Agent Development Kit (ADK)](ht
 
 - **15 Specialized Agents** with Smart Orchestrator routing via `transfer_to_agent`
 - **3-Tier Model Strategy** - Gemini 3.1 Pro (orchestration), 2.5 Pro (precision), 3 Flash (speed)
+- **Pluggable LLM Provider** - Gemini (default) or Anthropic Claude per-agent via LiteLLM (`LLM_PROVIDER` switch). See [LLM Providers](docs/en/llm-providers.md) · [HR](docs/hr/llm-providers.md)
+- **Token Accounting** - Per-agent token/cost stats and `/tokens` command. See [Token Accounting](docs/en/token-accounting.md) · [HR](docs/hr/token-accounting.md)
 - **Web Dashboard** - FastAPI + Alpine.js with SSE streaming
 - **Task Scheduler** - APScheduler with cron, interval, and date triggers
 - **Croatian Fiskalizacija 2.0** - B2C (CIS/JIR), B2B (UBL 2.1), B2G (Peppol), EU, International
@@ -255,6 +257,12 @@ google-adk-multi-agent/
 | **Tier 2** | `gemini-2.5-pro` | Analyst, Validator, Executor, Socrates | Thinking mode, precision |
 | **Tier 3** | `gemini-3-flash-preview` | 12+ agents | Speed (180+ tok/s), low latency |
 
+> **Switching to Claude:** set `LLM_PROVIDER=anthropic` to route eligible agents
+> to Anthropic Claude via LiteLLM (Pro tier → `claude-sonnet-4-6`, Flash/Lite →
+> `claude-haiku-4-5`, per-agent overrides via `CLAUDE_AGENT_MODELS`). Some agents
+> stay pinned to Gemini for Vertex-only features. Full details:
+> [LLM Providers](docs/en/llm-providers.md) · [HR](docs/hr/llm-providers.md).
+
 ### Environment Variables
 
 See [.env.example](.env.example) for all configuration options including:
@@ -304,8 +312,13 @@ See [Testing Guide](docs/testing/TESTING_GUIDE.md) and [Test Queries](docs/testi
 
 ## Documentation
 
+> 🌐 **Bilingual docs (HR/EN):** [docs/en/](docs/en/README.md) · [docs/hr/](docs/hr/README.md) — new and recently-changed features (LLM providers, token accounting, voice) are documented in both languages.
+
 | Guide | Description |
 |-------|-------------|
+| [LLM Providers (Gemini/Claude)](docs/en/llm-providers.md) | Provider switch, per-agent Claude routing, prompt caching, retries |
+| [Token Accounting & Cost](docs/en/token-accounting.md) | Per-agent token stats, `/tokens`, cost estimate |
+| [Voice (Gemini & OpenAI)](docs/en/voice.md) | STT/TTS engines and voice runtime tuning |
 | [Setup Guide](docs/guides/SETUP_GUIDE.md) | Initial system setup |
 | [Firestore Quickstart](docs/guides/FIRESTORE_QUICKSTART.md) | Database setup |
 | [Deployment Guide](docs/guides/DEPLOYMENT_GUIDE.md) | Production deployment |
@@ -319,7 +332,7 @@ See [Testing Guide](docs/testing/TESTING_GUIDE.md) and [Test Queries](docs/testi
 ## Tech Stack
 
 - **AI Framework**: [Google ADK](https://google.github.io/adk-docs/) (Agent Development Kit)
-- **LLM**: Gemini 3.1 Pro / 2.5 Pro / 3 Flash via Vertex AI
+- **LLM**: Gemini 3.1 Pro / 2.5 Pro / 3 Flash via Vertex AI (default), with optional per-agent routing to Anthropic Claude via [LiteLLM](https://docs.litellm.ai/) (`LLM_PROVIDER=anthropic`)
 - **Backend**: FastAPI, uvicorn, SSE streaming
 - **Frontend**: Alpine.js SPA
 - **Database**: Google Cloud Firestore (Native Mode)
