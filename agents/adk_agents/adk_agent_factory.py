@@ -66,8 +66,8 @@ def _claude_model_for(model: str, agent_name: Optional[str] = None) -> str:
     if "pro" in m:
         return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-4-6")
     if "lite" in m:
-        return os.getenv("CLAUDE_LITE_MODEL", "claude-haiku-4-5")
-    return os.getenv("CLAUDE_FLASH_MODEL", "claude-haiku-4-5")
+        return os.getenv("CLAUDE_LITE_MODEL", "claude-sonnet-4-6")
+    return os.getenv("CLAUDE_FLASH_MODEL", "claude-sonnet-4-6")
 
 
 def _use_anthropic(agent_name: Optional[str]) -> bool:

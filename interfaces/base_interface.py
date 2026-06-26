@@ -253,7 +253,7 @@ class BaseInterface(ABC):
             return "agent", "voice_qa"
 
         # Default for anything not clearly a tool/business task: the fast,
-        # tool-less voice_qa agent (Claude Haiku) instead of the heavy 14-tool
+        # tool-less voice_qa agent (Claude Sonnet) instead of the heavy 14-tool
         # orchestrator. Real tasks are caught upstream by the business-keyword
         # check; anything that slips through is handled by voice_qa's
         # escalate-to-orchestrator handoff (Phase 2).
