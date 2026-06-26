@@ -45,6 +45,10 @@ BUSINESS_ORCHESTRATOR_KEYWORDS = {
     "mail", "email", "gmail", "kalendar", "calendar", "drive", "docs",
     "dokument", "dokumenti", "sheet", "sheets", "tablica", "tablice",
     "zadatak", "zadaci", "contacts", "kontakt", "kontakti",
+    # Action / ERP tasks that need tools -> must hit the orchestrator upfront.
+    # Matched against _normalize_voice_text output, so use ASCII-folded stems.
+    "faktura", "fiskaliz", "ponud", "podsjetnik", "podsjeti", "sastanak",
+    "posalji", "rezervi", "zakazi", "racun",
 }
 
 GENERAL_VOICE_PREFIXES = (
@@ -248,7 +252,12 @@ class BaseInterface(ABC):
         if direct_agent == "voice_qa":
             return "agent", "voice_qa"
 
-        return ORCHESTRATOR_VOICE_ROUTE, None
+        # Default for anything not clearly a tool/business task: the fast,
+        # tool-less voice_qa agent (Claude Haiku) instead of the heavy 14-tool
+        # orchestrator. Real tasks are caught upstream by the business-keyword
+        # check; anything that slips through is handled by voice_qa's
+        # escalate-to-orchestrator handoff (Phase 2).
+        return "agent", "voice_qa"
 
     def _resolve_voice_smart_home_response(
         self,
