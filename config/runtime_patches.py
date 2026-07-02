@@ -24,7 +24,30 @@ def apply_runtime_patches() -> None:
     if os.getenv("CLAUDE_PROMPT_CACHE", "true").lower() in ("1", "true", "yes", "on"):
         _enable_litellm_prompt_cache()
 
+    if os.getenv("LLM_PROVIDER", "gemini").lower() == "anthropic":
+        _enable_litellm_drop_params()
+
     _PATCHED = True
+
+
+def _enable_litellm_drop_params() -> None:
+    """Drop sampling params the target Claude model doesn't accept.
+
+    Claude Sonnet 5 / Opus 4.7+ reject non-default temperature/top_p/top_k
+    (LiteLLM raises UnsupportedParamsError client-side and retries pointlessly).
+    The agent factory strips these for agents built through create_adk_agent,
+    but some call sites set generate_content_config directly on the agent
+    (smart_orchestrator, plan_execute planner/summarizer). drop_params makes
+    LiteLLM silently drop whatever the model doesn't support — the safety net
+    for every current and future call site.
+    """
+    try:
+        import litellm
+    except Exception as exc:  # litellm not installed
+        logger.debug("LiteLLM drop_params patch skipped: %s", exc)
+        return
+    litellm.drop_params = True
+    logger.info("LiteLLM drop_params enabled (unsupported sampling params are dropped)")
 
 
 def _enable_litellm_prompt_cache() -> None:
