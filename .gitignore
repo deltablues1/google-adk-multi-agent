@@ -158,3 +158,8 @@ deploy_clean/
 
 # RPi deployment secrets
 deploy/rpi/*.env
+
+# TTS probe artifacts
+tmp_tts_*.pcm
+tmp_tts_*.wav
+test_results_*.log

@@ -44,9 +44,15 @@ priority order (`_claude_model_for`):
 
 | Env var | Default | Used for |
 |---------|---------|----------|
-| `CLAUDE_PRO_MODEL` | `claude-sonnet-4-6` | Content/reasoning workers, Pro-tier agents |
-| `CLAUDE_FLASH_MODEL` | `claude-haiku-4-5` | Flash-tier (default speed) agents |
-| `CLAUDE_LITE_MODEL` | `claude-haiku-4-5` | Lite-tier agents |
+| `CLAUDE_PRO_MODEL` | `claude-sonnet-5` | Content/reasoning workers, Pro-tier agents |
+| `CLAUDE_FLASH_MODEL` | `claude-sonnet-5` | Flash-tier (default speed) agents |
+| `CLAUDE_LITE_MODEL` | `claude-sonnet-5` | Lite-tier agents |
+
+> **Sonnet 5 notes:** adaptive thinking is on by default (we leave it on for
+> answer quality). Sonnet 5 rejects non-default sampling params, so the agent
+> factory drops `temperature` and raises small `max_output_tokens` caps to
+> 4096 (thinking tokens count against the cap). Roll back any time with
+> `CLAUDE_*_MODEL=claude-sonnet-4-6`.
 
 ### Per-agent overrides
 
@@ -55,8 +61,9 @@ priority order (`_claude_model_for`):
 CLAUDE_AGENT_MODELS=mailer=claude-opus-4-8,researcher=claude-sonnet-4-6
 ```
 
-> Model IDs (latest Claude): Opus 4.8 `claude-opus-4-8`, Sonnet 4.6
-> `claude-sonnet-4-6`, Haiku 4.5 `claude-haiku-4-5`. Fable 5 `claude-fable-5`.
+> Model IDs (latest Claude): Opus 4.8 `claude-opus-4-8`, Sonnet 5
+> `claude-sonnet-5`, Sonnet 4.6 `claude-sonnet-4-6`, Haiku 4.5
+> `claude-haiku-4-5`. Fable 5 `claude-fable-5`.
 
 ---
 
@@ -110,9 +117,9 @@ are handled separately by the resilience retry layer.)
 |----------|---------|---------|
 | `LLM_PROVIDER` | `gemini` | `gemini` or `anthropic` |
 | `ANTHROPIC_API_KEY` | — | Required when `anthropic` |
-| `CLAUDE_PRO_MODEL` | `claude-sonnet-4-6` | Pro/content tier |
-| `CLAUDE_FLASH_MODEL` | `claude-haiku-4-5` | Flash tier |
-| `CLAUDE_LITE_MODEL` | `claude-haiku-4-5` | Lite tier |
+| `CLAUDE_PRO_MODEL` | `claude-sonnet-5` | Pro/content tier |
+| `CLAUDE_FLASH_MODEL` | `claude-sonnet-5` | Flash tier |
+| `CLAUDE_LITE_MODEL` | `claude-sonnet-5` | Lite tier |
 | `CLAUDE_AGENT_MODELS` | — | Per-agent overrides |
 | `CLAUDE_GEMINI_ONLY_AGENTS` | — | Extra agents pinned to Gemini |
 | `CLAUDE_PROMPT_CACHE` | `true` | Cache static instructions |

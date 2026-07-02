@@ -60,14 +60,32 @@ def _claude_model_for(model: str, agent_name: Optional[str] = None) -> str:
         return override
 
     if name in _DEFAULT_STRONG_AGENTS:
-        return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-4-6")
+        return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-5")
 
     m = (model or "").lower()
     if "pro" in m:
-        return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-4-6")
+        return os.getenv("CLAUDE_PRO_MODEL", "claude-sonnet-5")
     if "lite" in m:
-        return os.getenv("CLAUDE_LITE_MODEL", "claude-sonnet-4-6")
-    return os.getenv("CLAUDE_FLASH_MODEL", "claude-sonnet-4-6")
+        return os.getenv("CLAUDE_LITE_MODEL", "claude-sonnet-5")
+    return os.getenv("CLAUDE_FLASH_MODEL", "claude-sonnet-5")
+
+
+# Claude Sonnet 5 / Opus 4.7+ / Fable reject non-default sampling params
+# (temperature/top_p/top_k -> HTTP 400) and run adaptive thinking when the
+# thinking param is omitted. For those models we drop temperature and give
+# max_output_tokens headroom, because thinking tokens count against it.
+_CLAUDE_NO_SAMPLING_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable",
+    "claude-mythos",
+)
+_CLAUDE_THINKING_MIN_OUTPUT_TOKENS = 4096
+
+
+def _claude_rejects_sampling(claude_model: str) -> bool:
+    return (claude_model or "").lower().startswith(_CLAUDE_NO_SAMPLING_PREFIXES)
 
 
 def _use_anthropic(agent_name: Optional[str]) -> bool:
@@ -308,13 +326,34 @@ def create_adk_agent(
 
     # Apply generate_content_config from config dict
     if config:
+        # Sonnet 5 / Opus 4.7+ reject non-default sampling params outright and
+        # spend part of max_output_tokens on adaptive thinking — strip the
+        # former, give headroom on the latter.
+        claude_no_sampling = _use_anthropic(name) and _claude_rejects_sampling(
+            _claude_model_for(model, name)
+        )
+
         gen_config_kwargs = {}
         if "temperature" in config:
-            gen_config_kwargs["temperature"] = config["temperature"]
+            if claude_no_sampling:
+                logger.info(
+                    "Agent '%s': dropping temperature=%s (model rejects sampling params)",
+                    name, config["temperature"],
+                )
+            else:
+                gen_config_kwargs["temperature"] = config["temperature"]
         if "max_tokens" in config:
             gen_config_kwargs["max_output_tokens"] = config["max_tokens"]
         if "max_output_tokens" in config:
             gen_config_kwargs["max_output_tokens"] = config["max_output_tokens"]
+        if claude_no_sampling:
+            cap = gen_config_kwargs.get("max_output_tokens")
+            if cap is not None and cap < _CLAUDE_THINKING_MIN_OUTPUT_TOKENS:
+                gen_config_kwargs["max_output_tokens"] = _CLAUDE_THINKING_MIN_OUTPUT_TOKENS
+                logger.info(
+                    "Agent '%s': raising max_output_tokens %s -> %s (adaptive thinking headroom)",
+                    name, cap, _CLAUDE_THINKING_MIN_OUTPUT_TOKENS,
+                )
         if gen_config_kwargs:
             agent.generate_content_config = types.GenerateContentConfig(**gen_config_kwargs)
             logger.info(f"Agent '{name}' config: {gen_config_kwargs}")

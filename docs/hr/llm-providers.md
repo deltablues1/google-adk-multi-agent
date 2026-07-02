@@ -46,9 +46,15 @@ redoslijedom prioriteta (`_claude_model_for`):
 
 | Env varijabla | Zadano | Koristi se za |
 |---------------|--------|---------------|
-| `CLAUDE_PRO_MODEL` | `claude-sonnet-4-6` | Sadržajni radnici, agenti Pro razine |
-| `CLAUDE_FLASH_MODEL` | `claude-haiku-4-5` | Agenti Flash razine (zadana brzina) |
-| `CLAUDE_LITE_MODEL` | `claude-haiku-4-5` | Agenti Lite razine |
+| `CLAUDE_PRO_MODEL` | `claude-sonnet-5` | Sadržajni radnici, agenti Pro razine |
+| `CLAUDE_FLASH_MODEL` | `claude-sonnet-5` | Agenti Flash razine (zadana brzina) |
+| `CLAUDE_LITE_MODEL` | `claude-sonnet-5` | Agenti Lite razine |
+
+> **Napomene za Sonnet 5:** adaptivno razmišljanje (thinking) uključeno je po
+> defaultu (ostavljamo ga radi kvalitete odgovora). Sonnet 5 odbija sampling
+> parametre koji nisu default, pa factory izbacuje `temperature` i podiže male
+> `max_output_tokens` limite na 4096 (thinking tokeni troše taj limit).
+> Povratak na staro: `CLAUDE_*_MODEL=claude-sonnet-4-6`.
 
 ### Override po agentu
 
@@ -57,8 +63,9 @@ redoslijedom prioriteta (`_claude_model_for`):
 CLAUDE_AGENT_MODELS=mailer=claude-opus-4-8,researcher=claude-sonnet-4-6
 ```
 
-> ID-ovi modela (najnoviji Claude): Opus 4.8 `claude-opus-4-8`, Sonnet 4.6
-> `claude-sonnet-4-6`, Haiku 4.5 `claude-haiku-4-5`. Fable 5 `claude-fable-5`.
+> ID-ovi modela (najnoviji Claude): Opus 4.8 `claude-opus-4-8`, Sonnet 5
+> `claude-sonnet-5`, Sonnet 4.6 `claude-sonnet-4-6`, Haiku 4.5
+> `claude-haiku-4-5`. Fable 5 `claude-fable-5`.
 
 ---
 
@@ -112,9 +119,9 @@ Pomaže kod naglih rate-limita tijekom višeagentnih izvođenja. (Gemini/Vertex
 |-----------|--------|-------|
 | `LLM_PROVIDER` | `gemini` | `gemini` ili `anthropic` |
 | `ANTHROPIC_API_KEY` | — | Obavezno kad je `anthropic` |
-| `CLAUDE_PRO_MODEL` | `claude-sonnet-4-6` | Pro/sadržajna razina |
-| `CLAUDE_FLASH_MODEL` | `claude-haiku-4-5` | Flash razina |
-| `CLAUDE_LITE_MODEL` | `claude-haiku-4-5` | Lite razina |
+| `CLAUDE_PRO_MODEL` | `claude-sonnet-5` | Pro/sadržajna razina |
+| `CLAUDE_FLASH_MODEL` | `claude-sonnet-5` | Flash razina |
+| `CLAUDE_LITE_MODEL` | `claude-sonnet-5` | Lite razina |
 | `CLAUDE_AGENT_MODELS` | — | Overrideovi po agentu |
 | `CLAUDE_GEMINI_ONLY_AGENTS` | — | Dodatni agenti zakovani na Gemini |
 | `CLAUDE_PROMPT_CACHE` | `true` | Cache statičnih uputa |

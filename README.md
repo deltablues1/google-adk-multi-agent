@@ -258,8 +258,8 @@ google-adk-multi-agent/
 | **Tier 3** | `gemini-3-flash-preview` | 12+ agents | Speed (180+ tok/s), low latency |
 
 > **Switching to Claude:** set `LLM_PROVIDER=anthropic` to route eligible agents
-> to Anthropic Claude via LiteLLM (Pro tier → `claude-sonnet-4-6`, Flash/Lite →
-> `claude-haiku-4-5`, per-agent overrides via `CLAUDE_AGENT_MODELS`). Some agents
+> to Anthropic Claude via LiteLLM (all tiers default to `claude-sonnet-5`,
+> per-agent overrides via `CLAUDE_AGENT_MODELS`). Some agents
 > stay pinned to Gemini for Vertex-only features. Full details:
 > [LLM Providers](docs/en/llm-providers.md) · [HR](docs/hr/llm-providers.md).
 
