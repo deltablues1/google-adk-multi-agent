@@ -73,7 +73,10 @@ def _claude_model_for(model: str, agent_name: Optional[str] = None) -> str:
 # Claude Sonnet 5 / Opus 4.7+ / Fable reject non-default sampling params
 # (temperature/top_p/top_k -> HTTP 400) and run adaptive thinking when the
 # thinking param is omitted. For those models we drop temperature and give
-# max_output_tokens headroom, because thinking tokens count against it.
+# max_output_tokens headroom: thinking tokens count against the cap, and a
+# truncated response can cut a tool call's JSON arguments mid-stream (observed
+# as scribe calling format_markdown_for_docs with the mandatory `markdown`
+# argument missing). 8192 leaves room for thinking + a large tool payload.
 _CLAUDE_NO_SAMPLING_PREFIXES = (
     "claude-sonnet-5",
     "claude-opus-4-7",
@@ -81,7 +84,7 @@ _CLAUDE_NO_SAMPLING_PREFIXES = (
     "claude-fable",
     "claude-mythos",
 )
-_CLAUDE_THINKING_MIN_OUTPUT_TOKENS = 4096
+_CLAUDE_THINKING_MIN_OUTPUT_TOKENS = 8192
 
 
 def _claude_rejects_sampling(claude_model: str) -> bool:
@@ -203,6 +206,67 @@ def _make_usage_callback(agent_name: str, model_str: str):
     return _after_model
 
 
+# ---- Tool retry loop guard ------------------------------------------------
+# Without this, a model may repeat the exact same failing tool call forever
+# (observed live: scribe called format_markdown_for_docs with missing args
+# every ~55s for 15+ minutes, each retry a billed LLM call). After
+# _TOOL_LOOP_WARN_AFTER identical failures the tool is short-circuited with a
+# corrective error message; after _TOOL_LOOP_ABORT_AFTER the run is killed.
+
+_TOOL_LOOP_WARN_AFTER = 3
+_TOOL_LOOP_ABORT_AFTER = 6
+_tool_failure_counts: Dict[tuple, int] = {}
+
+
+def _tool_loop_key(tool, args, tool_context) -> tuple:
+    import json as _json
+
+    invocation = getattr(tool_context, "invocation_id", None) or "global"
+    tool_name = getattr(tool, "name", None) or str(tool)
+    try:
+        args_key = _json.dumps(args, sort_keys=True, default=str)[:512]
+    except Exception:
+        args_key = str(args)[:512]
+    return (invocation, tool_name, args_key)
+
+
+def _tool_loop_before(tool=None, args=None, tool_context=None, **_kwargs):
+    key = _tool_loop_key(tool, args, tool_context)
+    count = _tool_failure_counts.get(key, 0)
+    if count >= _TOOL_LOOP_ABORT_AFTER:
+        _tool_failure_counts.pop(key, None)
+        raise RuntimeError(
+            f"Loop guard: tool '{key[1]}' failed {count} times with identical "
+            "arguments — aborting the run."
+        )
+    if count >= _TOOL_LOOP_WARN_AFTER:
+        logger.warning(
+            "Loop guard: short-circuiting repeat of failing tool call %s (count=%d)",
+            key[1], count,
+        )
+        return {
+            "error": (
+                f"LOOP GUARD: this exact call to '{key[1]}' already failed "
+                f"{count} times. Do NOT repeat it. Provide ALL mandatory "
+                "parameters with real values, try a different approach, or "
+                "stop and report the problem to the user."
+            )
+        }
+    return None
+
+
+def _tool_loop_after(tool=None, args=None, tool_context=None, tool_response=None, **_kwargs):
+    key = _tool_loop_key(tool, args, tool_context)
+    failed = isinstance(tool_response, dict) and "error" in tool_response
+    if failed:
+        _tool_failure_counts[key] = _tool_failure_counts.get(key, 0) + 1
+        if len(_tool_failure_counts) > 2048:  # bounded memory
+            _tool_failure_counts.clear()
+    else:
+        _tool_failure_counts.pop(key, None)
+    return None  # never alter the tool response
+
+
 def load_instruction_file(agent_name: str) -> Optional[str]:
     """
     Load agent instructions from markdown file.
@@ -310,11 +374,24 @@ def create_adk_agent(
         tools=tools or [],
         sub_agents=sub_agents or []
     )
-    # Optional ADK guardrail callbacks (validate/transform tool results).
-    if after_tool_callback is not None:
-        agent_kwargs["after_tool_callback"] = after_tool_callback
-    if before_tool_callback is not None:
-        agent_kwargs["before_tool_callback"] = before_tool_callback
+    # Tool-loop guard first, then any optional caller guardrail callbacks.
+    # ADK accepts a list and stops at the first callback returning non-None
+    # (before) / keeps the first non-None override (after) — the guard returns
+    # None in the happy path, so caller callbacks still run.
+    if tools:
+        agent_kwargs["before_tool_callback"] = (
+            [_tool_loop_before, before_tool_callback]
+            if before_tool_callback is not None else [_tool_loop_before]
+        )
+        agent_kwargs["after_tool_callback"] = (
+            [_tool_loop_after, after_tool_callback]
+            if after_tool_callback is not None else [_tool_loop_after]
+        )
+    else:
+        if after_tool_callback is not None:
+            agent_kwargs["after_tool_callback"] = after_tool_callback
+        if before_tool_callback is not None:
+            agent_kwargs["before_tool_callback"] = before_tool_callback
 
     # Per-agent token accounting (provider-agnostic; disable with TOKEN_STATS_ENABLED=false).
     if os.getenv("TOKEN_STATS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):

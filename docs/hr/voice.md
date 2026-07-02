@@ -86,7 +86,7 @@ Vidi i [`deploy/rpi/RUNBOOK.md`](../../deploy/rpi/RUNBOOK.md).
 | `VOICE_PRE_SPEECH_TIMEOUT` | `8` | Čekanje na početak govora (s) |
 | `VOICE_SPEECH_RMS_THRESHOLD` | `260` | RMS razina koja se smatra govorom |
 | `VOICE_SILENCE_RMS_THRESHOLD` | `170` | RMS razina koja se smatra tišinom |
-| `VOICE_AGENT_TIMEOUT_SECONDS` | `90` | Timeout odgovora agenta |
+| `VOICE_AGENT_TIMEOUT_SECONDS` | `300` | Tvrdi limit jednog agent poteza — po isteku se run stvarno prekida (ne samo napušta) i izgovara se `VOICE_AGENT_TIMEOUT_MESSAGE` |
 | `VOICE_TTS_TIMEOUT_SECONDS` | `35` | TTS timeout |
 | `VOICE_DIRECT_ROUTING` | uklj. (rpi-home) | Usmjeri wake-word na smart_home / christian_guide / socrates prije orchestratora |
 | `VOICE_LOCAL_SMART_HOME_FAST_PATH` | — | Lokalna brza putanja za smart-home naredbe |

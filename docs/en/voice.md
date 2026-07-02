@@ -86,7 +86,7 @@ only when needed (e.g. wm8960 HAT on the RPi). See also
 | `VOICE_PRE_SPEECH_TIMEOUT` | `8` | Wait for speech to start (s) |
 | `VOICE_SPEECH_RMS_THRESHOLD` | `260` | RMS level treated as speech |
 | `VOICE_SILENCE_RMS_THRESHOLD` | `170` | RMS level treated as silence |
-| `VOICE_AGENT_TIMEOUT_SECONDS` | `90` | Agent response timeout |
+| `VOICE_AGENT_TIMEOUT_SECONDS` | `300` | Hard cap on one agent turn — on expiry the run is cancelled (not just abandoned) and `VOICE_AGENT_TIMEOUT_MESSAGE` is spoken |
 | `VOICE_TTS_TIMEOUT_SECONDS` | `35` | TTS timeout |
 | `VOICE_DIRECT_ROUTING` | on (rpi-home) | Route wake-word to smart_home / christian_guide / socrates before orchestrator |
 | `VOICE_LOCAL_SMART_HOME_FAST_PATH` | — | Local fast path for smart-home commands |

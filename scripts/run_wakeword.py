@@ -302,6 +302,16 @@ class PorcupineWakeWordRunner:
         self.output_device = os.getenv("WAKEWORD_OUTPUT_DEVICE", "").strip() or None
         self.tts_enabled = os.getenv("WAKEWORD_TTS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
         self.tts_timeout_seconds = float(os.getenv("WAKEWORD_TTS_TIMEOUT_SECONDS", "30"))
+        # Hard cap on one agent turn. Without it a runaway agent (e.g. a tool
+        # retry loop) blocks the wake loop forever AND keeps billing LLM calls.
+        # Multi-step orchestrations (research -> doc -> mail) legitimately take
+        # minutes, hence the generous default.
+        self.agent_timeout_seconds = float(os.getenv("VOICE_AGENT_TIMEOUT_SECONDS", "300"))
+        self.agent_timeout_message = os.getenv(
+            "VOICE_AGENT_TIMEOUT_MESSAGE",
+            "Oprosti, zadatak traje predugo pa sam ga prekinuo. "
+            "Pokušaj ponovno ili pojednostavi zahtjev.",
+        ).strip()
         self.live_bridge = PiLiveVoiceBridge(interface)
         # Multi-turn follow-up. After an answer, optionally re-prompt
         # ("Treba li jos nesto?") and keep listening without a new wake word for
@@ -470,7 +480,20 @@ class PorcupineWakeWordRunner:
             ),
             self.loop,
         )
-        result = future.result()
+        try:
+            result = future.result(timeout=self.agent_timeout_seconds)
+        except TimeoutError:
+            # Cancel the coroutine in the loop too — result(timeout=) alone
+            # abandons the wait but leaves the agent run (and its LLM billing)
+            # alive in the background.
+            future.cancel()
+            logger.error(
+                "Agent turn exceeded %.0fs; cancelled the run.",
+                self.agent_timeout_seconds,
+            )
+            if self.tts_enabled and self.agent_timeout_message:
+                self._speak_response(self.agent_timeout_message)
+            return True
         logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
 
         # In a follow-up turn (open mic, no wake word), reject noise that the STT
