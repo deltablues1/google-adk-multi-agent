@@ -73,6 +73,9 @@ VOICE_ROUTING_USER_PREFIXES = (
 
 LOCAL_VOICE_ROUTE = "local_voice_response"
 ORCHESTRATOR_VOICE_ROUTE = "orchestrator"
+# voice_qa (tool-less) emits this sentinel when the request is actually a task;
+# the interface then re-routes the original message to the orchestrator.
+ESCALATE_SENTINEL = "[[ESCALATE]]"
 VOICE_SMART_HOME_RESPONSE_MODE = os.getenv(
     "VOICE_SMART_HOME_RESPONSE_MODE",
     "none",
@@ -399,7 +402,9 @@ class BaseInterface(ABC):
             worker_message = (
                 "Voice Q&A mode. Answer the user's question directly in Croatian. "
                 "Keep it concise, useful, and suitable for spoken output. "
-                "Prefer one short paragraph or at most two short sentences unless the user explicitly asks for depth.\n\n"
+                "Prefer one short paragraph or at most two short sentences unless the user explicitly asks for depth. "
+                "If the user is asking you to PERFORM an action (email, calendar, documents, "
+                "smart home, scheduling, invoices), reply with exactly [[ESCALATE]] per your instructions.\n\n"
                 f"User question: {message}"
             )
         response = await run_agent_simple(
@@ -412,6 +417,14 @@ class BaseInterface(ABC):
         )
         if agent_name == "smart_home" and user_id.startswith(VOICE_ROUTING_USER_PREFIXES):
             return self._resolve_voice_smart_home_response(response, response_mode)
+
+        # Phase 2: voice_qa has no tools; when it flags an action request with
+        # the [[ESCALATE]] sentinel, re-run the original message through the
+        # full orchestrator so the task actually gets executed.
+        if agent_name == "voice_qa" and ESCALATE_SENTINEL in response[:200]:
+            logger.info("voice_qa escalated to orchestrator: %r", message[:120])
+            return await self.system.run_orchestration(message)
+
         return response
 
     async def process_message(
