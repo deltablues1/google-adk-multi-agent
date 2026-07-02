@@ -5,6 +5,7 @@ Abstract base class that defines the interface contract for different
 communication channels (CLI, Telegram, Web API, etc.)
 """
 
+import asyncio
 import os
 import logging
 import time
@@ -217,6 +218,61 @@ class BaseInterface(ABC):
         msg_lower = self._normalize_voice_text(message)
         return any(kw in msg_lower for kw in BUSINESS_ORCHESTRATOR_KEYWORDS)
 
+    async def _speak_working_ack(self) -> None:
+        """Speak a short 'working on it' cue before a long orchestrator run.
+
+        The wake-word runner registers `voice_ack_hook` (a blocking
+        text->speech function); other interfaces leave it unset, so this is a
+        no-op for web/Telegram. Runs in an executor so TTS playback doesn't
+        block the event loop.
+        """
+        hook = getattr(self, "voice_ack_hook", None)
+        if not callable(hook):
+            return
+        text = os.getenv(
+            "VOICE_WORKING_ACK_TEXT",
+            "Radim na tome. Ovo može potrajati minutu ili dvije.",
+        ).strip()
+        if not text:
+            return
+        try:
+            await asyncio.get_event_loop().run_in_executor(None, hook, text)
+        except Exception:
+            logger.debug("Working-ack hook failed", exc_info=True)
+
+    @staticmethod
+    def _voice_friendly_error(exc: Exception) -> str:
+        """Short spoken-Croatian failure message with a rough cause."""
+        low = str(exc).lower()
+        if "loop guard" in low:
+            import re
+            m = re.search(r"tool '([^']+)'", str(exc))
+            tool = m.group(1) if m else "jedan od alata"
+            return (
+                f"Nisam uspio dovršiti zadatak — alat {tool} stalno javlja "
+                "grešku pa sam odustao. Pokušaj drugačije formulirati zahtjev."
+            )
+        if "429" in low or "rate limit" in low or "resource_exhausted" in low or "overloaded" in low:
+            return (
+                "Nisam uspio — servis za umjetnu inteligenciju je trenutno "
+                "preopterećen. Pričekaj minutu pa pokušaj ponovno."
+            )
+        if "timeout" in low or "timed out" in low or "cancelled" in low:
+            return "Nisam uspio — zadatak je predugo trajao pa je prekinut."
+        if "401" in low or "403" in low or "authentication" in low or "api key" in low or "permission" in low:
+            return (
+                "Nisam uspio — imam problem s pristupom servisu, izgleda kao "
+                "problem s ovlastima ili ključem."
+            )
+        if "connection" in low or "network" in low or "dns" in low or "unreachable" in low:
+            return "Nisam uspio — ne mogu se spojiti na servis. Provjeri internet vezu."
+        if "quota" in low:
+            return "Nisam uspio — potrošena je kvota prema servisu za danas ili ovu minutu."
+        return (
+            "Nisam uspio izvršiti zadatak zbog tehničke greške. "
+            "Detalji su zapisani u logu."
+        )
+
     def _is_time_or_date_request(self, message: str) -> bool:
         msg_lower = self._normalize_voice_text(message)
         return any(kw in msg_lower for kw in TIME_DATE_KEYWORDS)
@@ -423,6 +479,7 @@ class BaseInterface(ABC):
         # full orchestrator so the task actually gets executed.
         if agent_name == "voice_qa" and ESCALATE_SENTINEL in response[:200]:
             logger.info("voice_qa escalated to orchestrator: %r", message[:120])
+            await self._speak_working_ack()
             return await self.system.run_orchestration(message)
 
         return response
@@ -511,6 +568,9 @@ class BaseInterface(ABC):
                             response_mode=response_mode,
                         )
                     else:
+                        # Multi-step orchestrator run — tell the user we're on
+                        # it before minutes of silent work.
+                        await self._speak_working_ack()
                         result = await self.system.run_orchestration(message)
                 elif direct_agent == "socrates":
                     self.system.active_mode = "CLASSROOM"
@@ -522,6 +582,10 @@ class BaseInterface(ABC):
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
+            # Voice users get a short spoken-Croatian failure with the rough
+            # cause; other channels keep the raw error for debugging.
+            if self._should_use_voice_direct_routing(user_id):
+                return self._voice_friendly_error(e)
             return f"Error processing request: {str(e)}"
         finally:
             if _token_marker is not None:

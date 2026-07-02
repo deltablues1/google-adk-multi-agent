@@ -326,6 +326,11 @@ class PorcupineWakeWordRunner:
         # its own TTS. Before each follow-up capture we settle briefly and flush
         # the buffered audio, otherwise Jarvis transcribes itself and loops.
         self.follow_up_guard_seconds = float(os.getenv("VOICE_FOLLOW_UP_GUARD_SECONDS", "0.4"))
+        # Let the interface speak a short "working on it" cue before long
+        # orchestrator runs (VOICE_WORKING_ACK_TEXT), so minutes of task work
+        # don't feel like a dead assistant.
+        if self.tts_enabled:
+            self.interface.voice_ack_hook = self._speak_response
 
     def _require_dependencies(self):
         try:
