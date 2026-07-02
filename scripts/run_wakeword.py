@@ -529,21 +529,24 @@ class PorcupineWakeWordRunner:
         if self.interface.api_token:
             headers["Authorization"] = f"Bearer {self.interface.api_token}"
 
+        # Streamed playback: start speaking on the first PCM chunk instead of
+        # waiting for the full synthesis + download. Falls back to unary when
+        # disabled or when the server ignores the stream flag.
+        use_stream = os.getenv("WAKEWORD_TTS_STREAMING", "true").lower() in {
+            "1", "true", "yes", "on"
+        }
+
         try:
             response = requests.post(
                 f"{self.interface.api_base_url}/api/tts",
-                json={"text": text[:4000]},
+                json={"text": text[:4000], "stream": use_stream},
                 headers=headers,
                 timeout=self.tts_timeout_seconds,
+                stream=use_stream,
             )
             response.raise_for_status()
         except Exception as e:
             logger.warning("Failed to fetch TTS audio from %s: %s", self.interface.api_base_url, e)
-            return
-
-        pcm_bytes = response.content
-        if not pcm_bytes:
-            logger.warning("TTS endpoint returned empty audio")
             return
 
         try:
@@ -553,9 +556,30 @@ class PorcupineWakeWordRunner:
                 dtype="int16",
                 device=self.output_device,
             ) as output_stream:
-                output_stream.write(pcm_bytes)
+                if use_stream:
+                    played = False
+                    pending = b""  # keep int16 frame alignment across chunks
+                    for chunk in response.iter_content(chunk_size=4800):
+                        if not chunk:
+                            continue
+                        pending += chunk
+                        writable = len(pending) - (len(pending) % 2)
+                        if writable:
+                            output_stream.write(pending[:writable])
+                            pending = pending[writable:]
+                            played = True
+                    if not played:
+                        logger.warning("TTS endpoint returned empty audio")
+                else:
+                    pcm_bytes = response.content
+                    if not pcm_bytes:
+                        logger.warning("TTS endpoint returned empty audio")
+                        return
+                    output_stream.write(pcm_bytes)
         except Exception as e:
             logger.warning("Failed to play TTS audio: %s", e)
+        finally:
+            response.close()
 
 
 class OpenWakeWordRunner(PorcupineWakeWordRunner):

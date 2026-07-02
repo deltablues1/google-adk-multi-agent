@@ -11,7 +11,7 @@ import base64
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, WebSocket
 from fastapi.staticfiles import StaticFiles
@@ -196,6 +196,32 @@ def _openai_tts_voice() -> str:
     return os.environ.get("OPENAI_TTS_VOICE", "").strip() or "alloy"
 
 
+# Steers gpt-4o-mini-tts delivery. Croatian by default because the assistant
+# answers in Croatian; without it the voice tends to drift into an English
+# accent on Croatian text. Override via OPENAI_TTS_INSTRUCTIONS; set to "none"
+# to send no instructions at all.
+_DEFAULT_OPENAI_TTS_INSTRUCTIONS = (
+    "Govori na hrvatskom jeziku s prirodnim hrvatskim izgovorom. "
+    "Ton: topao, smiren i samouvjeren kućni asistent. "
+    "Tempo: umjeren, prirodan govorni ritam; kratke stanke na zarezima. "
+    "Brojeve, datume i mjerne jedinice izgovaraj prirodno na hrvatskom."
+)
+
+
+def _openai_tts_instructions() -> Optional[str]:
+    raw = os.environ.get("OPENAI_TTS_INSTRUCTIONS", "").strip()
+    if raw.lower() == "none":
+        return None
+    return raw or _DEFAULT_OPENAI_TTS_INSTRUCTIONS
+
+
+def _tts_fallback_voice() -> str:
+    """Cloud TTS voice used when OpenAI TTS fails (empty string disables)."""
+    return os.environ.get(
+        "TTS_FALLBACK_VOICE", "hr-HR-Chirp3-HD-Charon"
+    ).strip()
+
+
 def _get_openai_client():
     global _openai_client
     if _openai_client is None:
@@ -208,23 +234,46 @@ def _get_openai_client():
     return _openai_client
 
 
-def _synthesize_openai_tts_pcm(text: str, voice_name: str) -> bytes:
-    """Synthesize via OpenAI TTS and return raw PCM16 @ 24 kHz mono."""
-    client = _get_openai_client()
+def _openai_tts_kwargs(text: str, voice_name: str) -> dict:
     kwargs = {
         "model": _openai_tts_model(),
         "voice": voice_name or _openai_tts_voice(),
         "input": text,
         "response_format": "pcm",
     }
-    instructions = os.environ.get("OPENAI_TTS_INSTRUCTIONS", "").strip()
+    instructions = _openai_tts_instructions()
     if instructions:
         kwargs["instructions"] = instructions
-    resp = client.audio.speech.create(**kwargs)
+    return kwargs
+
+
+def _synthesize_openai_tts_pcm(text: str, voice_name: str) -> bytes:
+    """Synthesize via OpenAI TTS and return raw PCM16 @ 24 kHz mono."""
+    client = _get_openai_client()
+    resp = client.audio.speech.create(**_openai_tts_kwargs(text, voice_name))
     # openai 2.x returns a binary response wrapper; .read() yields the bytes.
     if hasattr(resp, "read"):
         return resp.read()
     return resp.content
+
+
+def _stream_openai_tts_pcm(text: str, voice_name: str):
+    """Yield PCM16 @ 24 kHz chunks as OpenAI synthesizes them.
+
+    Cuts time-to-first-sound from (full synthesis + download) to the first
+    chunk. The OpenAI call is created lazily inside the generator, so a
+    connection-level failure surfaces on the first next() — the /api/tts
+    handler probes that before committing to a streamed response.
+    """
+    client = _get_openai_client()
+    with client.audio.speech.with_streaming_response.create(
+        **_openai_tts_kwargs(text, voice_name)
+    ) as resp:
+        # 4800 B = 100 ms of PCM16 @ 24 kHz mono — small enough for snappy
+        # playback start, large enough to keep per-chunk overhead low.
+        for chunk in resp.iter_bytes(chunk_size=4800):
+            if chunk:
+                yield chunk
 
 
 def _sanitize_tts_text(text: str) -> str:
@@ -237,6 +286,18 @@ def _sanitize_tts_text(text: str) -> str:
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
     text = re.sub(r"https?://\S+", "", text)
+    # Emoji and pictographs — TTS engines read them out loud ("smiling face…").
+    text = re.sub(
+        "["
+        "\U0001F300-\U0001FAFF"  # symbols, pictographs, emoticons, extended
+        "\U00002600-\U000027BF"  # misc symbols + dingbats
+        "\U0001F1E6-\U0001F1FF"  # regional indicators (flags)
+        "\U00002B00-\U00002BFF"  # arrows/symbols block used by some emoji
+        "\uFE0F\u200D"           # variation selector + zero-width joiner
+        "]+",
+        "",
+        text,
+    )
     text = re.sub(r"\n{2,}", ". ", text)
     text = re.sub(r"\n", " ", text)
     return text.strip()[:4000]
@@ -616,11 +677,8 @@ def create_app(interface) -> FastAPI:
         # PCM16 @ 24 kHz to match the existing player path. Default path untouched.
         if _tts_engine() == "openai":
             ov = _openai_tts_voice()
-            try:
-                _track_tts(len(text))
-                pcm_data = await asyncio.get_event_loop().run_in_executor(
-                    None, _synthesize_openai_tts_pcm, text, ov
-                )
+
+            def _log_openai_success(streamed: bool):
                 duration_s = _time.time() - started_at
                 _metrics.record_timing(
                     "web_tts_latency",
@@ -632,13 +690,49 @@ def create_app(interface) -> FastAPI:
                     {
                         "voice_name": ov,
                         "model": _openai_tts_model(),
-                        "stream": False,
+                        "stream": streamed,
                         "vertex": False,
                         "text_chars": len(text),
                         "duration_ms": int(duration_s * 1000),
                         "success": True,
                     },
                 )
+
+            # Streaming: send PCM chunks as OpenAI produces them. The first
+            # chunk is pulled eagerly so auth/model errors still fall through
+            # to the fallback below instead of dying mid-stream.
+            if stream_audio:
+                try:
+                    _track_tts(len(text))
+                    chunk_iter = _stream_openai_tts_pcm(text, ov)
+                    first_chunk = await asyncio.get_event_loop().run_in_executor(
+                        None, next, chunk_iter
+                    )
+
+                    def _pcm_stream():
+                        yield first_chunk
+                        yield from chunk_iter
+                        _log_openai_success(streamed=True)
+
+                    return StreamingResponse(
+                        _pcm_stream(),
+                        media_type="audio/L16;codec=pcm;rate=24000",
+                        headers={"X-TTS-Mode": "openai", "X-TTS-Voice": ov},
+                    )
+                except Exception as exc:
+                    logger.error(f"OpenAI TTS stream error: {exc}")
+                    _metrics.record_error(
+                        "web_tts_error",
+                        labels={"mode": "openai", "error_type": "openai_tts_stream"},
+                    )
+                    # fall through to unary attempt + Cloud fallback below
+
+            try:
+                _track_tts(len(text))
+                pcm_data = await asyncio.get_event_loop().run_in_executor(
+                    None, _synthesize_openai_tts_pcm, text, ov
+                )
+                _log_openai_success(streamed=False)
                 return Response(
                     content=pcm_data,
                     media_type="audio/L16;codec=pcm;rate=24000",
@@ -650,6 +744,28 @@ def create_app(interface) -> FastAPI:
                     "web_tts_error",
                     labels={"mode": "openai", "error_type": "openai_tts"},
                 )
+                # Last resort: native Cloud TTS voice so the assistant is
+                # never mute just because OpenAI is down or rate-limited.
+                fallback_voice = _tts_fallback_voice()
+                if fallback_voice:
+                    try:
+                        pcm_data = await asyncio.get_event_loop().run_in_executor(
+                            None, _synthesize_cloud_tts_pcm, text, fallback_voice
+                        )
+                        logger.warning(
+                            "OpenAI TTS failed; served Cloud TTS fallback voice %s",
+                            fallback_voice,
+                        )
+                        return Response(
+                            content=pcm_data,
+                            media_type="audio/L16;codec=pcm;rate=24000",
+                            headers={
+                                "X-TTS-Mode": "openai-fallback-cloud",
+                                "X-TTS-Voice": fallback_voice,
+                            },
+                        )
+                    except Exception as fb_exc:
+                        logger.error(f"Cloud TTS fallback also failed: {fb_exc}")
                 raise HTTPException(status_code=502, detail=f"OpenAI TTS failed: {exc}")
 
         # Native Cloud TTS (Chirp3-HD) path — selected by a full voice id like
