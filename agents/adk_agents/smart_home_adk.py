@@ -32,6 +32,13 @@ def create_smart_home_agent(
     from tools.adk_tools.mqtt_adk_tools import get_mqtt_adk_tools
     tools = get_mqtt_adk_tools()
 
+    # TV / media tools preko Home Assistant REST API-ja (opt-in: aktivno samo
+    # kad su HA_URL i HA_TOKEN postavljeni u .env).
+    if os.getenv("HA_URL", "").strip() and os.getenv("HA_TOKEN", "").strip():
+        from tools.adk_tools.ha_adk_tools import get_ha_adk_tools
+        tools = tools + get_ha_adk_tools()
+        logger.info("Smart Home agent: Home Assistant TV tools enabled")
+
     agent = create_adk_agent(
         name="smart_home",
         model=model,

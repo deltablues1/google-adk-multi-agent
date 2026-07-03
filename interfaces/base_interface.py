@@ -8,6 +8,7 @@ communication channels (CLI, Telegram, Web API, etc.)
 import asyncio
 import os
 import logging
+import re
 import time
 import uuid
 import unicodedata
@@ -30,7 +31,14 @@ SMART_HOME_KEYWORDS = {
     "utič", "utic", "bojler", "fotelja", "terasa", "boravak", "hodnik",
     "kuhinja", "kupaona", "soba", "film", "nocno", "noćno", "dolazak",
     "odlazak", "pametna kuća", "pametna kuca", "smart home", "scene", "scena",
+    # TV / media (preko Home Assistanta). Golo "tv" se NE stavlja ovdje jer
+    # substring match hvata "tvoj"/"molitva" — rješava ga _TV_WORD_RE.
+    "televizor", "youtube", "jutjub", "netflix", "pojačaj", "pojacaj",
+    "stišaj", "stisaj", "glasnoć", "glasnoc", "kanal", "pauziraj",
 }
+
+# Word-boundary match for the bare word "tv" ("upali tv", "tv u dnevnoj").
+_TV_WORD_RE = re.compile(r"\btv\b")
 
 CHRISTIAN_KEYWORDS = {
     "krsc", "kršć", "biblij", "katekiz", "molitv", "duhovn", "augustin",
@@ -204,7 +212,7 @@ class BaseInterface(ABC):
         msg_lower = message.lower()
         if any(kw in msg_lower for kw in self.system.philosophy_keywords):
             return "socrates"
-        if any(kw in msg_lower for kw in SMART_HOME_KEYWORDS):
+        if any(kw in msg_lower for kw in SMART_HOME_KEYWORDS) or _TV_WORD_RE.search(msg_lower):
             return "smart_home"
         if any(kw in msg_lower for kw in CHRISTIAN_KEYWORDS):
             return "christian_guide"
