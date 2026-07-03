@@ -19,6 +19,22 @@ from .base_interface import BaseInterface
 logger = logging.getLogger(__name__)
 
 
+def looks_like_noise_transcript(text: str) -> bool:
+    """Heuristic for background/appliance noise the STT hallucinated into text.
+
+    Two patterns cover what we see in practice: strings of isolated digits
+    ("3 7 1 2 0 6 8 3 8 3" from a washing machine) and transcripts with no
+    letters at all ("...", "123"). Real speech with numbers ("koliko je 2 i
+    2", "21:23") has letter tokens and is not flagged.
+    """
+    text = (text or "").strip()
+    if not any(ch.isalpha() for ch in text):
+        return True
+    tokens = text.split()
+    digit_tokens = sum(1 for token in tokens if token.isdigit())
+    return digit_tokens >= 4 and digit_tokens >= 0.6 * len(tokens)
+
+
 class WakeWordInterface(BaseInterface):
     def __init__(self):
         super().__init__(session_prefix="wakeword")
@@ -159,6 +175,23 @@ class WakeWordInterface(BaseInterface):
             metadata={"session_id": self.session_id},
         )
         logger.info("STT transcript: %r", transcript_result.transcript)
+
+        # Noise gate: STT hallucinates digit strings out of appliance noise.
+        # Reject BEFORE the agent call — no LLM cost, no spoken answer to a
+        # washing machine ("Zbroj tih brojeva je 41").
+        if looks_like_noise_transcript(transcript_result.transcript):
+            logger.info(
+                "Noise transcript rejected before agent call: %r",
+                transcript_result.transcript[:80],
+            )
+            return {
+                "mode": self.voice_mode,
+                "transcript": transcript_result.transcript,
+                "response": "",
+                "noise": True,
+                "metadata": transcript_result.metadata,
+            }
+
         result = await self.process_transcript(transcript_result.transcript)
         result["metadata"] = transcript_result.metadata
         return result

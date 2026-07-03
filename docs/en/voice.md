@@ -88,6 +88,8 @@ only when needed (e.g. wm8960 HAT on the RPi). See also
 | `VOICE_SILENCE_RMS_THRESHOLD` | `170` | RMS level treated as silence |
 | `VOICE_AGENT_TIMEOUT_SECONDS` | `300` | Hard cap on one agent turn — on expiry the run is cancelled (not just abandoned) and `VOICE_AGENT_TIMEOUT_MESSAGE` is spoken |
 | `VOICE_WORKING_ACK_TEXT` | `Radim na tome…` | Spoken cue before long orchestrator runs (empty disables) |
+| `WAKEWORD_VAD_THRESHOLD` | `0` (off) | Silero VAD gate on wake-word activations — non-speech noise can't wake; 0.4–0.6 sensible |
+| `WAKEWORD_MIN_CONSECUTIVE_FRAMES` | `1` | Frames the score must stay above threshold; `2` filters single-frame noise spikes (+~80 ms latency) |
 | `VOICE_TTS_TIMEOUT_SECONDS` | `35` | TTS timeout |
 | `VOICE_DIRECT_ROUTING` | on (rpi-home) | Route wake-word to smart_home / christian_guide / socrates before orchestrator |
 | `VOICE_LOCAL_SMART_HOME_FAST_PATH` | — | Local fast path for smart-home commands |

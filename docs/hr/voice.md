@@ -88,6 +88,8 @@ Vidi i [`deploy/rpi/RUNBOOK.md`](../../deploy/rpi/RUNBOOK.md).
 | `VOICE_SILENCE_RMS_THRESHOLD` | `170` | RMS razina koja se smatra tišinom |
 | `VOICE_AGENT_TIMEOUT_SECONDS` | `300` | Tvrdi limit jednog agent poteza — po isteku se run stvarno prekida (ne samo napušta) i izgovara se `VOICE_AGENT_TIMEOUT_MESSAGE` |
 | `VOICE_WORKING_ACK_TEXT` | `Radim na tome…` | Izgovorena najava prije dugih orchestrator zadataka (prazno isključuje) |
+| `WAKEWORD_VAD_THRESHOLD` | `0` (isklj.) | Silero VAD filtar na buđenju — ne-govorni šum ne može probuditi; razumno 0.4–0.6 |
+| `WAKEWORD_MIN_CONSECUTIVE_FRAMES` | `1` | Broj frameova u kojima score mora ostati iznad praga; `2` filtrira jednokratne šiljke šuma (+~80 ms latencije) |
 | `VOICE_TTS_TIMEOUT_SECONDS` | `35` | TTS timeout |
 | `VOICE_DIRECT_ROUTING` | uklj. (rpi-home) | Usmjeri wake-word na smart_home / christian_guide / socrates prije orchestratora |
 | `VOICE_LOCAL_SMART_HOME_FAST_PATH` | — | Lokalna brza putanja za smart-home naredbe |

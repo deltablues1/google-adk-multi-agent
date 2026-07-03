@@ -55,17 +55,10 @@ def pcm16_rms(frame_bytes: bytes) -> float:
     return (square_sum / len(samples)) ** 0.5
 
 
-def looks_like_noise_transcript(text: str) -> bool:
-    """Heuristic for background/appliance noise that the STT hallucinated into a
-    string of isolated digits (e.g. "3 7 1 2 0 6 8 3 8 3" from a washing
-    machine). Used to end follow-up turns cleanly instead of answering and
-    looping on garbage. Real speech with a number ("koliko je 2 i 2", "21:23")
-    has few isolated-digit tokens and is not flagged."""
-    tokens = (text or "").split()
-    if not tokens:
-        return True
-    digit_tokens = sum(1 for token in tokens if token.isdigit())
-    return digit_tokens >= 4 and digit_tokens >= 0.6 * len(tokens)
+# Canonical implementation lives next to the interface so the noise gate can
+# run server-side BEFORE the agent call; re-exported here for the runner's
+# follow-up check and for backwards compatibility.
+from interfaces.wakeword_interface import looks_like_noise_transcript  # noqa: E402
 
 
 def pcm16_to_wav_bytes(
@@ -501,6 +494,13 @@ class PorcupineWakeWordRunner:
             return True
         logger.info("Wake-word result [%s]: %s", result["mode"], result["response"][:160])
 
+        # The interface rejects noise transcripts before the agent call and
+        # marks the result; treat it as silence so no answer is spoken and the
+        # follow-up loop ends instead of prompting into an empty room.
+        if result.get("noise"):
+            logger.info("Noise turn ignored: %r", result.get("transcript", "")[:80])
+            return False
+
         # In a follow-up turn (open mic, no wake word), reject noise that the STT
         # hallucinated into digits so we don't answer it and loop on garbage.
         if drain_first and looks_like_noise_transcript(result.get("transcript", "")):
@@ -624,6 +624,17 @@ class OpenWakeWordRunner(PorcupineWakeWordRunner):
         self.model_name = os.getenv("WAKEWORD_MODEL", "hey_jarvis").strip() or "hey_jarvis"
         # Reuse WAKEWORD_THRESHOLD (0..1); openWakeWord scores are probabilities.
         self.threshold = float(os.getenv("WAKEWORD_THRESHOLD", "0.5"))
+        # Silero VAD gate built into openWakeWord: activations only count when
+        # speech probability exceeds this (0 disables). Cuts false wakes from
+        # non-speech noise (appliances, clatter) without touching sensitivity
+        # to real speech. 0.4-0.6 is a sensible range.
+        self.vad_threshold = float(os.getenv("WAKEWORD_VAD_THRESHOLD", "0") or 0)
+        # Require the score to stay above threshold for N consecutive 80 ms
+        # frames. 1 = current behavior; 2 filters single-frame noise spikes at
+        # the cost of ~80 ms extra wake latency.
+        self.min_consecutive_frames = max(
+            1, int(os.getenv("WAKEWORD_MIN_CONSECUTIVE_FRAMES", "1"))
+        )
 
     def _require_dependencies(self):
         try:
@@ -652,15 +663,31 @@ class OpenWakeWordRunner(PorcupineWakeWordRunner):
         except Exception as e:
             logger.warning("openWakeWord model download skipped: %s", e)
 
-        model = Model(wakeword_models=[self.model_name], inference_framework="onnx")
+        model_kwargs = dict(wakeword_models=[self.model_name], inference_framework="onnx")
+        if self.vad_threshold > 0:
+            model_kwargs["vad_threshold"] = self.vad_threshold
+        try:
+            model = Model(**model_kwargs)
+        except Exception as e:
+            if "vad_threshold" in model_kwargs:
+                logger.warning(
+                    "openWakeWord rejected vad_threshold (%s); running without VAD", e
+                )
+                model_kwargs.pop("vad_threshold")
+                model = Model(**model_kwargs)
+            else:
+                raise
 
         sample_rate = 16000
         frame_length = 1280  # 80 ms @ 16 kHz — openWakeWord's expected chunk size
         logger.info(
-            "openWakeWord loop started: model=%s threshold=%.2f sample_rate=%s frame_length=%s",
-            self.model_name, self.threshold, sample_rate, frame_length,
+            "openWakeWord loop started: model=%s threshold=%.2f vad=%.2f "
+            "min_consecutive=%d sample_rate=%s frame_length=%s",
+            self.model_name, self.threshold, self.vad_threshold,
+            self.min_consecutive_frames, sample_rate, frame_length,
         )
 
+        consecutive_hits = 0
         with sd.RawInputStream(
             samplerate=sample_rate,
             blocksize=frame_length,
@@ -675,7 +702,13 @@ class OpenWakeWordRunner(PorcupineWakeWordRunner):
                 scores = model.predict(samples)
                 top = max(scores.values()) if scores else 0.0
                 if top < self.threshold:
+                    consecutive_hits = 0
                     continue
+
+                consecutive_hits += 1
+                if consecutive_hits < self.min_consecutive_frames:
+                    continue
+                consecutive_hits = 0
 
                 logger.info("Wake word detected: %s (score=%.2f)", self.model_name, top)
                 self._process_wake_event(stream, sample_rate, frame_length)
