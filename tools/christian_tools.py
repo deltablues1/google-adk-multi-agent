@@ -26,9 +26,9 @@ def get_christian_rag_tool():
         return None
 
     try:
-        from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
+        from tools.rag_retrieval_helpers import TranslatingRagRetrieval
 
-        return VertexAiRagRetrieval(
+        return TranslatingRagRetrieval(
             name="ChristianKnowledgeBase",
             description=(
                 "A Christian knowledge base with Scripture, doctrine, spiritual "

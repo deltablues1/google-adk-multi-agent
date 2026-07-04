@@ -1,4 +1,4 @@
-"""Christian corpus registry loading and chunk generation."""
+"""Philosophy corpus registry loading and chunk generation."""
 
 from __future__ import annotations
 
@@ -6,37 +6,37 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scripts.christian_ingest.adapters import ADAPTERS, ParsedDocument
+from scripts.philosophy_ingest.adapters import ADAPTERS, ParsedDocument
 
-
+# Character targets per text_type. Dialogues/treatises keep larger chunks so a
+# full Socratic exchange or argument step survives intact; meditations and the
+# manual are terse and aphoristic, so smaller chunks keep each entry distinct.
 CHUNK_TARGETS = {
-    "scripture": 900,
-    "doctrine": 1400,
-    "reflection": 2400,
-    "exercise": 1000,
-    "prayer": 900,
-    "encyclical": 1500,
+    "dialogue": 1800,
+    "treatise": 1800,
+    "doxography": 1600,
+    "meditation": 1000,
+    "manual": 900,
 }
 
 CHUNK_OVERLAP = {
-    "scripture": 120,
-    "doctrine": 180,
-    "reflection": 250,
-    "exercise": 120,
-    "prayer": 120,
-    "encyclical": 200,
+    "dialogue": 200,
+    "treatise": 200,
+    "doxography": 180,
+    "meditation": 120,
+    "manual": 100,
 }
 
-# Characters-per-token estimate shared with build_chunk_records' token_estimate,
-# used to translate our char-based local targets into Vertex RAG Engine's
-# token-based TransformationConfig so the two stay in sync.
+# Characters-per-token estimate, matched to build_chunk_records' token_estimate,
+# used to translate char-based local targets into Vertex RAG Engine's
+# token-based TransformationConfig.
 CHARS_PER_TOKEN = 4
 
 
 def vertex_chunk_config(text_type: str) -> tuple[int, int]:
     """Token-based (chunk_size, chunk_overlap) for Vertex upload, derived
     from the same per-text_type targets used for local chunk_records."""
-    target_chars = CHUNK_TARGETS.get(text_type, 2000)
+    target_chars = CHUNK_TARGETS.get(text_type, 1800)
     overlap_chars = CHUNK_OVERLAP.get(text_type, 200)
     chunk_size = max(100, target_chars // CHARS_PER_TOKEN)
     chunk_overlap = max(0, min(overlap_chars // CHARS_PER_TOKEN, chunk_size - 1))
@@ -107,23 +107,13 @@ def build_chunk_records(
     entry: dict[str, Any],
     documents: list[ParsedDocument],
 ) -> list[dict[str, Any]]:
-    text_type = entry.get("text_type", "reflection")
-    target = CHUNK_TARGETS.get(text_type, 2000)
+    text_type = entry.get("text_type", "treatise")
+    target = CHUNK_TARGETS.get(text_type, 1800)
     overlap = CHUNK_OVERLAP.get(text_type, 200)
 
     records: list[dict[str, Any]] = []
     for document in documents:
-        # Scripture documents already arrive as small verse-range units.
-        # Keep them intact so retrieval/citation aligns with verse metadata.
-        if {
-            "book",
-            "chapter",
-            "verse_start",
-            "verse_end",
-        }.issubset(document.hierarchy):
-            chunks = [document.clean_text]
-        else:
-            chunks = chunk_text(document.clean_text, target=target, overlap=overlap)
+        chunks = chunk_text(document.clean_text, target=target, overlap=overlap)
         total = len(chunks)
         for idx, chunk in enumerate(chunks):
             records.append(
@@ -131,6 +121,7 @@ def build_chunk_records(
                     "source_id": entry["source_id"],
                     "work_title": entry["work_title"],
                     "author": entry["author"],
+                    "translator": entry.get("translator"),
                     "source_family": entry["source_family"],
                     "canonical_url": entry["canonical_url"],
                     "rights_class": entry["rights_class"],
@@ -154,15 +145,12 @@ def build_chunk_records(
 
 def infer_query_intents(entry: dict[str, Any]) -> list[str]:
     text_type = entry.get("text_type")
-    authority = entry.get("authority_level")
 
     intents = {"teach"}
-    if text_type in {"scripture", "reflection", "exercise", "prayer"}:
+    if text_type in {"dialogue", "meditation"}:
         intents.add("reflect")
-    if text_type in {"exercise", "prayer"}:
+    if text_type == "dialogue":
+        intents.add("question")
+    if text_type in {"manual", "meditation"}:
         intents.add("guide")
-    if text_type == "scripture":
-        intents.add("discern")
-    if authority in {"medium", "devotional"}:
-        intents.add("discern")
     return sorted(intents)

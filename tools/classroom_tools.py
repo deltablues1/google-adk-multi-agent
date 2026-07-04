@@ -20,11 +20,15 @@ def get_philosophy_rag_tool():
         return None
 
     try:
-        from google.adk.tools.retrieval.vertex_ai_rag_retrieval import VertexAiRagRetrieval
-        return VertexAiRagRetrieval(
+        from tools.rag_retrieval_helpers import TranslatingRagRetrieval
+        return TranslatingRagRetrieval(
             name="PhilosophyKnowledgeBase",
-            description="A knowledge base containing philosophical texts (Plato, etc.). Use this to answer questions about philosophy.",
-            rag_corpora=[corpus_id]
+            description=(
+                "A knowledge base of philosophical texts (Plato's dialogues, "
+                "Aristotle, the presocratics, Stoic writings). Use this to "
+                "answer questions about philosophy."
+            ),
+            rag_corpora=[corpus_id],
         )
     except Exception as e:
         logger.warning(f"Failed to create Philosophy RAG tool: {e}. Socrates will work without RAG.")

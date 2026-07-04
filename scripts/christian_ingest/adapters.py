@@ -648,6 +648,146 @@ def fetch_vatican(entry: dict[str, Any]) -> list[ParsedDocument]:
     return split_vatican_single_page(entry, html)
 
 
+_PDF_PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
+_PDF_PARAGRAPH_MARKER_RE = re.compile(r"^\d{1,3}\.\s+")
+
+
+def _pdf_font_tounicode_map(font_obj: Any) -> dict[int, str]:
+    """Parses a font's /ToUnicode CMap directly.
+
+    pypdf/pdfplumber/pymupdf all mis-decode this document's fonts (they emit
+    U+FFFD for common Croatian diacritics) even though the embedded ToUnicode
+    CMaps are complete and correct — verified by comparing against this
+    direct regex parse. Root cause looks like those libraries' CMap parsers
+    choking on the ligature bfchar entries (f_l/T_h/f_i mapping one code to
+    a 2-character value) that precede the diacritic entries in this font.
+    """
+    tounicode = font_obj.get("/ToUnicode")
+    if tounicode is None:
+        return {}
+    data = tounicode.get_object().get_data().decode("latin-1", errors="replace")
+    mapping: dict[int, str] = {}
+    for match in re.finditer(r"<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>", data):
+        code = int(match.group(1), 16)
+        value = match.group(2)
+        mapping[code] = "".join(
+            chr(int(value[i : i + 4], 16)) for i in range(0, len(value), 4)
+        )
+    return mapping
+
+
+def _pdf_font_byte_width(font_obj: Any) -> int:
+    return 2 if str(font_obj.get("/Subtype")) == "/Type0" else 1
+
+
+def _extract_pdf_page_text(page: Any, reader: Any) -> str:
+    """Reconstructs page text from raw content-stream operators using our
+    own verified CMap decode instead of the (broken, for this document)
+    library text extraction. See _pdf_font_tounicode_map for why."""
+    from pypdf.generic import ContentStream
+
+    try:
+        fonts = page["/Resources"]["/Font"]
+    except KeyError:
+        return ""
+
+    font_maps: dict[str, dict[int, str]] = {}
+    font_widths: dict[str, int] = {}
+    for name, font_ref in fonts.items():
+        font_obj = font_ref.get_object()
+        font_maps[name] = _pdf_font_tounicode_map(font_obj)
+        font_widths[name] = _pdf_font_byte_width(font_obj)
+
+    try:
+        content_stream = ContentStream(page["/Contents"], reader)
+    except Exception:
+        return ""
+
+    current_font: str | None = None
+    lines: list[str] = []
+    current_line: list[str] = []
+
+    def flush_line() -> None:
+        if current_line:
+            lines.append("".join(current_line))
+            current_line.clear()
+
+    for operands, operator in content_stream.operations:
+        if operator == b"Tf":
+            current_font = str(operands[0])
+        elif operator in (b"Tj", b"TJ"):
+            items = operands[0] if operator == b"TJ" else [operands[0]]
+            font_map = font_maps.get(current_font, {})
+            width = font_widths.get(current_font, 1)
+            for item in items:
+                raw = getattr(item, "_original_bytes", None)
+                if raw is not None:
+                    for i in range(0, len(raw) - width + 1, width):
+                        code = (raw[i] << 8 | raw[i + 1]) if width == 2 else raw[i]
+                        if code == 0:
+                            continue
+                        current_line.append(font_map.get(code, "�"))
+                elif isinstance(item, (int, float)) and item < -100:
+                    current_line.append(" ")
+        elif operator in (b"T*", b"Td", b"TD", b"Tm", b"'", b'"'):
+            flush_line()
+
+    flush_line()
+    return "\n".join(lines)
+
+
+def _clean_pdf_page_text(raw_text: str) -> str:
+    """Joins wrapped lines into paragraphs, de-hyphenates line-break splits,
+    drops running page-number lines, and starts a new paragraph at numbered
+    markers (e.g. "117.") typical of papal documents."""
+    text = ""
+    for raw_line in raw_text.split("\n"):
+        stripped = raw_line.strip()
+        if not stripped or _PDF_PAGE_NUMBER_RE.match(stripped):
+            continue
+        if text.endswith("-"):
+            text = text[:-1] + stripped
+        elif not text:
+            text = stripped
+        elif _PDF_PARAGRAPH_MARKER_RE.match(stripped):
+            text += "\n\n" + stripped
+        else:
+            text += " " + stripped
+    return clean_whitespace(text)
+
+
+def fetch_local_pdf(entry: dict[str, Any]) -> list[ParsedDocument]:
+    """Ingests a local PDF (e.g. an encyclical) page by page.
+
+    Unlike the other adapters this reads from entry["local_path"] instead of
+    fetching entry["canonical_url"].
+    """
+    from pypdf import PdfReader
+
+    local_path = entry.get("local_path")
+    if not local_path:
+        raise ValueError(
+            f"local_pdf adapter requires 'local_path' for source {entry['source_id']}"
+        )
+
+    reader = PdfReader(local_path)
+    documents: list[ParsedDocument] = []
+    for page_num, page in enumerate(reader.pages, start=1):
+        raw_text = _extract_pdf_page_text(page, reader)
+        clean_text = _clean_pdf_page_text(raw_text)
+        if len(clean_text) < 80:
+            continue
+        documents.append(
+            ParsedDocument(
+                document_id=f"{entry['source_id']}_p_{page_num:03d}",
+                title=f"{entry['work_title']}, str. {page_num}",
+                clean_text=clean_text,
+                hierarchy={"page": page_num},
+            )
+        )
+    return documents
+
+
 def fetch_gutenberg(entry: dict[str, Any]) -> list[ParsedDocument]:
     response = fetch_url(entry["canonical_url"])
     content_type = response.headers.get("content-type", "").lower()
@@ -671,4 +811,5 @@ ADAPTERS = {
     "ccel": fetch_ccel,
     "gutenberg": fetch_gutenberg,
     "vatican": fetch_vatican,
+    "local_pdf": fetch_local_pdf,
 }

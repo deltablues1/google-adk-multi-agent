@@ -117,21 +117,46 @@ def fetch_huggingface_dataset(dataset_name: str, subset: Optional[str] = None, s
         logger.error(f"Failed to fetch HF dataset {dataset_name}: {e}")
         raise
 
-def upload_to_rag_corpus(text: str, title: str, corpus_name: str) -> str:
+def _build_transformation_config(chunk_size: Optional[int], chunk_overlap: Optional[int]):
+    """Builds a Vertex AI RAG TransformationConfig, or None to use API defaults."""
+    if not chunk_size:
+        return None
+
+    rag = _init_vertex_rag()
+    return rag.TransformationConfig(
+        chunking_config=rag.ChunkingConfig(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap or 0,
+        )
+    )
+
+
+def upload_to_rag_corpus(
+    text: str,
+    title: str,
+    corpus_name: str,
+    *,
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
+) -> str:
     """
     Uploads text to Vertex AI RAG Corpus.
-    
+
     Args:
         text: The text content.
         title: Title of the document (used for filename).
         corpus_name: Full resource name of the RAG Corpus.
-        
+        chunk_size: Chunk size in tokens for Vertex's own chunking. If not
+            given, the RAG Engine's API default is used.
+        chunk_overlap: Chunk overlap in tokens, paired with chunk_size.
+
     Returns:
         The created RagFile resource name.
     """
     file_path = None
     try:
         rag = _init_vertex_rag()
+        transformation_config = _build_transformation_config(chunk_size, chunk_overlap)
 
         # Create a temporary file to upload
         safe_title = _safe_title(title)
@@ -150,6 +175,7 @@ def upload_to_rag_corpus(text: str, title: str, corpus_name: str) -> str:
                 corpus_name=corpus_name,
                 path=file_path,
                 display_name=f"{safe_title}.txt",
+                transformation_config=transformation_config,
             )
             logger.info(f"Successfully imported {file_path} to {corpus_name}")
 
@@ -170,16 +196,74 @@ def upload_to_rag_corpus(text: str, title: str, corpus_name: str) -> str:
                 logger.warning(f"Failed to remove temp file: {file_path}")
 
 
+def _upload_file_with_retry(
+    rag,
+    *,
+    corpus_name: str,
+    path: str,
+    display_name: str,
+    transformation_config,
+    max_attempts: int = 6,
+    base_delay: float = 5.0,
+):
+    """rag.upload_file wrapped with backoff for the RAG Engine's tight
+    per-minute request quota (observed to 429 even on plain list calls).
+
+    rag.upload_file() makes a raw HTTP call (not the GAPIC client) and
+    unconditionally calls response.json() on whatever comes back; a 429/5xx
+    from the quota limiter can return a non-JSON body, which surfaces as
+    requests' JSONDecodeError rather than a google.api_core exception. Both
+    are treated as transient here.
+    """
+    from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
+    from requests.exceptions import JSONDecodeError, RequestException
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return rag.upload_file(
+                corpus_name=corpus_name,
+                path=path,
+                display_name=display_name,
+                transformation_config=transformation_config,
+            )
+        except (
+            ResourceExhausted,
+            ServiceUnavailable,
+            JSONDecodeError,
+            RequestException,
+        ) as exc:
+            if attempt == max_attempts:
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.warning(
+                "RAG upload throttled (attempt %s/%s) for %s, backing off %.0fs: %s",
+                attempt,
+                max_attempts,
+                display_name,
+                delay,
+                exc,
+            )
+            sleep(delay)
+
+
 def upload_many_to_rag_corpus(
     documents: Iterable[dict[str, str]],
     corpus_name: str,
     *,
     batch_size: int = 1,
     max_workers: int = 1,
-    pause_seconds: float = 1.5,
+    pause_seconds: float = 2.5,
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
 ) -> dict[str, int]:
-    """Bulk-upload normalized text documents into a Vertex RAG corpus."""
+    """Bulk-upload normalized text documents into a Vertex RAG corpus.
+
+    chunk_size/chunk_overlap are in tokens and are forwarded to Vertex's own
+    chunker via TransformationConfig; without them the RAG Engine falls back
+    to its own default chunking regardless of source text_type.
+    """
     rag = _init_vertex_rag()
+    transformation_config = _build_transformation_config(chunk_size, chunk_overlap)
     temp_dir = Path(tempfile.mkdtemp(prefix="christian_rag_"))
     uploaded = 0
     batches = 0
@@ -200,10 +284,12 @@ def upload_many_to_rag_corpus(
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [
                     executor.submit(
-                        rag.upload_file,
+                        _upload_file_with_retry,
+                        rag,
                         corpus_name=corpus_name,
                         path=path,
                         display_name=Path(path).name,
+                        transformation_config=transformation_config,
                     )
                     for path in batch
                 ]

@@ -146,5 +146,32 @@
       "catechism",
       "summary"
     ]
+  },
+  {
+    "source_id": "vatican_magnifica_humanitas",
+    "enabled": true,
+    "display_name": "Magnifica Humanitas (Leo XIV)",
+    "source_family": "vatican",
+    "adapter": "local_pdf",
+    "local_path": "data/christian/raw/leo_xiv_magnifica_humanitas.pdf",
+    "canonical_url": "data/christian/raw/leo_xiv_magnifica_humanitas.pdf",
+    "rights_class": "restricted_internal_use",
+    "language": "hr",
+    "work_title": "Magnifica Humanitas (Veličanstveno čovještvo)",
+    "author": "Papa Lav XIV.",
+    "text_type": "encyclical",
+    "authority_level": "high",
+    "citation_style": "Magnifica Humanitas, str. {page}",
+    "persona_affinity": [
+      "neutral_catholic",
+      "doctrine",
+      "christian_reflection"
+    ],
+    "tags": [
+      "encyclical",
+      "leo_xiv",
+      "social_teaching",
+      "papal_teaching"
+    ]
   }
 ]

@@ -1,11 +1,15 @@
 """
-Ingest Christian corpus sources from a JSON source registry.
+Ingest philosophy corpus sources from a JSON source registry.
 
 This script:
-1. Loads data/christian/source_registry.json
+1. Loads data/philosophy/source_registry.json
 2. Fetches and normalizes the configured sources
 3. Emits chunked JSONL records with metadata
 4. Optionally uploads normalized source documents into Vertex AI RAG
+
+Supersedes the older ad-hoc scripts/ingest_philosophy.py (single Republic
+fetch + an unrelated wikitext sample) with the same structured
+registry/adapter/chunking pattern used for the Christian corpus.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from dotenv import load_dotenv
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from scripts.christian_ingest.pipeline import (  # noqa: E402
+from scripts.philosophy_ingest.pipeline import (  # noqa: E402
     build_chunk_records,
     fetch_source_documents,
     iter_enabled_sources,
@@ -28,12 +32,12 @@ from scripts.christian_ingest.pipeline import (  # noqa: E402
 )
 
 
-DEFAULT_REGISTRY = Path("data/christian/source_registry.json")
-DEFAULT_OUTPUT_DIR = Path("data/christian/build")
+DEFAULT_REGISTRY = Path("data/philosophy/source_registry.json")
+DEFAULT_OUTPUT_DIR = Path("data/philosophy/build")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Ingest Christian corpus sources")
+    parser = argparse.ArgumentParser(description="Ingest philosophy corpus sources")
     parser.add_argument(
         "--registry",
         type=Path,
@@ -55,12 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--upload",
         action="store_true",
-        help="Upload normalized source documents to CHRISTIAN_CORPUS_ID",
-    )
-    parser.add_argument(
-        "--include-restricted",
-        action="store_true",
-        help="Include sources marked restricted_internal_use",
+        help="Upload normalized source documents to PHILOSOPHY_CORPUS_ID",
     )
     return parser.parse_args()
 
@@ -82,25 +81,6 @@ def build_upload_documents(
     source: dict,
     documents: list,
 ) -> list[dict[str, str]]:
-    if (
-        source.get("text_type") == "scripture"
-        and documents
-        and {"book", "chapter", "verse_start", "verse_end"}.issubset(
-            documents[0].hierarchy
-        )
-    ):
-        grouped: dict[str, list[str]] = {}
-        for document in documents:
-            book = str(document.hierarchy["book"])
-            grouped.setdefault(book, []).append(document.clean_text)
-        return [
-            {
-                "title": f"{source['source_id']}__{book}",
-                "text": "\n\n".join(parts),
-            }
-            for book, parts in grouped.items()
-        ]
-
     return [
         {
             "text": document.clean_text,
@@ -118,13 +98,6 @@ def main() -> None:
     source_ids = set(args.source_ids or [])
     sources = iter_enabled_sources(registry, source_ids=source_ids or None)
 
-    if not args.include_restricted:
-        sources = [
-            source
-            for source in sources
-            if source.get("rights_class") != "restricted_internal_use"
-        ]
-
     if not sources:
         print("No matching sources to ingest.")
         return
@@ -134,10 +107,10 @@ def main() -> None:
         import os
         from tools.ingestion_tools import upload_many_to_rag_corpus
 
-        corpus_name = os.getenv("CHRISTIAN_CORPUS_ID")
+        corpus_name = os.getenv("PHILOSOPHY_CORPUS_ID")
         if not corpus_name:
             raise SystemExit(
-                "CHRISTIAN_CORPUS_ID is required when using --upload"
+                "PHILOSOPHY_CORPUS_ID is required when using --upload"
             )
     else:
         upload_many_to_rag_corpus = None
@@ -173,7 +146,7 @@ def main() -> None:
 
         if args.upload and corpus_name:
             chunk_size, chunk_overlap = vertex_chunk_config(
-                source.get("text_type", "reflection")
+                source.get("text_type", "treatise")
             )
             upload_summary = upload_many_to_rag_corpus(
                 build_upload_documents(source, documents),
