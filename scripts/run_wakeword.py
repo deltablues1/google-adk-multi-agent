@@ -688,6 +688,7 @@ class OpenWakeWordRunner(PorcupineWakeWordRunner):
         )
 
         consecutive_hits = 0
+        last_level_log = time.monotonic()
         with sd.RawInputStream(
             samplerate=sample_rate,
             blocksize=frame_length,
@@ -701,7 +702,27 @@ class OpenWakeWordRunner(PorcupineWakeWordRunner):
 
                 scores = model.predict(samples)
                 top = max(scores.values()) if scores else 0.0
+
+                # Periodic heartbeat: distinguishes "mic captures silence"
+                # (hardware/routing problem) from "mic hears audio but the
+                # wake-word model just isn't triggering" (tuning/acoustic
+                # problem) - neither shows up otherwise since scores below
+                # threshold were previously discarded with no logging at all.
+                now = time.monotonic()
+                if now - last_level_log >= 15:
+                    peak = int(np.abs(samples).max()) if samples.size else 0
+                    logger.info(
+                        "Wakeword heartbeat: mic_peak=%d/32768 last_frame_score=%.3f threshold=%.2f",
+                        peak, top, self.threshold,
+                    )
+                    last_level_log = now
+
                 if top < self.threshold:
+                    if top >= self.threshold - 0.15:
+                        logger.info(
+                            "Wake word near-miss: %s (score=%.2f, threshold=%.2f)",
+                            self.model_name, top, self.threshold,
+                        )
                     consecutive_hits = 0
                     continue
 
