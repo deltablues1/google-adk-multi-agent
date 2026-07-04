@@ -43,6 +43,7 @@ _TV_WORD_RE = re.compile(r"\btv\b")
 CHRISTIAN_KEYWORDS = {
     "krsc", "kršć", "biblij", "katekiz", "molitv", "duhovn", "augustin",
     "ignacije", "razluc", "razluč", "ispit savjesti", "examen", "egzamen",
+    "papa", "enciklik", "vatikan", "crkv", "kempis", "isus", "kristov",
 }
 
 TIME_DATE_KEYWORDS = {
