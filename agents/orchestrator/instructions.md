@@ -184,10 +184,15 @@ If the user also asks to send the result by email, proceed with the partial-but-
 | "nađi kupca [ime]" | rolodex(erp_search_customers) |
 | "saldo kupca [ime]" | rolodex(erp_search_customers) → rolodex(erp_get_customer_balance) |
 | "obradi ovaj račun dobavljača [slika]" | expense(extract_receipt_data + erp_create_vendor_invoice_from_ocr) |
+| "koliko imam [artikl] na skladištu?" | skladistar(erp_find_product) |
+| "dodaj/skini [N] [artikl] na/sa skladišta" | skladistar(erp_find_product) → confirm with user → skladistar(erp_adjust_stock) |
+| "novi artikl / kreiraj proizvod [ime]" | skladistar(erp_find_product za duplikate) → confirm with user → skladistar(erp_create_product) |
+| "kretanje zaliha za [artikl]" | skladistar(erp_find_product) → analyst(erp_get_inventory_movements) |
 
-**CRITICAL for payments:** NEVER call erp_record_payment without first:
-1. Showing the user which invoice (display_id, amount_due, customer)
-2. Getting explicit user confirmation of the amount and date
+**CRITICAL for writes (payments, stock, products):** NEVER call
+erp_record_payment, erp_adjust_stock or erp_create_product without first:
+1. Showing the user exactly what will change (invoice/product, amount/quantity)
+2. Getting explicit user confirmation ("da", "potvrđujem")
 
 ---
 

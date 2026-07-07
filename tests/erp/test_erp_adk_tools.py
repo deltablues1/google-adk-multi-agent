@@ -1,7 +1,7 @@
 """
 ERP ADK Tools Tests
 ====================
-Tests for the 17 ERP ADK tools in tools/adk_tools/erp_adk_tools.py.
+Tests for the 20 ERP ADK tools in tools/adk_tools/erp_adk_tools.py.
 
 These tests hit REAL Firestore with isolated company_id.
 The _build_ctx() in erp_adk_tools.py uses "default-company" — tests that need
@@ -196,5 +196,99 @@ class TestErpGetVendorInvoice:
         from tools.adk_tools.erp_adk_tools import erp_get_vendor_invoice
         result = await erp_get_vendor_invoice(vendor_invoice_id="nonexistent-ura-xyz")
         assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+
+class TestSkladistarTools:
+    """Voice warehouse tools: erp_find_product / erp_adjust_stock / erp_create_product.
+
+    Each test runs against its own throwaway company_id (via ERP_COMPANY_ID),
+    so real Firestore data is never touched.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_company(self, monkeypatch):
+        monkeypatch.setenv("ERP_COMPANY_ID", f"test-voice-{uuid4().hex[:8]}")
+
+    @pytest.mark.asyncio
+    async def test_create_product_generates_sku_and_is_findable(self):
+        from tools.adk_tools.erp_adk_tools import erp_create_product, erp_find_product
+        created = await erp_create_product(name="Vijak M8x40", unit="kom")
+        assert created.get("success") is True, created
+        assert created.get("sku"), "SKU should be auto-generated"
+        assert created["stock_quantity"] == 0.0
+
+        found = await erp_find_product(query="vijak")
+        assert found.get("success") is True
+        assert found["count"] == 1
+        assert found["products"][0]["name"] == "Vijak M8x40"
+
+    @pytest.mark.asyncio
+    async def test_find_product_is_diacritic_insensitive(self):
+        from tools.adk_tools.erp_adk_tools import erp_create_product, erp_find_product
+        created = await erp_create_product(name="Ležaj 6204", unit="kom")
+        assert created.get("success") is True, created
+
+        # STT will produce "lezaj" — must still match "Ležaj"
+        found = await erp_find_product(query="lezaj 6204")
+        assert found.get("success") is True
+        assert found["count"] == 1
+        assert found["products"][0]["name"] == "Ležaj 6204"
+
+    @pytest.mark.asyncio
+    async def test_find_product_no_match_returns_empty_success(self):
+        from tools.adk_tools.erp_adk_tools import erp_find_product
+        result = await erp_find_product(query="nepostojeci-artikl-xyz")
+        assert result.get("success") is True
+        assert result.get("count") == 0
+        assert result.get("products") == []
+
+    @pytest.mark.asyncio
+    async def test_create_with_initial_stock_records_movement(self):
+        from tools.adk_tools.erp_adk_tools import (
+            erp_create_product, erp_get_inventory_movements,
+        )
+        created = await erp_create_product(name="Brtva 25mm", initial_stock=10)
+        assert created.get("success") is True, created
+        assert created["stock_quantity"] == 10.0
+
+        movements = await erp_get_inventory_movements(product_id=created["product_id"])
+        assert movements.get("success") is True
+        assert movements["count"] == 1
+        assert movements["movements"][0]["quantity_delta"] == 10.0
+        assert movements["movements"][0]["created_by"] == "skladistar-agent"
+
+    @pytest.mark.asyncio
+    async def test_adjust_stock_add_then_remove(self):
+        from tools.adk_tools.erp_adk_tools import erp_create_product, erp_adjust_stock
+        created = await erp_create_product(name="Kabel NYM-J 3x2.5", unit="m")
+        assert created.get("success") is True, created
+        pid = created["product_id"]
+
+        added = await erp_adjust_stock(pid, quantity_delta=5, reason="Dostava materijala")
+        assert added.get("success") is True, added
+        assert added["new_quantity"] == 5.0
+
+        removed = await erp_adjust_stock(pid, quantity_delta=-3, reason="Utrošak na gradilištu")
+        assert removed.get("success") is True, removed
+        assert removed["new_quantity"] == 2.0
+        assert removed["delta"] == -3.0
+
+    @pytest.mark.asyncio
+    async def test_adjust_stock_rejects_negative_result(self):
+        from tools.adk_tools.erp_adk_tools import erp_create_product, erp_adjust_stock
+        created = await erp_create_product(name="Osigurač 16A")
+        assert created.get("success") is True, created
+
+        result = await erp_adjust_stock(created["product_id"], quantity_delta=-5)
+        assert result.get("success") is False
+        assert result.get("error") == "NEGATIVE_STOCK"
+        assert "Nema dovoljno" in result.get("message", "")
+
+    @pytest.mark.asyncio
+    async def test_adjust_stock_nonexistent_product_returns_error(self):
+        from tools.adk_tools.erp_adk_tools import erp_adjust_stock
+        result = await erp_adjust_stock("nonexistent-product-xyz", quantity_delta=1)
         assert result.get("success") is False
         assert "error" in result

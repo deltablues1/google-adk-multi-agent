@@ -61,6 +61,26 @@ BUSINESS_ORCHESTRATOR_KEYWORDS = {
     "posalji", "rezervi", "zakazi", "racun",
 }
 
+# Warehouse phrases route to the dedicated skladistar voice lane (fast,
+# 4-tool ERP agent) instead of the minutes-slow orchestrator. Matched against
+# _normalize_voice_text output, so ASCII-folded stems only. Deliberately no
+# bare "komad"/"dijel"/"proizvod" — too many false positives; "komada" catches
+# the actual quantity phrasing ("dodaj 5 komada X").
+WAREHOUSE_VOICE_KEYWORDS = {
+    "skladist", "zalih", "inventur", "artikl", "artikal", "lager",
+    "na stanje", "na stanju", "sa stanja", "komada",
+}
+
+# Short confirmation/abort replies that must stay in a pinned warehouse lane
+# ("da" after "Dodajem 5 komada X. Potvrđuješ?"). ASCII-folded forms.
+VOICE_CONFIRMATION_WORDS = {
+    "da", "ne", "moze", "potvrdujem", "potvrdi", "u redu", "ok", "okej",
+    "tako je", "tocno", "odustani", "stani", "nemoj",
+}
+
+# How long after a skladistar turn short follow-ups keep routing to it.
+VOICE_LANE_PIN_TTL_SECONDS = 120
+
 GENERAL_VOICE_PREFIXES = (
     "sto ",
     "što ",
@@ -147,6 +167,9 @@ class BaseInterface(ABC):
         self.session_prefix = session_prefix
         self.system = None
         self.active_sessions: Dict[str, Any] = {}
+        # session_id -> (agent_name, expires_at): keeps short confirmation
+        # replies in the same direct voice lane (write confirmations).
+        self._voice_pinned_lane: Dict[str, tuple] = {}
 
         # Lazy import to avoid circular dependencies
         self._system_class = None
@@ -313,6 +336,11 @@ class BaseInterface(ABC):
         if self._looks_like_business_orchestrator_task(message):
             return ORCHESTRATOR_VOICE_ROUTE, None
 
+        # Warehouse lane AFTER the business check so mixed requests
+        # ("dodaj 5 komada i izdaj racun") still reach the orchestrator.
+        if any(kw in self._normalize_voice_text(message) for kw in WAREHOUSE_VOICE_KEYWORDS):
+            return "agent", "skladistar"
+
         direct_agent = self._match_direct_voice_agent(message)
         if direct_agent in {"socrates", "smart_home", "christian_guide", "secretary"}:
             return "agent", direct_agent
@@ -326,6 +354,43 @@ class BaseInterface(ABC):
         # check; anything that slips through is handled by voice_qa's
         # escalate-to-orchestrator handoff (Phase 2).
         return "agent", "voice_qa"
+
+    def _apply_voice_lane_pin(
+        self,
+        session_id: str,
+        message: str,
+        route_type: str,
+        route_target: Optional[str],
+    ) -> tuple[str, Optional[str]]:
+        """Sticky lane for write confirmations.
+
+        Routing is re-classified every turn, so the "da" that answers
+        "Dodajem 5 komada X. Potvrđuješ?" has no warehouse keyword and would
+        fall into voice_qa — losing the pending confirmation. While a pin is
+        fresh, short follow-ups (confirmations, disambiguation answers like
+        "onaj prvi") are redirected back to the pinned agent. Any turn that
+        routes elsewhere voids the pin: the topic changed.
+        """
+        now = time.time()
+        pinned = self._voice_pinned_lane.get(session_id)
+        if pinned and now >= pinned[1]:
+            self._voice_pinned_lane.pop(session_id, None)
+            pinned = None
+
+        if pinned and route_type == "agent" and route_target == "voice_qa":
+            normalized = self._normalize_voice_text(message)
+            tokens = [t.strip(".,!?") for t in normalized.split()]
+            if tokens and (len(tokens) <= 6 or tokens[0] in VOICE_CONFIRMATION_WORDS):
+                logger.info("Voice lane pin -> %s (short follow-up)", pinned[0])
+                route_type, route_target = "agent", pinned[0]
+
+        if route_type == "agent" and route_target == "skladistar":
+            self._voice_pinned_lane[session_id] = (
+                "skladistar", now + VOICE_LANE_PIN_TTL_SECONDS
+            )
+        else:
+            self._voice_pinned_lane.pop(session_id, None)
+        return route_type, route_target
 
     def _resolve_voice_smart_home_response(
         self,
@@ -457,6 +522,14 @@ class BaseInterface(ABC):
                 "If clarification is required, ask only one concise follow-up question.\n\n"
                 f"User request: {message}"
             )
+        elif agent_name == "skladistar":
+            worker_message = (
+                "Voice warehouse mode. Odgovori na hrvatskom, jednom kratkom rečenicom "
+                "prikladnom za izgovor. Prije SVAKOG upisa (erp_adjust_stock, "
+                "erp_create_product) OBAVEZNO ponovi što si razumio (artikl, količina, "
+                "smjer) i čekaj potvrdu 'da' u sljedećoj poruci — nikad ne upisuj odmah.\n\n"
+                f"User request: {message}"
+            )
         elif agent_name == "secretary":
             worker_message = (
                 "Voice utility mode. Answer in Croatian with a short spoken-friendly response. "
@@ -559,11 +632,14 @@ class BaseInterface(ABC):
                 ) else None
 
                 if self._should_use_voice_direct_routing(user_id):
-                    if route_hint in {"smart_home", "voice_qa", "christian_guide", "socrates", "secretary"}:
+                    if route_hint in {"smart_home", "voice_qa", "christian_guide", "socrates", "secretary", "skladistar"}:
                         route_type, route_target = "agent", route_hint
                         logger.info("Pinned voice route -> %s", route_target)
                     else:
                         route_type, route_target = self._classify_voice_route(message)
+                    route_type, route_target = self._apply_voice_lane_pin(
+                        session_id, message, route_type, route_target
+                    )
 
                     if route_type == LOCAL_VOICE_ROUTE:
                         result = self._build_time_or_date_response(message)

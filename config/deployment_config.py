@@ -107,6 +107,9 @@ RPI_HOME_ALLOWED_AGENTS = {
     "socrates",
     "christian_guide",
     "smart_home",
+    # Warehouse voice lane — gets its ERP tools only when ERP_ENABLED=true
+    # overrides the rpi-home default; degrades to zero tools otherwise.
+    "skladistar",
 }
 
 _deployment_config: DeploymentConfig | None = None

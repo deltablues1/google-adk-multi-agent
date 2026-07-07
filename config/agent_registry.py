@@ -312,6 +312,22 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         adk_factory_func="create_synthesizer_agent"
     ),
 
+    "skladistar": AgentConfig(
+        name="skladistar",
+        module="agents.adk_agents.skladistar_adk",
+        class_name="create_skladistar_agent",
+        model=FLASH_MODEL,  # Tier 2: fast voice lane, small 4-tool ERP belt
+        description="Warehouse (skladište) voice specialist: stock queries, stock adjustments and new product creation with spoken confirmation. Keywords: skladište, zaliha, zalihe, artikl, inventura, lager, dodaj na stanje, skini sa stanja, koliko imam.",
+        tools=["erp_adk"],
+        instruction_file="agents/skladistar/instructions.md",
+        config={
+            "temperature": 0.2,
+            "max_tokens": 1024,
+        },
+        use_adk=True,
+        adk_factory_func="create_skladistar_agent"
+    ),
+
     "voice_qa": AgentConfig(
         name="voice_qa",
         module="agents.adk_agents.voice_qa_adk",

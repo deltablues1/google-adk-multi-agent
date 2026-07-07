@@ -6,7 +6,7 @@ Each function receives flat typed parameters (ADK requirement),
 builds an ERPRequestContext from session state or defaults,
 and delegates to the appropriate ERP service.
 
-17 tools total. Context is built explicitly — no magic session state lookups.
+20 tools total. Context is built explicitly — no magic session state lookups.
 """
 
 import logging
@@ -689,3 +689,197 @@ async def erp_get_vendor_invoice(vendor_invoice_id: str) -> dict:
     except Exception as e:
         logger.error(f"erp_get_vendor_invoice failed: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Skladištar tools — product:read, stock:adjust, product:write
+# Voice-first warehouse operations (query + confirmed writes).
+# ---------------------------------------------------------------------------
+
+def _fold_text(s: str) -> str:
+    """Lowercase + strip diacritics: 'Ležaj Ø25' -> 'lezaj 25'-ish folding."""
+    import unicodedata
+    normalized = unicodedata.normalize("NFKD", (s or "").lower())
+    return "".join(c for c in normalized if not unicodedata.combining(c))
+
+
+async def erp_find_product(query: str, limit: int = 10) -> dict:
+    """
+    Find products by (partial) name or SKU.
+
+    ALWAYS call this first to resolve the product the user mentioned by
+    voice — speech transcripts never contain exact SKUs and product names
+    may be garbled. Matching is case- and diacritic-insensitive.
+
+    Use this when asked about: koliko imam X, ima li na skladištu X,
+    pronađi artikl, prije svakog dodavanja/skidanja zaliha.
+
+    Args:
+        query: Name or SKU fragment, e.g. "kabel", "NYM", "vijak m8"
+        limit: Max candidates to return (1-25, default 10)
+
+    Returns:
+        dict with "products" list, each has: _id, sku, name, unit, price,
+        stock_quantity, min_stock
+    """
+    try:
+        from services.erp.product_service import get_product_service
+        ctx = _build_ctx(role="viewer", user_id="skladistar-agent")
+        svc = get_product_service()
+        clamped = max(1, min(limit, 25))
+        # Repo applies the "search" filter AFTER the Firestore limit, so fetch
+        # a wide window and slice locally.
+        results = await svc.list_products(ctx, {"search": query}, limit=500, offset=0)
+        if not results:
+            # Fallback: diacritic-insensitive token match over the catalog
+            # ("lezaj" must match "Ležaj", "vijak m8" must match "Vijak M8x40").
+            tokens = _fold_text(query).split()
+            if tokens:
+                catalog = await svc.list_products(ctx, {}, limit=500, offset=0)
+                results = [
+                    p for p in catalog
+                    if all(t in _fold_text(f"{p.get('name', '')} {p.get('sku', '')}") for t in tokens)
+                ]
+        slim = [
+            {k: p.get(k) for k in ("_id", "sku", "name", "unit", "price", "stock_quantity", "min_stock")}
+            for p in results[:clamped]
+        ]
+        if not slim:
+            return {"success": True, "products": [], "count": 0,
+                    "message": f"Nijedan artikl ne odgovara upitu '{query}'."}
+        return {"success": True, "products": slim, "count": len(slim)}
+    except Exception as e:
+        logger.error(f"erp_find_product failed: {e}")
+        return {"success": False, "error": str(e), "products": []}
+
+
+async def erp_adjust_stock(product_id: str, quantity_delta: float, reason: str = "") -> dict:
+    """
+    Add or remove stock for a product (relative delta, not absolute quantity).
+
+    IMPORTANT: This writes to the database. Only call this after the user
+    has EXPLICITLY confirmed (said "da"/"može"/"potvrđujem") the product
+    name, quantity and direction you repeated back to them. Never call
+    this autonomously without user confirmation.
+
+    Args:
+        product_id: Internal product UUID (from erp_find_product)
+        quantity_delta: Positive to add stock ("dodaj 5"), negative to
+            remove ("skini 3")
+        reason: Short reason for the adjustment, e.g. "Dostava materijala"
+
+    Returns:
+        dict with product_name, old_quantity, new_quantity, delta and a
+        spoken-ready "message"
+    """
+    try:
+        from decimal import Decimal
+        from services.erp.product_service import get_product_service
+        ctx = _build_ctx(role="employee", user_id="skladistar-agent")
+        svc = get_product_service()
+        product = await svc.get_product(product_id, ctx)
+        old_quantity = float(product.get("stock_quantity") or 0)
+        new_quantity = old_quantity + float(quantity_delta)
+        if new_quantity < 0:
+            return {
+                "success": False,
+                "error": "NEGATIVE_STOCK",
+                "message": (
+                    f"Nema dovoljno na stanju: artikl {product.get('name')} ima "
+                    f"{old_quantity:g}, a traženo je skidanje {abs(quantity_delta):g}."
+                ),
+            }
+        result = await svc.adjust_stock(
+            product_id,
+            Decimal(str(new_quantity)),
+            (reason or "").strip() or "Glasovna korekcija zaliha (Jarvis)",
+            ctx,
+        )
+        return {
+            "success": True,
+            **result,
+            "message": (
+                f"{result['product_name']}: staro stanje {result['old_quantity']:g}, "
+                f"novo stanje {result['new_quantity']:g}."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"erp_adjust_stock failed: {e}")
+        return {"success": False, "error": str(e), "message": str(e)}
+
+
+async def erp_create_product(
+    name: str,
+    sku: str = "",
+    unit: str = "kom",
+    price: float = 0.0,
+    vat_rate: str = "25",
+    initial_stock: float = 0.0,
+    description: str = "",
+) -> dict:
+    """
+    Create a new product/part in the ERP catalog.
+
+    IMPORTANT: This writes to the database. Only call this after the user
+    has EXPLICITLY confirmed the product name (and unit/price if given).
+    Before creating, ALWAYS use erp_find_product to check that the product
+    does not already exist — suggest adjusting stock instead of duplicating.
+
+    Args:
+        name: Product name, e.g. "Vijak M8x40"
+        sku: Optional SKU/šifra; auto-generated from the name when empty.
+            Do not invent SKUs — leave empty unless the user dictated one.
+        unit: Unit of measure: kom|m|kg|l|h (default "kom")
+        price: Unit price in EUR (0 if unknown)
+        vat_rate: VAT rate as string (default "25")
+        initial_stock: Starting quantity; recorded as an inventory movement
+        description: Optional description
+
+    Returns:
+        dict with product_id, sku, name, stock_quantity and a spoken-ready
+        "message"
+    """
+    try:
+        import re
+        from decimal import Decimal
+        from services.erp.product_service import get_product_service
+        ctx = _build_ctx(role="accountant", user_id="skladistar-agent")
+        svc = get_product_service()
+        clean_sku = (sku or "").strip()
+        if not clean_sku:
+            base = re.sub(r"[^A-Z0-9]+", "-", _fold_text(name).upper()).strip("-")[:20] or "ARTIKL"
+            clean_sku = f"{base}-{uuid4().hex[:4].upper()}"
+        doc = await svc.create_product({
+            "name": name.strip(),
+            "sku": clean_sku,
+            "unit": unit or "kom",
+            "price": float(price or 0),
+            "vat_rate": str(vat_rate or "25"),
+            "currency": "EUR",
+            "description": description,
+            "category": "Materijal",
+            "stock_quantity": 0,
+        }, ctx)
+        stock_quantity = 0.0
+        if float(initial_stock or 0) > 0:
+            adjusted = await svc.adjust_stock(
+                doc["_id"],
+                Decimal(str(float(initial_stock))),
+                "Početno stanje pri kreiranju (Jarvis)",
+                ctx,
+            )
+            stock_quantity = float(adjusted["new_quantity"])
+        return {
+            "success": True,
+            "product_id": doc["_id"],
+            "sku": clean_sku,
+            "name": doc["name"],
+            "stock_quantity": stock_quantity,
+            "message": (
+                f"Artikl {doc['name']} ({clean_sku}) kreiran, "
+                f"stanje {stock_quantity:g} {unit or 'kom'}."
+            ),
+        }
+    except Exception as e:
+        logger.error(f"erp_create_product failed: {e}")
+        return {"success": False, "error": str(e), "message": str(e)}
