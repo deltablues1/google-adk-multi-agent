@@ -46,10 +46,44 @@ CHRISTIAN_KEYWORDS = {
     "papa", "enciklik", "vatikan", "crkv", "kempis", "isus", "kristov",
 }
 
+# Full phrases only — matched against _normalize_voice_text output. Bare
+# "vrijeme"/"datum" must NOT go here: substring match would hijack weather
+# questions ("kakvo je vrijeme sutra") and knowledge questions ("koji je
+# datum rođenja..."). _is_time_or_date_request additionally requires the
+# phrase to end the utterance (modulo "danas"/"sada").
 TIME_DATE_KEYWORDS = {
-    "koliko je sati", "koji je datum", "koji je dan", "koji dan", "koliko je ura",
-    "datum", "vrijeme", "koliko sati"
+    "koliko je sati", "koji je datum", "koji je danas datum", "koji datum",
+    "danasnji datum", "koji je dan", "koji dan", "koliko je ura", "koliko sati",
 }
+
+# Trailing words still compatible with a local time/date answer.
+TIME_DATE_ALLOWED_TAILS = {"", "danas", "sada", "sad", "trenutno"}
+
+# Weather intent — checked before the time/date branch would ever see the
+# word "vrijeme". Safe long stems as substrings (ASCII-folded, matched
+# against _normalize_voice_text output)...
+WEATHER_VOICE_KEYWORDS = {
+    "prognoz", "vremensk", "temperatur", "stupnjev", "oblacno", "suncano",
+    "grmljavin", "pljusak", "pljusk", "nevrijeme", "snijezi", "snjezi",
+}
+
+# ...and short weather words with word boundaries, because bare substrings
+# would false-positive ("kisi" in "kisik", same lesson as _TV_WORD_RE).
+_WEATHER_WORD_RE = re.compile(
+    r"\b(kis[aeiu]|snijeg[au]?|snjezn\w*|vjetar|vjetr[au]|vjetrovit\w*|"
+    r"magl[aeiu]|maglovit\w*)\b"
+)
+
+# "vrijeme" counts as weather only next to a weather cue, not on its own
+# ("koliko je vremena" / "imamo li vrijeme za sastanak" must not match).
+_WEATHER_VRIJEME_CUES = (
+    "kakvo", "kakva", "kako je vani", "sutra", "danas", "vani",
+    "prekosutra", "za vikend",
+)
+
+HR_WEEKDAY_NAMES = (
+    "ponedjeljak", "utorak", "srijeda", "četvrtak", "petak", "subota", "nedjelja",
+)
 
 BUSINESS_ORCHESTRATOR_KEYWORDS = {
     "mail", "email", "gmail", "kalendar", "calendar", "drive", "docs",
@@ -102,6 +136,7 @@ VOICE_ROUTING_USER_PREFIXES = (
 )
 
 LOCAL_VOICE_ROUTE = "local_voice_response"
+WEATHER_VOICE_ROUTE = "local_weather_response"
 ORCHESTRATOR_VOICE_ROUTE = "orchestrator"
 # voice_qa (tool-less) emits this sentinel when the request is actually a task;
 # the interface then re-routes the original message to the orchestrator.
@@ -240,7 +275,7 @@ class BaseInterface(ABC):
             return "smart_home"
         if any(kw in msg_lower for kw in CHRISTIAN_KEYWORDS):
             return "christian_guide"
-        if any(kw in msg_lower for kw in TIME_DATE_KEYWORDS):
+        if self._is_time_or_date_request(message):
             return "secretary"
         if msg_lower.startswith(GENERAL_VOICE_PREFIXES):
             return "voice_qa"
@@ -306,18 +341,52 @@ class BaseInterface(ABC):
         )
 
     def _is_time_or_date_request(self, message: str) -> bool:
+        msg_lower = self._normalize_voice_text(message).strip(" ?!.,")
+        for kw in TIME_DATE_KEYWORDS:
+            idx = msg_lower.find(kw)
+            if idx == -1:
+                continue
+            # A real time/date question ends with the phrase ("reci mi koji je
+            # datum"). A tail means "datum"/"dan" is part of something else
+            # ("koji je datum rođenja pape") — not ours to answer locally.
+            tail = msg_lower[idx + len(kw):].strip(" ?!.,")
+            if tail in TIME_DATE_ALLOWED_TAILS:
+                return True
+        return False
+
+    def _is_weather_request(self, message: str) -> bool:
         msg_lower = self._normalize_voice_text(message)
-        return any(kw in msg_lower for kw in TIME_DATE_KEYWORDS)
+        if any(kw in msg_lower for kw in WEATHER_VOICE_KEYWORDS):
+            return True
+        if _WEATHER_WORD_RE.search(msg_lower):
+            return True
+        if "vrijeme" in msg_lower and any(cue in msg_lower for cue in _WEATHER_VRIJEME_CUES):
+            return True
+        return False
 
     def _build_time_or_date_response(self, message: str) -> str:
         tz_name = os.getenv("USER_TIMEZONE", "Europe/Zagreb")
         now = datetime.now(ZoneInfo(tz_name))
-        msg_lower = message.lower()
+        msg_lower = self._normalize_voice_text(message)
 
         if "datum" in msg_lower or "koji je dan" in msg_lower or "koji dan" in msg_lower:
-            return now.strftime("Danas je %A, %d. %m. %Y.")
+            # strftime %A would speak the English weekday through TTS; the
+            # systemd service has no Croatian locale, so map it ourselves.
+            day_name = HR_WEEKDAY_NAMES[now.weekday()]
+            return f"Danas je {day_name}, {now.day}. {now.month}. {now.year}."
 
         return now.strftime("Trenutno je %H:%M.")
+
+    async def _build_weather_response(self, message: str) -> str:
+        from services.voice_weather import get_voice_weather_report
+
+        report = await get_voice_weather_report(message)
+        if report:
+            return report
+        return (
+            "Ne mogu trenutno dohvatiti vremensku prognozu. "
+            "Pokušaj ponovno za koju minutu."
+        )
 
     def _classify_voice_route(self, message: str) -> tuple[str, Optional[str]]:
         """
@@ -327,6 +396,7 @@ class BaseInterface(ABC):
             (route_type, route_target)
             route_type:
               - LOCAL_VOICE_ROUTE
+              - WEATHER_VOICE_ROUTE
               - ORCHESTRATOR_VOICE_ROUTE
               - "agent"
         """
@@ -335,6 +405,12 @@ class BaseInterface(ABC):
 
         if self._looks_like_business_orchestrator_task(message):
             return ORCHESTRATOR_VOICE_ROUTE, None
+
+        # Weather AFTER the business check so mixed requests ("pošalji mail s
+        # prognozom") still reach the orchestrator, but before every agent
+        # lane: no agent has a weather tool, this is the only reliable path.
+        if self._is_weather_request(message):
+            return WEATHER_VOICE_ROUTE, None
 
         # Warehouse lane AFTER the business check so mixed requests
         # ("dodaj 5 komada i izdaj racun") still reach the orchestrator.
@@ -643,6 +719,8 @@ class BaseInterface(ABC):
 
                     if route_type == LOCAL_VOICE_ROUTE:
                         result = self._build_time_or_date_response(message)
+                    elif route_type == WEATHER_VOICE_ROUTE:
+                        result = await self._build_weather_response(message)
                     elif route_type == "agent" and route_target:
                         result = await self._run_direct_worker_agent(
                             route_target,
