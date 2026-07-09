@@ -187,11 +187,20 @@ class WebInterface(BaseInterface):
         message: str,
         route_hint: Optional[str] = None,
         response_mode: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a chat message (non-streaming).
         Returns dict with response text, session_id, trace.
         """
+        # Honour a client-pinned session. The web UI also calls
+        # /api/sessions/{id}/switch, but direct API clients only send the
+        # ChatRequest field; an unknown id falls back to the active session.
+        if session_id and not self.switch_session(user_id, session_id):
+            logger.warning(
+                "Unknown session_id %r from %s — using active session",
+                session_id, user_id,
+            )
         session_id = self.get_or_create_session(user_id)
         lock = await self._get_lock(session_id)
         persistence = self._get_persistence()
@@ -253,11 +262,17 @@ class WebInterface(BaseInterface):
     async def chat_stream(
         self, user_id: str, message: str,
         attachments: list = None,
+        session_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict, None]:
         """
         Process a chat message with streaming via orchestrator_helper.stream().
         Yields SSE-compatible event dicts with types: text, tool_call, tool_response, done.
         """
+        if session_id and not self.switch_session(user_id, session_id):
+            logger.warning(
+                "Unknown session_id %r from %s — using active session",
+                session_id, user_id,
+            )
         session_id = self.get_or_create_session(user_id)
         lock = await self._get_lock(session_id)
 

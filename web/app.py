@@ -580,6 +580,7 @@ def create_app(interface) -> FastAPI:
                 message=req.message,
                 route_hint=req.route_hint,
                 response_mode=req.response_mode,
+                session_id=req.session_id,
             )
             duration_s = _time.time() - started_at
             _metrics.record_timing(
@@ -642,6 +643,7 @@ def create_app(interface) -> FastAPI:
                 user_id=req.user_id,
                 message=req.message,
                 attachments=attachments,
+                session_id=req.session_id,
             ):
                 event_type = event.get("event", "message")
                 data = event.get("data", "")

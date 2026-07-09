@@ -81,23 +81,20 @@ Vidi i [`deploy/rpi/RUNBOOK.md`](../../deploy/rpi/RUNBOOK.md).
 | `WAKEWORD_THRESHOLD` | `0.4` | Osjetljivost detekcije wake-worda |
 | `VOICE_FOLLOW_UP_MODE` | `false` | Dopusti nastavke bez ponovnog buđenja |
 | `VOICE_FOLLOW_UP_MAX_TURNS` | `4` | Maks. broj nastavnih poteza |
-| `VOICE_MAX_RECORD_TIME` | `30` | Maks. sekundi snimanja |
-| `VOICE_SILENCE_TIMEOUT` | `5` | Tišina prije zaustavljanja (s) |
-| `VOICE_PRE_SPEECH_TIMEOUT` | `8` | Čekanje na početak govora (s) |
-| `VOICE_SPEECH_RMS_THRESHOLD` | `260` | RMS razina koja se smatra govorom |
-| `VOICE_SILENCE_RMS_THRESHOLD` | `170` | RMS razina koja se smatra tišinom |
+| `WAKEWORD_RECORD_SECONDS_MAX` | `8.0` | Maks. sekundi snimanja |
+| `WAKEWORD_SILENCE_SECONDS` | `1.2` | Tišina prije zaustavljanja (s) |
+| `WAKEWORD_MIN_SPEECH_SECONDS` | `0.6` | Minimalno govora da se snimka prihvati (s) |
+| `WAKEWORD_ENERGY_THRESHOLD` | `900` | Razina energije koja se smatra govorom |
 | `VOICE_AGENT_TIMEOUT_SECONDS` | `300` | Tvrdi limit jednog agent poteza — po isteku se run stvarno prekida (ne samo napušta) i izgovara se `VOICE_AGENT_TIMEOUT_MESSAGE` |
 | `VOICE_WORKING_ACK_TEXT` | `Radim na tome…` | Izgovorena najava prije dugih orchestrator zadataka (prazno isključuje) |
 | `WAKEWORD_VAD_THRESHOLD` | `0` (isklj.) | Silero VAD filtar na buđenju — ne-govorni šum ne može probuditi; razumno 0.4–0.6 |
 | `WAKEWORD_MIN_CONSECUTIVE_FRAMES` | `1` | Broj frameova u kojima score mora ostati iznad praga; `2` filtrira jednokratne šiljke šuma (+~80 ms latencije) |
-| `VOICE_TTS_TIMEOUT_SECONDS` | `35` | TTS timeout |
+| `WAKEWORD_TTS_TIMEOUT_SECONDS` | `30` | TTS timeout (s) |
 | `VOICE_DIRECT_ROUTING` | uklj. (rpi-home) | Usmjeri wake-word na smart_home / christian_guide / socrates prije orchestratora |
-| `VOICE_LOCAL_SMART_HOME_FAST_PATH` | — | Lokalna brza putanja za smart-home naredbe |
-| `VOICE_DEBUG_AUDIO_METRICS` | — | Logiraj RMS/timing metrike zvuka |
+| `VOICE_WEATHER_DEFAULT_LOCATION` | `Zagreb` | Zadani grad za lokalnu weather lane (Open-Meteo) kad lokacija nije izgovorena |
 
 Poruke/znakovi: `VOICE_WAKE_PROMPT_TEXT` (`Slušam.`),
-`VOICE_FOLLOW_UP_PROMPT_TEXT` (`Treba li još nešto?`), `VOICE_NO_SPEECH_CUE`,
-`VOICE_SUPPRESS_LISTENING_CUE_WHEN_PROMPT`.
+`VOICE_FOLLOW_UP_PROMPT_TEXT` (`Treba li još nešto?`).
 
 ---
 

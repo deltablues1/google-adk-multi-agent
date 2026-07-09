@@ -4,8 +4,9 @@ ERP ADK Tools Tests
 Tests for the 20 ERP ADK tools in tools/adk_tools/erp_adk_tools.py.
 
 These tests hit REAL Firestore with isolated company_id.
-The _build_ctx() in erp_adk_tools.py uses "default-company" — tests that need
-isolation should verify behavior rather than data contents.
+_build_ctx() in erp_adk_tools.py fails fast without company_id/ERP_COMPANY_ID
+(no silent "default-company" tenant) — tests either monkeypatch ERP_COMPANY_ID
+or accept an "error" result.
 
 Run with:
     pytest tests/erp/test_erp_adk_tools.py -v

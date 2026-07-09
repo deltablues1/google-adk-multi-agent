@@ -25,11 +25,21 @@ def _build_ctx(
     user_id: str = "agent",
     role: str = "employee",
 ) -> "ERPRequestContext":
-    """Build ERPRequestContext with explicit values (no magic)."""
+    """Build ERPRequestContext with explicit values (no magic).
+
+    No silent tenant fallback: without an explicit company_id or ERP_COMPANY_ID
+    every write would land in a phantom "default-company" tenant. Each tool's
+    try/except surfaces this as a clean error dict to the agent.
+    """
     from services.erp.request_context import ERPRequestContext
+    resolved_company = company_id or os.environ.get("ERP_COMPANY_ID", "").strip()
+    if not resolved_company:
+        raise RuntimeError(
+            "ERP company_id is not configured: pass company_id or set ERP_COMPANY_ID"
+        )
     return ERPRequestContext(
         user_id=user_id,
-        company_id=company_id or os.environ.get("ERP_COMPANY_ID", "default-company"),
+        company_id=resolved_company,
         role=role,
         grants=[],
         denies=[],

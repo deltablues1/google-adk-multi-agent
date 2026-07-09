@@ -442,76 +442,6 @@ Koristi /classroom za ulazak.
                     f"Greška pri obradi zahtjeva: {str(e)}"
                 )
 
-    # === Voice Handler ===
-
-    @authorized_only
-    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle voice messages - STT via Gemini, then route to agent system."""
-        chat_id = str(update.effective_chat.id)
-        user_id = str(update.effective_user.id)
-
-        lock = await self._get_processing_lock(chat_id)
-
-        async with lock:
-            try:
-                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-
-                # Download voice/audio file
-                voice = update.message.voice
-                audio = update.message.audio
-                if voice:
-                    file = await context.bot.get_file(voice.file_id)
-                    mime_type = voice.mime_type or "audio/ogg"
-                elif audio:
-                    file = await context.bot.get_file(audio.file_id)
-                    mime_type = audio.mime_type or "audio/mpeg"
-                else:
-                    await update.message.reply_text("Nije prepoznat audio format.")
-                    return
-
-                audio_bytes = await file.download_as_bytearray()
-
-                # Transcribe via shared STT service
-                from services.audio.stt_service import STTService
-                stt = STTService()
-                transcript = await stt.transcribe(bytes(audio_bytes), mime_type)
-
-                if not transcript or transcript == "[nečujno]":
-                    await update.message.reply_text("Nisam uspjela prepoznati govor. Pokušaj ponovo.")
-                    return
-
-                # Show what was recognized
-                await update.message.reply_text(f"🎤 _{transcript}_", parse_mode=ParseMode.MARKDOWN)
-
-                # Process through agent system (same flow as text messages)
-                await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-                session_id = self._get_session_for_chat(chat_id)
-
-                logger.info(f"Voice message from {chat_id}: {transcript[:80]}...")
-
-                response = await self.process_message(
-                    user_id=f"telegram-voice-{user_id}",
-                    message=transcript,
-                    session_id=session_id
-                )
-
-                formatted = self.format_response(response)
-                chunks = self._split_message(formatted)
-
-                for i, chunk in enumerate(chunks):
-                    if i > 0:
-                        await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
-                        await asyncio.sleep(0.5)
-                    await update.message.reply_text(chunk)
-
-                logger.info(f"Voice response sent to {chat_id}")
-
-            except Exception as e:
-                logger.error(f"Error handling voice message: {e}")
-                await update.message.reply_text(
-                    f"Greška pri obradi glasovne poruke: {str(e)}"
-                )
-
     # === Photo & Document Handlers ===
 
     async def _process_image_ocr(self, image_bytes: bytes, mime_type: str, chat_id: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -805,7 +735,7 @@ Koristi /classroom za ulazak.
             MessageHandler(filters.PHOTO, self.handle_photo)
         )
 
-        # Voice messages (STT -> agent)
+        # Voice/audio messages (STT -> agent)
         self.application.add_handler(
             MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice)
         )
@@ -813,11 +743,6 @@ Koristi /classroom za ulazak.
         # Document messages (PDF/image files)
         self.application.add_handler(
             MessageHandler(filters.Document.ALL, self.handle_document)
-        )
-
-        # Voice/audio messages
-        self.application.add_handler(
-            MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice)
         )
 
         logger.info("Handlers registered (text + photo + document + voice)")

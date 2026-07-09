@@ -18,8 +18,17 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Singleton scheduler instance (initialized by main.py)
+# Singleton scheduler instance. Registered ONLY by the CLI path
+# (main.py initialize_agents(start_scheduler=True)); web/RPi deployments run
+# jobs in a separate process (run_scheduler.py), so there these tools have no
+# instance and must say so honestly instead of "restart the system".
 _scheduler_instance = None
+
+_SCHEDULER_UNAVAILABLE = (
+    "Scheduler is not running in this process. Recurring jobs are managed by "
+    "the CLI (python main.py) or the scheduler daemon (python run_scheduler.py) "
+    "— tell the user to add/manage the job there."
+)
 
 
 def set_scheduler_instance(scheduler):
@@ -69,7 +78,7 @@ async def scheduler_add_job(
     """
     scheduler = get_scheduler_instance()
     if scheduler is None:
-        return {"error": "Scheduler not initialized. Please restart the system."}
+        return {"error": _SCHEDULER_UNAVAILABLE}
 
     from config.scheduler_config import ScheduledJob, JobTrigger
 
@@ -126,7 +135,7 @@ async def scheduler_list_jobs() -> dict:
     """
     scheduler = get_scheduler_instance()
     if scheduler is None:
-        return {"error": "Scheduler not initialized.", "jobs": []}
+        return {"error": _SCHEDULER_UNAVAILABLE, "jobs": []}
 
     jobs = scheduler.list_jobs()
     return {
@@ -148,7 +157,7 @@ async def scheduler_remove_job(job_id: str) -> dict:
     """
     scheduler = get_scheduler_instance()
     if scheduler is None:
-        return {"error": "Scheduler not initialized."}
+        return {"error": _SCHEDULER_UNAVAILABLE}
 
     if scheduler.remove_job(job_id):
         return {"status": "success", "message": f"Job '{job_id}' removed successfully."}
@@ -168,7 +177,7 @@ async def scheduler_pause_job(job_id: str) -> dict:
     """
     scheduler = get_scheduler_instance()
     if scheduler is None:
-        return {"error": "Scheduler not initialized."}
+        return {"error": _SCHEDULER_UNAVAILABLE}
 
     if scheduler.pause_job(job_id):
         return {"status": "success", "message": f"Job '{job_id}' paused."}
@@ -188,7 +197,7 @@ async def scheduler_resume_job(job_id: str) -> dict:
     """
     scheduler = get_scheduler_instance()
     if scheduler is None:
-        return {"error": "Scheduler not initialized."}
+        return {"error": _SCHEDULER_UNAVAILABLE}
 
     if scheduler.resume_job(job_id):
         return {"status": "success", "message": f"Job '{job_id}' resumed."}
