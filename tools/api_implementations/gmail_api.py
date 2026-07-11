@@ -16,7 +16,7 @@ import logging
 from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
-from tools.resilience.cache import with_cache
+from tools.resilience.cache import with_cache, invalidates_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
@@ -234,7 +234,9 @@ async def gmail_get_thread(
 
 @with_circuit_breaker("gmail")
 @with_rate_limit("gmail", cost=100, user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — send is not idempotent. A timeout after Gmail
+# accepted the message would resend it and the recipient would get duplicates.
+@invalidates_cache("gmail")
 async def gmail_send_message(
     credentials: Credentials,
     to: str,
@@ -329,10 +331,34 @@ async def gmail_send_message(
         # Add attachment if provided
         if attachment_path:
             import os
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             # Resolve relative paths from project root
             if not os.path.isabs(attachment_path):
-                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                 attachment_path = os.path.join(project_root, attachment_path)
+
+            # Sandbox: attachments may only come from designated output dirs —
+            # otherwise the LLM could be tricked into mailing .env, tokens, certs...
+            allowed_dirs = [
+                os.path.realpath(os.path.join(project_root, d))
+                for d in os.getenv(
+                    "GMAIL_ATTACHMENT_DIRS", "output,uploads,temp"
+                ).split(",")
+                if d.strip()
+            ]
+            real_path = os.path.realpath(attachment_path)
+            if not any(
+                real_path == d or real_path.startswith(d + os.sep)
+                for d in allowed_dirs
+            ):
+                logger.error(f"Attachment path outside allowed dirs: {attachment_path}")
+                return {
+                    "error": (
+                        f"Attachment path not allowed: {attachment_path}. Only files "
+                        "under the project's output/uploads/temp directories can be "
+                        "attached. Email NOT sent."
+                    ),
+                    "status": "failed",
+                }
 
             if os.path.exists(attachment_path):
                 filename = os.path.basename(attachment_path)
@@ -394,6 +420,7 @@ async def gmail_send_message(
 @with_circuit_breaker("gmail")
 @with_rate_limit("gmail", cost=50, user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("gmail")
 async def gmail_create_draft(
     credentials: Credentials,
     to: str,
@@ -472,6 +499,7 @@ async def gmail_create_draft(
 @with_circuit_breaker("gmail")
 @with_rate_limit("gmail", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("gmail")
 async def gmail_modify_thread(
     credentials: Credentials,
     thread_id: str,
@@ -792,6 +820,7 @@ async def gmail_download_attachment(
 # LABEL HELPERS  (Sprint Inbound A.1)
 # ============================================================================
 
+@invalidates_cache("gmail")
 async def gmail_get_or_create_label(
     credentials: Credentials,
     label_name: str,
@@ -848,6 +877,7 @@ async def gmail_get_or_create_label(
 @with_circuit_breaker("gmail")
 @with_rate_limit("gmail", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("gmail")
 async def gmail_modify_message(
     credentials: Credentials,
     message_id: str,

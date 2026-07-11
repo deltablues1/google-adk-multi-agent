@@ -68,7 +68,7 @@ class AudioIngressService:
             from services.audio.stt_service import STTService
 
             transcript = await STTService().transcribe(audio_bytes, mime_type)
-        else:
+        elif engine in {"gemini", ""}:
             if not self.api_key:
                 raise AudioIngressError("GEMINI_API_KEY is not configured")
             loop = asyncio.get_running_loop()
@@ -77,6 +77,13 @@ class AudioIngressService:
                 self._transcribe_sync,
                 audio_bytes,
                 mime_type,
+            )
+        else:
+            # Fail loudly: an unknown value (e.g. "openai") used to fall into
+            # the Gemini branch silently and transcribe with the wrong engine.
+            raise AudioIngressError(
+                f"Unsupported STT_ENGINE '{engine}'. "
+                "Supported: chirp (chirp_2/cloud) or gemini."
             )
         transcript = (transcript or "").strip()
         if not transcript:

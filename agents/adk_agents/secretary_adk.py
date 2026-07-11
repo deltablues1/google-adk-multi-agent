@@ -87,8 +87,23 @@ def create_secretary_agent(
         >>> response = await run_agent_simple(secretary, "Schedule meeting tomorrow at 2pm")
     """
 
-    # Get Calendar tools
+    # Get Calendar tools (incl. freebusy / slot proposal / meeting creation)
     calendar_tools = get_calendar_adk_tools(credentials=credentials)
+
+    # Meeting lifecycle: contact resolution (with mandatory disambiguation)
+    # and follow-up drafts. Draft only — the Calendar invite itself is sent
+    # by calendar_create_meeting(send_updates="all").
+    from tools.adk_tools.contacts_adk_tools import (
+        contacts_get_by_name,
+        contacts_search_people,
+    )
+    from tools.adk_tools.gmail_adk_tools import gmail_create_draft
+
+    tools = calendar_tools + [
+        contacts_get_by_name,
+        contacts_search_people,
+        gmail_create_draft,
+    ]
 
     # Load base instruction from file
     instruction_file = os.path.join(
@@ -112,20 +127,24 @@ def create_secretary_agent(
     agent = create_adk_agent(
         name="secretary",
         model=model,
-        description="Google Calendar specialist for event scheduling, availability checks, and conflict resolution",
-        tools=calendar_tools,
+        description=(
+            "Google Calendar specialist: event scheduling, availability checks, "
+            "meeting lifecycle (contact resolution, FreeBusy slot proposals, "
+            "Meet invites, follow-up drafts)"
+        ),
+        tools=tools,
         instruction=instruction,  # Use custom instruction with datetime context
         load_instruction_from_file=False,  # We already loaded and modified it
         config={
             "temperature": 0.3,  # Consistent scheduling decisions
-            "max_tokens": 1536,
+            "max_tokens": 2048,
         }
     )
 
     # Store timezone for reference
     agent._user_timezone = user_timezone
 
-    logger.info(f"Secretary ADK agent created with {len(calendar_tools)} Calendar tools")
+    logger.info(f"Secretary ADK agent created with {len(tools)} tools")
     logger.info(f"User timezone: {user_timezone}")
     return agent
 

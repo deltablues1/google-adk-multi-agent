@@ -12,7 +12,7 @@ import logging
 from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
-from tools.resilience.cache import with_cache
+from tools.resilience.cache import with_cache, invalidates_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("sheets")
 async def sheets_create_spreadsheet(
     credentials: Credentials,
     title: str,
@@ -162,6 +163,7 @@ async def sheets_get_values(
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("sheets")
 async def sheets_update_values(
     credentials: Credentials,
     spreadsheet_id: str,
@@ -233,6 +235,7 @@ async def sheets_update_values(
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("sheets")
 async def sheets_append_values(
     credentials: Credentials,
     spreadsheet_id: str,
@@ -302,6 +305,7 @@ async def sheets_append_values(
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("sheets")
 async def sheets_clear_values(
     credentials: Credentials,
     spreadsheet_id: str,
@@ -355,6 +359,7 @@ async def sheets_clear_values(
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("sheets")
 async def sheets_batch_update(
     credentials: Credentials,
     spreadsheet_id: str,

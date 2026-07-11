@@ -38,6 +38,10 @@ class HomeAssistantMqttBridge:
         self.port = int(os.getenv("MQTT_PORT", "1883"))
         self.username = os.getenv("MQTT_USER", "").strip()
         self.password = os.getenv("MQTT_PASS", "").strip()
+        # Retained transcripts persist spoken conversations in the broker (and
+        # any broker backup) — privacy default is OFF; HA still receives live
+        # updates, they just don't survive an HA restart.
+        self.retain_transcripts = _env_flag("HA_BRIDGE_RETAIN_TRANSCRIPTS", False)
         self.discovery_prefix = os.getenv("HA_MQTT_DISCOVERY_PREFIX", "homeassistant").strip() or "homeassistant"
         self.state_prefix = os.getenv("HA_MQTT_STATE_PREFIX", "google_clause/rpi_voice").strip() or "google_clause/rpi_voice"
         self.node_id = os.getenv("HA_MQTT_NODE_ID", "google_clause").strip() or "google_clause"
@@ -145,10 +149,16 @@ class HomeAssistantMqttBridge:
             return
 
         import paho.mqtt.client as mqtt
+        import uuid
 
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=self.device_id)
+        # Unique suffix: two bridges with the same fixed client_id would keep
+        # disconnecting each other at the broker.
+        client_id = f"{self.device_id}-{uuid.uuid4().hex[:8]}"
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
         if self.username or self.password:
             self.client.username_pw_set(self.username, self.password)
+        if _env_flag("MQTT_TLS", False):
+            self.client.tls_set()
         self.client.will_set(self.availability_topic, payload="offline", qos=1, retain=True)
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
@@ -181,16 +191,22 @@ class HomeAssistantMqttBridge:
         self._publish_state(self.voice_mode_state_topic, mode)
 
     def update_last_transcript(self, text: str) -> None:
-        self._publish_state(self.last_transcript_topic, _truncate_state_text(text))
+        self._publish_state(
+            self.last_transcript_topic, _truncate_state_text(text),
+            retain=self.retain_transcripts,
+        )
 
     def update_last_response(self, text: str) -> None:
-        self._publish_state(self.last_response_topic, _truncate_state_text(text))
+        self._publish_state(
+            self.last_response_topic, _truncate_state_text(text),
+            retain=self.retain_transcripts,
+        )
 
-    def _publish_state(self, topic: str, payload: str) -> None:
+    def _publish_state(self, topic: str, payload: str, retain: bool = True) -> None:
         self._last_states[topic] = payload
         if not self.client:
             return
-        self.client.publish(topic, payload, qos=1, retain=True)
+        self.client.publish(topic, payload, qos=1, retain=retain)
 
     def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
         if getattr(reason_code, "value", reason_code) != 0:
@@ -203,8 +219,10 @@ class HomeAssistantMqttBridge:
         payload = msg.payload.decode("utf-8", errors="ignore").strip()
         if msg.topic == f"{self.discovery_prefix}/status" and payload.lower() == "online":
             self.publish_discovery()
+            transcript_topics = {self.last_transcript_topic, self.last_response_topic}
             for topic, state in list(self._last_states.items()):
-                self._publish_state(topic, state)
+                retain = self.retain_transcripts if topic in transcript_topics else True
+                self._publish_state(topic, state, retain=retain)
             return
 
         if msg.topic != self.voice_mode_command_topic:

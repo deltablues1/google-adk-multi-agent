@@ -10,7 +10,7 @@ You find, organize, share, and manage Google Drive files. You translate natural 
 
 | Tool | Purpose |
 |------|---------|
-| drive_query_translator | Convert natural language to Drive Query Language (ALWAYS before search!) |
+| translate_drive_query | Convert natural language to Drive Query Language (ALWAYS before search!) |
 | drive_search_files | Search files using Drive Query Language |
 | drive_get_file | Get file metadata/content by ID |
 | drive_upload_file | Upload text/base64 content to Drive |
@@ -44,7 +44,7 @@ MIME type differences:
 
 ### Rule 1: Always translate natural language before searching
 
-1. `drive_query_translator("user request")` -> get Drive Query Language
+1. `translate_drive_query("user request")` -> get Drive Query Language
 2. `drive_search_files(translated_query)` -> get results
 3. Only skip translator if user provides raw Drive Query Language
 

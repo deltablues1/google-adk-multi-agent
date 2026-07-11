@@ -636,6 +636,78 @@ grep "ERROR" logs/app.log | tail -20
 
 ---
 
+## Sigurnost i pouzdanost (srpanj 2026)
+
+### Korisnički kontekst
+
+| Varijabla | Default | Opis |
+|-----------|---------|------|
+| `DEFAULT_USER_ID` | `tomislav` | Identitet jedinog korisnika (config/user_context.py) |
+| `DEFAULT_USER_TIMEZONE` | `Europe/Zagreb` | Timezone za Calendar evente, briefing i termine |
+| `DEFAULT_USER_LANGUAGE` | `hr` | Jezik korisničkog sučelja |
+
+### Smart home — potvrda stvarnog stanja (MQTT confirm)
+
+| Varijabla | Default | Opis |
+|-----------|---------|------|
+| `MQTT_CONFIRM_ENABLED` | `true` | Čekaj da uređaj potvrdi novo stanje na `.../state` topicu; `false` vraća fire-and-forget |
+| `MQTT_CONFIRM_TIMEOUT` | `3.0` | Sekunde čekanja na potvrdu stanja |
+| `MQTT_TLS` | (isključeno) | `true` uključuje TLS prema MQTT brokeru (tools + HA bridge) |
+| `HA_BRIDGE_RETAIN_TRANSCRIPTS` | `false` | Retain zadnjeg transkripta/odgovora u brokeru (privatnost: default isključeno) |
+| `VOICE_SMART_HOME_RESPONSE_MODE` | `ok` | `ok` = "U redu.", `none` = tiho (SAMO za uspjehe — neuspjesi se uvijek izgovaraju), ostalo = puni opis |
+
+Zaštićene radnje traže `confirm=True` u `mqtt_switch_control`: gašenje frižidera,
+gašenje bojlera, paljenje pećnice.
+
+### Telegram
+
+| Varijabla | Default | Opis |
+|-----------|---------|------|
+| `TELEGRAM_WEBHOOK_SECRET` | (prazno) | Secret token za webhook — bez njega se lažni POST ne može odbiti; postavi u webhook modu |
+| `TELEGRAM_MAX_INPUT_TEXT_LENGTH` | `4000` | Limit duljine tekstualne poruke |
+| `TELEGRAM_MAX_PHOTO_BYTES` | `10485760` | Limit veličine fotografije (provjera PRIJE downloada) |
+
+### Gmail
+
+| Varijabla | Default | Opis |
+|-----------|---------|------|
+| `GMAIL_ATTACHMENT_DIRS` | `output,uploads,temp` | Sandbox: privitci smiju dolaziti samo iz ovih direktorija projekta |
+
+### Dnevni briefing
+
+| Varijabla | Default | Opis |
+|-----------|---------|------|
+| `BRIEFING_LLM_SUMMARY` | `true` | LLM sažetak briefinga; `false` = samo deterministički hrvatski template |
+| `BRIEFING_SUMMARY_MODEL` | `gemini-3.5-flash` | Model za sažetak |
+
+Pozivanje: glasovno ("dnevni pregled", "što me čeka danas"), Telegram `/pregled`,
+ili scheduler job s `action_type: "briefing"`. Primjer jobsa (07:00 svaki dan,
+isporuka na autorizirani Telegram chat):
+
+```json
+{
+  "jobs": [
+    {
+      "id": "morning-briefing",
+      "name": "Jutarnji pregled",
+      "agent_request": "",
+      "action_type": "briefing",
+      "trigger": {"type": "cron", "cron_expression": "0 7 * * *", "timezone": "Europe/Zagreb"}
+    }
+  ]
+}
+```
+
+### Zakazivanje sastanaka (secretary)
+
+Novi alati: `calendar_check_freebusy`, `calendar_propose_meeting_slots`
+(radno vrijeme 9–17, radni dani, do 3 prijedloga), `calendar_create_meeting`
+(Google Meet link + pozivnice preko `sendUpdates=all`). Follow-up email ide
+isključivo kao Gmail draft. Kontakti s više pogodaka vraćaju `ambiguous` i
+traže izbor korisnika.
+
+---
+
 ## Additional Resources
 
 - **Google API Documentation:** https://developers.google.com/workspace
@@ -644,6 +716,6 @@ grep "ERROR" logs/app.log | tail -20
 
 ---
 
-**Zadnje ažurirano:** 02.02.2026
-**Verzija:** 1.0
+**Zadnje ažurirano:** 11.07.2026
+**Verzija:** 1.1
 **Status:** Production-ready

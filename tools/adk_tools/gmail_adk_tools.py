@@ -71,20 +71,22 @@ def _parse_recipients(*fields: Optional[str]) -> List[str]:
     return emails
 
 
-async def _autoshare_linked_docs(creds, body: str, recipients: List[str]) -> None:
+async def _autoshare_linked_docs(creds, body: str, recipients: List[str]) -> List[str]:
     """Share any Google Doc/Drive file linked in *body* with *recipients* (reader).
 
-    Best-effort: failures are logged and swallowed — sharing must never block the
-    send. Only files owned/shareable by the sending account will actually share.
+    Best-effort: failures never block the send, but they are returned as
+    warnings so the caller can tell the user a linked doc may not open.
+    Only files owned/shareable by the sending account will actually share.
     """
+    warnings: List[str] = []
     file_ids = _extract_drive_file_ids(body)
     if not file_ids or not recipients:
-        return
+        return warnings
     try:
         from tools.api_implementations.drive_api import drive_share_file as drive_share_impl
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"[autoshare] drive_api import failed: {e}")
-        return
+        return [f"Could not share linked documents (drive_api unavailable: {e})"]
     for fid in file_ids:
         for email in recipients:
             try:
@@ -94,6 +96,11 @@ async def _autoshare_linked_docs(creds, body: str, recipients: List[str]) -> Non
                 logger.info(f"[autoshare] shared {fid} with {email} (reader, no notify)")
             except Exception as e:
                 logger.warning(f"[autoshare] could not share {fid} with {email}: {e}")
+                warnings.append(
+                    f"Linked document {fid} could not be shared with {email} — "
+                    "the recipient may get 'access denied' when opening the link."
+                )
+    return warnings
 
 
 # ============================================================================
@@ -223,12 +230,16 @@ async def gmail_send_message(
 
     # Least-privilege: share any linked Google Doc/Drive file with the actual
     # recipients before sending, so the emailed link opens (no public sharing).
-    await _autoshare_linked_docs(creds, body, _parse_recipients(to, cc))
+    share_warnings = await _autoshare_linked_docs(
+        creds, body, _parse_recipients(to, cc, bcc)
+    )
 
     try:
         from tools.api_implementations.gmail_api import gmail_send_message as gmail_send_impl
         result = await gmail_send_impl(creds, to, subject, body, thread_id, cc, bcc, attachment_path)
         logger.info(f"Sent Gmail message to {to}: '{subject}'" + (f" with attachment: {attachment_path}" if attachment_path else ""))
+        if share_warnings and isinstance(result, dict):
+            result["share_warning"] = " ".join(share_warnings)
         return result
     except Exception as e:
         logger.error(f"gmail_send_message failed: {e}")
@@ -272,14 +283,21 @@ async def gmail_create_draft(
             "status": "invalid_email"
         }
 
-    # Share linked docs with recipients now so the link works the moment the
-    # draft is sent (same least-privilege approach as direct sends).
-    await _autoshare_linked_docs(creds, body, _parse_recipients(to, cc))
-
+    # Deliberately NO doc auto-sharing here: a draft may never be sent, and
+    # sharing at draft time would leak access prematurely. Linked docs are
+    # shared at send time (gmail_send_message); drafts sent manually from the
+    # Gmail UI need manual sharing.
     try:
         from tools.api_implementations.gmail_api import gmail_create_draft as gmail_create_draft_impl
         result = await gmail_create_draft_impl(creds, to, subject, body, cc)
         logger.info(f"Created Gmail draft to {to}: '{subject}'")
+        if isinstance(result, dict) and _extract_drive_file_ids(body):
+            result["share_note"] = (
+                "Draft contains Drive/Docs links. They are NOT shared yet — "
+                "sharing happens automatically only when sending via this "
+                "system. If the user sends the draft manually from Gmail, "
+                "the documents must be shared manually."
+            )
         return result
     except Exception as e:
         logger.error(f"gmail_create_draft failed: {e}")

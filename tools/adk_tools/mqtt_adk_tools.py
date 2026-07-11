@@ -41,6 +41,12 @@ VALID_OUTLETS = [
 
 VALID_SWITCHES = VALID_LIGHTS + VALID_OUTLETS
 
+# Code-level guards (the agent prompt alone is not enforcement):
+# - fridge/boiler OFF spoils food / kills hot water -> require explicit confirm
+# - oven ON while nobody is watching is a fire risk -> require explicit confirm
+PROTECTED_OFF_DEVICES = {"uticnica_frizider", "uticnica_bojler"}
+PROTECTED_ON_DEVICES = {"pecnica"}
+
 # Human-readable names (Croatian)
 DEVICE_NAMES = {
     "svjetlo_vani": "Vanjsko svjetlo",
@@ -86,6 +92,8 @@ def _get_mqtt_client():
     client = mqtt.Client()
     if MQTT_USER or MQTT_PASS:
         client.username_pw_set(MQTT_USER, MQTT_PASS)
+    if os.getenv("MQTT_TLS", "").strip().lower() in ("1", "true", "yes", "on"):
+        client.tls_set()
     client.connect(MQTT_BROKER, MQTT_PORT, keepalive=10)
     return client
 
@@ -107,17 +115,22 @@ def _publish_and_disconnect(topic: str, payload: str) -> dict:
 # ADK TOOL FUNCTIONS
 # ============================================================================
 
-async def mqtt_switch_control(device_name: str, state: str) -> dict:
+async def mqtt_switch_control(device_name: str, state: str, confirm: bool = False) -> dict:
     """
     Turn a light or outlet ON or OFF.
 
     Controls any switch-type device in the smart home system (lights and outlets).
     Note: turning on svjetlo_kupaona automatically turns off bojler (hardware interlock).
 
+    PROTECTED devices need confirm=True (set ONLY after the user explicitly
+    confirmed): turning OFF uticnica_frizider or uticnica_bojler, and turning
+    ON pecnica. Without confirmation the call returns needs_confirmation.
+
     Args:
         device_name: Device identifier, e.g. "svjetlo_kuhinja", "uticnica_tv", "pecnica".
                      Use mqtt_list_devices to see all available devices.
         state: "ON" or "OFF"
+        confirm: True only after the user explicitly confirmed a protected action.
 
     Returns:
         Dictionary with status, topic, and payload sent.
@@ -133,14 +146,49 @@ async def mqtt_switch_control(device_name: str, state: str) -> dict:
             "error": f"Unknown device: {device_name}. Use mqtt_list_devices to see valid names.",
         }
 
+    protected = (
+        (state == "OFF" and device_name in PROTECTED_OFF_DEVICES)
+        or (state == "ON" and device_name in PROTECTED_ON_DEVICES)
+    )
+    if protected and not confirm:
+        friendly = DEVICE_NAMES.get(device_name, device_name)
+        return {
+            "status": "needs_confirmation",
+            "device": friendly,
+            "requested_state": state,
+            "message": (
+                f"'{friendly} -> {state}' je zaštićena radnja. Pitaj korisnika za "
+                "izričitu potvrdu, pa ponovi poziv s confirm=True."
+            ),
+        }
+
     topic = f"{SWITCH_PREFIX}/{device_name}/command"
     friendly = DEVICE_NAMES.get(device_name, device_name)
 
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _publish_and_disconnect, topic, state)
-    result["device"] = friendly
-    result["action"] = f"{'Uključeno' if state == 'ON' else 'Isključeno'}: {friendly}"
-    logger.info(f"MQTT switch: {friendly} -> {state}")
+    from services.mqtt_confirm import DeviceCommand, publish_and_confirm
+
+    outcome = await publish_and_confirm([
+        DeviceCommand(
+            name=device_name,
+            command_topic=topic,
+            payload=state,
+            state_topic=f"{SWITCH_PREFIX}/{device_name}/state",
+            expected=state,
+        )
+    ])
+    device_result = outcome.get("devices", {}).get(device_name, {})
+    result = {
+        "status": outcome["status"],
+        "operation_id": outcome.get("operation_id"),
+        "topic": topic,
+        "payload": state,
+        "observed_state": device_result.get("observed"),
+        "device": friendly,
+        "action": f"{'Uključeno' if state == 'ON' else 'Isključeno'}: {friendly}",
+    }
+    if outcome.get("error"):
+        result["error"] = outcome["error"]
+    logger.info(f"MQTT switch: {friendly} -> {state} ({outcome['status']})")
     return result
 
 
@@ -169,15 +217,34 @@ async def mqtt_dimmer_control(state: str, brightness: int = 255) -> dict:
 
     topic = f"{LIGHT_PREFIX}/svjetlo_fotelja/command"
 
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _publish_and_disconnect, topic, payload)
-    result["device"] = "Fotelja (dimmer)"
+    from services.mqtt_confirm import DeviceCommand, expect_json_state, publish_and_confirm
+
+    outcome = await publish_and_confirm([
+        DeviceCommand(
+            name="svjetlo_fotelja",
+            command_topic=topic,
+            payload=payload,
+            state_topic=f"{LIGHT_PREFIX}/svjetlo_fotelja/state",
+            expected=expect_json_state(state),
+        )
+    ])
+    device_result = outcome.get("devices", {}).get("svjetlo_fotelja", {})
+    result = {
+        "status": outcome["status"],
+        "operation_id": outcome.get("operation_id"),
+        "topic": topic,
+        "payload": payload,
+        "observed_state": device_result.get("observed"),
+        "device": "Fotelja (dimmer)",
+    }
+    if outcome.get("error"):
+        result["error"] = outcome["error"]
     if state == "ON":
         pct = round(brightness / 255 * 100)
         result["action"] = f"Fotelja upaljena na {pct}%"
     else:
         result["action"] = "Fotelja ugašena"
-    logger.info(f"MQTT dimmer: fotelja -> {state} (brightness={brightness})")
+    logger.info(f"MQTT dimmer: fotelja -> {state} (brightness={brightness}, {outcome['status']})")
     return result
 
 
@@ -186,11 +253,12 @@ async def mqtt_scene_control(scene: str) -> dict:
     Activate a predefined scene (multiple devices at once).
 
     Available scenes:
-    - "sve_ugasi" : Turn off ALL lights and outlets
+    - "sve_ugasi" : Turn off ALL lights and outlets (except frizider and bojler)
     - "nocno" : Night mode - only hodnik at low brightness + fotelja at 25%
-    - "film" : Movie mode - TV light + TV outlet ON, fotelja 25%, all others OFF
+    - "film" : Movie mode - TV light + TV outlet ON, fotelja 25%, all other
+               lights and outlets OFF (except frizider and bojler)
     - "dolazak" : Arrival - ulaz + hodnik + boravak + vani ON
-    - "odlazak" : Leaving - everything OFF except frizider
+    - "odlazak" : Leaving - everything OFF except frizider and bojler
     - "kuhanje" : Cooking - kuhinja + sank + blagavaona ON
 
     Args:
@@ -201,9 +269,13 @@ async def mqtt_scene_control(scene: str) -> dict:
     """
     scene = scene.strip().lower()
 
+    # Mass-off never touches protected devices (fridge, boiler); scenes must
+    # request those explicitly via mqtt_switch_control(confirm=True).
+    safe_outlets_off = [o for o in VALID_OUTLETS if o not in PROTECTED_OFF_DEVICES]
+
     scenes = {
         "sve_ugasi": {
-            "switches_off": VALID_LIGHTS + [o for o in VALID_OUTLETS if o != "uticnica_frizider"],
+            "switches_off": VALID_LIGHTS + safe_outlets_off,
             "dimmer": {"state": "OFF"},
             "description": "Sve ugašeno",
         },
@@ -214,7 +286,12 @@ async def mqtt_scene_control(scene: str) -> dict:
             "description": "Noćni režim",
         },
         "film": {
-            "switches_off": [l for l in VALID_LIGHTS if l not in ("svjetlo_tv",)],
+            # Prompt promises "ostalo OFF": lights AND outlets except the TV
+            # corner and protected devices.
+            "switches_off": (
+                [l for l in VALID_LIGHTS if l not in ("svjetlo_tv",)]
+                + [o for o in safe_outlets_off if o != "uticnica_tv"]
+            ),
             "switches_on": ["svjetlo_tv", "uticnica_tv"],
             "dimmer": {"state": "ON", "brightness": 64},
             "description": "Filmski režim",
@@ -224,9 +301,9 @@ async def mqtt_scene_control(scene: str) -> dict:
             "description": "Dolazak kući",
         },
         "odlazak": {
-            "switches_off": VALID_LIGHTS + [o for o in VALID_OUTLETS if o != "uticnica_frizider"],
+            "switches_off": VALID_LIGHTS + safe_outlets_off,
             "dimmer": {"state": "OFF"},
-            "description": "Odlazak - sve ugašeno (osim frižidera)",
+            "description": "Odlazak - sve ugašeno (osim frižidera i bojlera)",
         },
         "kuhanje": {
             "switches_on": ["svjetlo_kuhinja", "svjetlo_sank", "svjetlo_blagavaona"],
@@ -241,50 +318,76 @@ async def mqtt_scene_control(scene: str) -> dict:
         }
 
     cfg = scenes[scene]
+
+    from services.mqtt_confirm import DeviceCommand, expect_json_state, publish_and_confirm
+
+    commands = []
     actions = []
 
-    try:
-        client = _get_mqtt_client()
+    for dev in cfg.get("switches_off", []):
+        commands.append(DeviceCommand(
+            name=dev,
+            command_topic=f"{SWITCH_PREFIX}/{dev}/command",
+            payload="OFF",
+            state_topic=f"{SWITCH_PREFIX}/{dev}/state",
+            expected="OFF",
+        ))
+        actions.append(f"{DEVICE_NAMES.get(dev, dev)} -> OFF")
 
-        # Turn OFF switches
-        for dev in cfg.get("switches_off", []):
-            topic = f"{SWITCH_PREFIX}/{dev}/command"
-            client.publish(topic, "OFF", qos=1)
-            actions.append(f"{DEVICE_NAMES.get(dev, dev)} -> OFF")
+    for dev in cfg.get("switches_on", []):
+        commands.append(DeviceCommand(
+            name=dev,
+            command_topic=f"{SWITCH_PREFIX}/{dev}/command",
+            payload="ON",
+            state_topic=f"{SWITCH_PREFIX}/{dev}/state",
+            expected="ON",
+        ))
+        actions.append(f"{DEVICE_NAMES.get(dev, dev)} -> ON")
 
-        # Turn ON switches
-        for dev in cfg.get("switches_on", []):
-            topic = f"{SWITCH_PREFIX}/{dev}/command"
-            client.publish(topic, "ON", qos=1)
-            actions.append(f"{DEVICE_NAMES.get(dev, dev)} -> ON")
+    if "dimmer" in cfg:
+        d = cfg["dimmer"]
+        commands.append(DeviceCommand(
+            name="svjetlo_fotelja",
+            command_topic=f"{LIGHT_PREFIX}/svjetlo_fotelja/command",
+            payload=json.dumps(d),
+            state_topic=f"{LIGHT_PREFIX}/svjetlo_fotelja/state",
+            expected=expect_json_state(d["state"]),
+        ))
+        if d["state"] == "ON":
+            pct = round(d.get("brightness", 255) / 255 * 100)
+            actions.append(f"Fotelja -> ON ({pct}%)")
+        else:
+            actions.append("Fotelja -> OFF")
 
-        # Dimmer
-        if "dimmer" in cfg:
-            d = cfg["dimmer"]
-            payload = json.dumps(d)
-            client.publish(f"{LIGHT_PREFIX}/svjetlo_fotelja/command", payload, qos=1)
-            if d["state"] == "ON":
-                pct = round(d.get("brightness", 255) / 255 * 100)
-                actions.append(f"Fotelja -> ON ({pct}%)")
-            else:
-                actions.append("Fotelja -> OFF")
+    outcome = await publish_and_confirm(commands)
+    if outcome["status"] == "error":
+        logger.error(f"MQTT scene '{scene}' failed: {outcome.get('error')}")
+        return {"status": "error", "error": outcome.get("error"), "scene": scene}
 
-        # Small delay to allow all messages to be sent
-        import time
-        time.sleep(0.5)
-        client.disconnect()
+    unconfirmed = [
+        DEVICE_NAMES.get(name, name)
+        for name, dev_result in outcome.get("devices", {}).items()
+        if dev_result["status"] != "confirmed"
+    ]
+    confirmed_count = outcome.get("confirmed", 0)
+    total = outcome.get("total", len(commands))
 
-        logger.info(f"MQTT scene '{scene}': {len(actions)} actions")
-        return {
-            "status": "ok",
-            "scene": scene,
-            "description": cfg["description"],
-            "actions": actions,
-            "total_actions": len(actions),
-        }
-    except Exception as e:
-        logger.error(f"MQTT scene '{scene}' failed: {e}")
-        return {"status": "error", "error": str(e)}
+    logger.info(
+        f"MQTT scene '{scene}': {confirmed_count}/{total} confirmed "
+        f"({outcome['status']})"
+    )
+    return {
+        "status": outcome["status"],
+        "operation_id": outcome.get("operation_id"),
+        "scene": scene,
+        "description": cfg["description"],
+        "actions": actions,
+        "total_actions": len(actions),
+        "confirmed": confirmed_count,
+        "total": total,
+        "unconfirmed_devices": unconfirmed,
+        "summary": f"{confirmed_count}/{total} potvrđeno",
+    }
 
 
 async def mqtt_get_status() -> dict:
@@ -337,6 +440,12 @@ async def mqtt_get_status() -> dict:
     system = {}
 
     for topic, value in states.items():
+        # 2-segment controller status topic; must be handled before the
+        # len(parts) >= 3 gate or it is silently dropped.
+        if topic == "esp32-io/status":
+            system["esp32_status"] = value
+            continue
+
         parts = topic.split("/")
         if len(parts) >= 3:
             device = parts[2] if len(parts) > 2 else parts[-1]
@@ -357,8 +466,6 @@ async def mqtt_get_status() -> dict:
                     outlets[friendly] = value
                 else:
                     system[device] = value
-            elif topic == "esp32-io/status":
-                system["esp32_status"] = value
 
     return {
         "status": "ok",
@@ -390,16 +497,17 @@ async def mqtt_list_devices() -> dict:
         "dimmer": {"svjetlo_fotelja": "Fotelja (dimmer) - brightness 0-255"},
         "outlets": outlets,
         "scenes": [
-            "sve_ugasi - Ugasi sve",
+            "sve_ugasi - Ugasi sve (osim frižidera i bojlera)",
             "nocno - Noćni režim (hodnik + fotelja 25%)",
-            "film - Filmski režim (TV + fotelja 25%)",
+            "film - Filmski režim (TV + fotelja 25%, ostalo OFF)",
             "dolazak - Ulaz + hodnik + boravak + vani",
-            "odlazak - Sve ugašeno (osim frižidera)",
+            "odlazak - Sve ugašeno (osim frižidera i bojlera)",
             "kuhanje - Kuhinja + šank + blagavaona",
         ],
         "notes": [
             "Kupaona <-> Bojler interlock: paljenje kupaone automatski gasi bojler",
             "PIR senzori: ručno paljenje blokira automatsko gašenje",
+            "Zaštićeno (traži confirm=True): frižider OFF, bojler OFF, pećnica ON",
         ],
         "total": f"{len(VALID_LIGHTS)} svjetala + 1 dimmer + {len(VALID_OUTLETS)} utičnica = {len(VALID_SWITCHES) + 1} uređaja",
     }

@@ -12,6 +12,7 @@ Includes timezone-aware datetime handling.
 """
 
 import logging
+import os
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -186,16 +187,10 @@ async def calendar_update_event(
     try:
         from tools.api_implementations.calendar_api import calendar_update_event as calendar_update_impl
 
-        # Correct parameter order: credentials, event_id, summary, start_time, end_time, description, location, calendar_id
-        # Note: API implementation doesn't support attendees parameter
         result = await calendar_update_impl(
             creds, event_id, summary, start_time, end_time,
-            description, location, calendar_id
+            description, location, attendees=attendees, calendar_id=calendar_id
         )
-
-        if attendees:
-            logger.warning(f"Attendees parameter not supported by calendar_update_event API implementation")
-
         return result
     except Exception as e:
         logger.error(f"Failed to update calendar event {event_id}: {e}")
@@ -204,23 +199,48 @@ async def calendar_update_event(
 
 async def calendar_delete_event(
     event_id: str,
-    calendar_id: str = "primary"
+    calendar_id: str = "primary",
+    confirm: bool = False
 ) -> dict:
     """
-    Delete a calendar event.
+    Delete a calendar event. PERMANENT — requires explicit confirmation.
 
-    Permanently removes an event from the calendar.
+    Call with confirm=False first: it returns the event summary and asks for
+    confirmation. Only call with confirm=True after the user explicitly
+    confirmed deleting THIS event.
 
     Args:
         event_id: Calendar event ID
         calendar_id: Calendar ID (default: 'primary')
+        confirm: Must be True to actually delete (set only after user confirms)
 
     Returns:
-        Dictionary with deletion confirmation
+        Dictionary with deletion confirmation, or a needs_confirmation request
     """
     creds = _get_credentials()
     if creds is None:
         return {"error": "Authentication required"}
+
+    if not confirm:
+        summary = None
+        try:
+            from tools.api_implementations.calendar_api import (
+                calendar_get_event as calendar_get_impl,
+            )
+            event = await calendar_get_impl(creds, event_id, calendar_id)
+            if isinstance(event, dict):
+                summary = event.get("summary")
+        except Exception as e:
+            logger.warning(f"Could not fetch event {event_id} for confirmation: {e}")
+        return {
+            "status": "needs_confirmation",
+            "event_id": event_id,
+            "summary": summary,
+            "message": (
+                "Brisanje događaja je trajno. Potvrdi s korisnikom koji događaj "
+                "se briše, pa ponovi poziv s confirm=True."
+            ),
+        }
 
     try:
         from tools.api_implementations.calendar_api import calendar_delete_event as calendar_delete_impl
@@ -231,6 +251,161 @@ async def calendar_delete_event(
     except Exception as e:
         logger.error(f"Failed to delete calendar event {event_id}: {e}")
         return {"error": str(e), "event_id": event_id}
+
+
+async def calendar_check_freebusy(
+    emails: List[str],
+    time_min: str,
+    time_max: str
+) -> dict:
+    """
+    Check when people are busy (Google Calendar FreeBusy).
+
+    Args:
+        emails: Attendee email addresses (include the organizer's own
+                calendar as "primary" or their email)
+        time_min: Window start in RFC3339 format (e.g. '2026-07-13T00:00:00+02:00')
+        time_max: Window end in RFC3339 format
+
+    Returns:
+        Dictionary with 'busy' intervals per email and 'unknown' for
+        attendees whose availability could not be read (external calendars).
+    """
+    creds = _get_credentials()
+    if creds is None:
+        return {"error": "Authentication required"}
+
+    try:
+        from tools.api_implementations.calendar_api import calendar_freebusy
+
+        return await calendar_freebusy(creds, time_min, time_max, emails)
+    except Exception as e:
+        logger.error(f"FreeBusy check failed: {e}")
+        return {"error": str(e), "status": "error"}
+
+
+async def calendar_propose_meeting_slots(
+    attendee_emails: List[str],
+    duration_minutes: int = 60,
+    window_days: int = 5,
+    working_hours_start: int = 9,
+    working_hours_end: int = 17
+) -> dict:
+    """
+    Propose up to 3 meeting slots that are free for the organizer AND all
+    attendees whose calendars are readable.
+
+    Args:
+        attendee_emails: Attendee email addresses (organizer's primary
+                         calendar is included automatically)
+        duration_minutes: Meeting length (default 60)
+        window_days: How many days ahead to search (default 5)
+        working_hours_start: Local hour meetings may start (default 9)
+        working_hours_end: Local hour meetings must end by (default 17)
+
+    Returns:
+        Dictionary with 'slots' (RFC3339 start/end pairs), a Croatian
+        'proposal' text to present to the user, and 'unknown_availability'
+        listing attendees whose calendars could not be read — tell the user
+        those attendees' availability is NOT verified.
+    """
+    creds = _get_credentials()
+    if creds is None:
+        return {"error": "Authentication required"}
+
+    try:
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        from services.meeting_scheduler import (
+            compute_free_slots, format_slot_proposal_hr,
+        )
+        from tools.api_implementations.calendar_api import calendar_freebusy
+
+        tz_name = os.getenv("DEFAULT_USER_TIMEZONE", "Europe/Zagreb")
+        tz = ZoneInfo(tz_name)
+        now = datetime.now(tz)
+        window_start = now + timedelta(minutes=30)
+        window_end = now + timedelta(days=window_days)
+
+        calendars = ["primary"] + [e for e in attendee_emails if e]
+        freebusy = await calendar_freebusy(
+            creds,
+            window_start.isoformat(),
+            window_end.isoformat(),
+            calendars,
+        )
+
+        slots = compute_free_slots(
+            freebusy.get("busy", {}),
+            window_start,
+            window_end,
+            duration_minutes,
+            working_hours=(working_hours_start, working_hours_end),
+            tz_name=tz_name,
+        )
+
+        return {
+            "status": "ok",
+            "slots": [
+                {"start": start.isoformat(), "end": end.isoformat()}
+                for start, end in slots
+            ],
+            "proposal": format_slot_proposal_hr(slots),
+            "unknown_availability": freebusy.get("unknown", []),
+        }
+    except Exception as e:
+        logger.error(f"Slot proposal failed: {e}")
+        return {"error": str(e), "status": "error"}
+
+
+async def calendar_create_meeting(
+    summary: str,
+    start_time: str,
+    end_time: str,
+    attendee_emails: List[str],
+    description: Optional[str] = None,
+    add_meet_link: bool = True,
+    send_updates: str = "all"
+) -> dict:
+    """
+    Create a meeting: calendar event with attendees and a Google Meet link.
+
+    Use ONLY after the user explicitly confirmed a specific slot. With
+    send_updates="all" Google Calendar emails the invitations itself — do
+    NOT additionally auto-send an email; offer a follow-up DRAFT instead.
+
+    Args:
+        summary: Meeting title
+        start_time: Start in RFC3339 format (confirmed slot)
+        end_time: End in RFC3339 format
+        attendee_emails: Attendee email addresses
+        description: Optional agenda/description
+        add_meet_link: Attach Google Meet (default True)
+        send_updates: "all" (default, Google sends invites), "externalOnly" or "none"
+
+    Returns:
+        Dictionary with event id, html_link, meet_link and attendees.
+    """
+    creds = _get_credentials()
+    if creds is None:
+        return {"error": "Authentication required"}
+
+    try:
+        from tools.api_implementations.calendar_api import (
+            calendar_create_event as calendar_create_impl,
+        )
+
+        return await calendar_create_impl(
+            creds, summary, start_time, end_time,
+            description=description,
+            attendees=attendee_emails,
+            add_meet_link=add_meet_link,
+            send_updates=send_updates,
+        )
+    except Exception as e:
+        logger.error(f"Meeting creation failed: {e}")
+        return {"error": str(e), "status": "error"}
 
 
 def get_calendar_adk_tools(credentials=None) -> List:
@@ -252,7 +427,10 @@ def get_calendar_adk_tools(credentials=None) -> List:
         calendar_get_event,
         calendar_create_event,
         calendar_update_event,
-        calendar_delete_event
+        calendar_delete_event,
+        calendar_check_freebusy,
+        calendar_propose_meeting_slots,
+        calendar_create_meeting,
     ]
 
     logger.info(f"Calendar ADK tools loaded: {len(tools)} tools")

@@ -35,6 +35,32 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T')
 
+# HTTP statuses that indicate a caller problem, not service degradation —
+# they must not count toward opening the circuit.
+_NON_TRANSIENT_HTTP_STATUSES = {400, 401, 403, 404, 409, 412, 422}
+
+
+def _is_circuit_relevant_error(error: Exception) -> bool:
+    """True when the error signals service trouble (5xx/429/connection/timeout).
+
+    4xx caller errors (auth, validation, not-found) return False.
+    Unknown error types conservatively count as failures.
+    """
+    status = getattr(getattr(error, "resp", None), "status", None)  # googleapiclient HttpError
+    if status is None:
+        status = getattr(error, "status_code", None)
+    if status is not None:
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            return True
+        if status in _NON_TRANSIENT_HTTP_STATUSES:
+            return False
+        return True
+    if isinstance(error, (ValueError, TypeError, KeyError, PermissionError)):
+        return False
+    return True
+
 
 class CircuitState(Enum):
     """
@@ -188,7 +214,16 @@ class CircuitBreaker:
             return result
 
         except Exception as e:
-            await self._on_failure(e)
+            if _is_circuit_relevant_error(e):
+                await self._on_failure(e)
+            else:
+                # Caller errors (401/403/404/validation) say nothing about the
+                # service's health — counting them would trip the breaker for
+                # every user because one request was malformed or unauthorized.
+                logger.debug(
+                    f"Circuit '{self.name}': ignoring non-transient error "
+                    f"{type(e).__name__}"
+                )
             raise
 
         finally:

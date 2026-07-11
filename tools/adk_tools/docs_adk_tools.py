@@ -85,16 +85,47 @@ async def docs_create_document(
         content_inserted = False
         if content and content.strip():
             try:
-                from tools.custom_tools.docs_formatter import DocsFormatter
-                requests = DocsFormatter().markdown_to_docs_requests(content)
-                if requests:
-                    await docs_batch_impl(creds, doc_id, requests)
+                try:
+                    from tools.custom_tools.docs_formatter import DocsFormatter
+                    requests = DocsFormatter().markdown_to_docs_requests(content)
+                    if requests:
+                        await docs_batch_impl(creds, doc_id, requests)
+                        content_inserted = True
+                except Exception as fmt_err:
+                    logger.warning(f"Markdown formatting failed, falling back to plain text: {fmt_err}")
+                if not content_inserted:
+                    await docs_insert_impl(creds, doc_id, content, 1)
                     content_inserted = True
-            except Exception as fmt_err:
-                logger.warning(f"Markdown formatting failed, falling back to plain text: {fmt_err}")
-            if not content_inserted:
-                await docs_insert_impl(creds, doc_id, content, 1)
-                content_inserted = True
+            except Exception as insert_err:
+                # Both insert paths failed — don't leave an empty orphan doc behind.
+                try:
+                    from tools.api_implementations.drive_api import (
+                        drive_delete_file as drive_trash_impl,
+                    )
+                    await drive_trash_impl(creds, doc_id)
+                    logger.error(
+                        f"Content insertion failed for '{title}' ({doc_id}); "
+                        f"empty document moved to trash: {insert_err}"
+                    )
+                    return {
+                        "error": f"Content insertion failed: {insert_err}. "
+                                 "The empty document was moved to trash.",
+                        "title": title,
+                        "status": "error",
+                        "cleaned_up": True,
+                    }
+                except Exception as cleanup_err:
+                    logger.error(
+                        f"Content insertion failed AND cleanup failed for {doc_id}: "
+                        f"{insert_err} / {cleanup_err}"
+                    )
+                    result["status"] = "partial"
+                    result["content_inserted"] = False
+                    result["error"] = (
+                        f"Content insertion failed: {insert_err}. An EMPTY document "
+                        "remains (cleanup also failed) — inform the user."
+                    )
+                    return result
         result["content_inserted"] = content_inserted
 
         # 3. Optionally share so links are accessible to recipients.

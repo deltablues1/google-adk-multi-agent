@@ -13,7 +13,7 @@ import logging
 from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
-from tools.resilience.cache import with_cache
+from tools.resilience.cache import with_cache, invalidates_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
@@ -224,6 +224,7 @@ async def tasks_get_task(
 @with_circuit_breaker("tasks")
 @with_rate_limit("tasks", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("tasks")
 async def tasks_create_task(
     credentials: Credentials,
     tasklist_id: str,
@@ -300,6 +301,7 @@ async def tasks_create_task(
 @with_circuit_breaker("tasks")
 @with_rate_limit("tasks", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("tasks")
 async def tasks_update_task(
     credentials: Credentials,
     tasklist_id: str,
@@ -407,6 +409,7 @@ async def tasks_update_task(
 @with_circuit_breaker("tasks")
 @with_rate_limit("tasks", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("tasks")
 async def tasks_delete_task(
     credentials: Credentials,
     tasklist_id: str,

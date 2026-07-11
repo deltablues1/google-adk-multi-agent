@@ -12,7 +12,7 @@ import logging
 from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
-from tools.resilience.cache import with_cache
+from tools.resilience.cache import with_cache, invalidates_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,7 @@ async def contacts_get_contact(
 @with_circuit_breaker("people")
 @with_rate_limit("people", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("people")
 async def contacts_create_contact(
     credentials: Credentials,
     given_name: str,
@@ -225,6 +226,7 @@ async def contacts_create_contact(
 @with_circuit_breaker("people")
 @with_rate_limit("people", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("people")
 async def contacts_update_contact(
     credentials: Credentials,
     resource_name: str,
@@ -283,15 +285,34 @@ async def contacts_update_contact(
         else:
             update_body['names'] = current_person.get('names', [])
 
-        # Update email
+        # Update email: replace the primary (first) address, KEEP the others —
+        # replacing the whole list would silently drop secondary addresses.
         if email:
-            update_body['emailAddresses'] = [{'value': email}]
+            existing_emails = [
+                dict(e) for e in current_person.get('emailAddresses', [])
+            ]
+            if any(e.get('value') == email for e in existing_emails):
+                update_body['emailAddresses'] = existing_emails
+            elif existing_emails:
+                existing_emails[0]['value'] = email
+                update_body['emailAddresses'] = existing_emails
+            else:
+                update_body['emailAddresses'] = [{'value': email}]
         else:
             update_body['emailAddresses'] = current_person.get('emailAddresses', [])
 
-        # Update phone
+        # Update phone: same keep-the-rest semantics as email.
         if phone:
-            update_body['phoneNumbers'] = [{'value': phone}]
+            existing_phones = [
+                dict(p) for p in current_person.get('phoneNumbers', [])
+            ]
+            if any(p.get('value') == phone for p in existing_phones):
+                update_body['phoneNumbers'] = existing_phones
+            elif existing_phones:
+                existing_phones[0]['value'] = phone
+                update_body['phoneNumbers'] = existing_phones
+            else:
+                update_body['phoneNumbers'] = [{'value': phone}]
         else:
             update_body['phoneNumbers'] = current_person.get('phoneNumbers', [])
 
@@ -328,6 +349,7 @@ async def contacts_update_contact(
 @with_circuit_breaker("people")
 @with_rate_limit("people", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("people")
 async def contacts_delete_contact(
     credentials: Credentials,
     resource_name: str
@@ -428,30 +450,36 @@ async def contacts_search_contacts(
         if len(contacts) == 0:
             logger.info(f"searchContacts returned 0 results, trying connections.list fallback for '{query}'")
 
-            # Get all connections and filter locally
-            connections_result = await aexecute(service.people().connections().list(
-                resourceName='people/me',
-                pageSize=200,  # Get more to search through
-                personFields='names,emailAddresses,phoneNumbers,organizations,photos'
-            ))
-
-            connections = connections_result.get('connections', [])
+            # Page through ALL connections and filter locally (a single
+            # pageSize=200 call silently missed contacts beyond the first 200)
             query_lower = query.lower()
+            page_token = None
+            while True:
+                connections_result = await aexecute(service.people().connections().list(
+                    resourceName='people/me',
+                    pageSize=200,
+                    pageToken=page_token,
+                    personFields='names,emailAddresses,phoneNumbers,organizations,photos'
+                ))
 
-            for person in connections:
-                contact = _parse_contact(person)
+                for person in connections_result.get('connections', []):
+                    contact = _parse_contact(person)
 
-                # Check if query matches name, email, or phone
-                name_match = contact.get('name', '').lower().find(query_lower) >= 0
-                given_name_match = contact.get('given_name', '').lower().find(query_lower) >= 0
-                family_name_match = contact.get('family_name', '').lower().find(query_lower) >= 0
-                email_match = contact.get('email', '').lower().find(query_lower) >= 0
-                phone_match = query_lower in contact.get('phone', '').replace(' ', '').replace('-', '')
+                    # Check if query matches name, email, or phone
+                    name_match = contact.get('name', '').lower().find(query_lower) >= 0
+                    given_name_match = contact.get('given_name', '').lower().find(query_lower) >= 0
+                    family_name_match = contact.get('family_name', '').lower().find(query_lower) >= 0
+                    email_match = contact.get('email', '').lower().find(query_lower) >= 0
+                    phone_match = query_lower in contact.get('phone', '').replace(' ', '').replace('-', '')
 
-                if name_match or given_name_match or family_name_match or email_match or phone_match:
-                    contacts.append(contact)
-                    if len(contacts) >= page_size:
-                        break
+                    if name_match or given_name_match or family_name_match or email_match or phone_match:
+                        contacts.append(contact)
+                        if len(contacts) >= page_size:
+                            break
+
+                page_token = connections_result.get('nextPageToken')
+                if len(contacts) >= page_size or not page_token:
+                    break
 
             logger.info(f"Fallback search found {len(contacts)} contacts matching '{query}'")
 

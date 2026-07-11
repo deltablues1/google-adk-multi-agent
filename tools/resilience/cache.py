@@ -836,6 +836,40 @@ def with_cache(
     return decorator
 
 
+def invalidates_cache(service: str):
+    """
+    Decorator: clear a service's cache after a successful mutation.
+
+    Without this, an agent that just created/updated/deleted something could
+    immediately read back a stale cached list (e.g. calendar_list_events after
+    calendar_create_event) and report wrong state to the user.
+
+    Invalidation is skipped when the call raised or returned an error dict.
+
+    Example:
+        @invalidates_cache("calendar")
+        async def calendar_create_event(credentials, ...):
+            ...
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            result = await func(*args, **kwargs)
+            failed = isinstance(result, dict) and (
+                result.get("error")
+                or result.get("status") in ("error", "failed")
+            )
+            if not failed:
+                try:
+                    get_cache_manager().invalidate_service(service)
+                except Exception as e:  # cache trouble must never break a write
+                    logger.debug(f"Cache invalidation for '{service}' failed: {e}")
+            return result
+
+        return wrapper
+    return decorator
+
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================

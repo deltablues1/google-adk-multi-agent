@@ -314,7 +314,13 @@ def tv_status() -> dict:
 
 
 def get_ha_adk_tools() -> list:
-    """Get all Home Assistant TV/media tools as a list."""
+    """Get all Home Assistant TV/media tools as a list.
+
+    ha_call_service is deliberately NOT exposed to the LLM: an arbitrary
+    domain/service/entity call could reach locks, alarm, garage or heating if
+    the HA token is broad. Only typed, allowlisted tools go to the agent;
+    ha_call_service stays importable for internal/typed wrappers.
+    """
     return [
         tv_turn_on,
         tv_turn_off,
@@ -323,5 +329,4 @@ def get_ha_adk_tools() -> list:
         tv_play_youtube,
         tv_send_key,
         tv_status,
-        ha_call_service,
     ]

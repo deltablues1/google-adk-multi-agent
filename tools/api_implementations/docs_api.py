@@ -12,7 +12,7 @@ import logging
 from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
-from tools.resilience.cache import with_cache
+from tools.resilience.cache import with_cache, invalidates_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("docs")
 async def docs_create_document(
     credentials: Credentials,
     title: str,
@@ -157,6 +158,7 @@ async def docs_get_document(
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("docs")
 async def docs_insert_text(
     credentials: Credentials,
     document_id: str,
@@ -219,6 +221,7 @@ async def docs_insert_text(
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("docs")
 async def docs_replace_text(
     credentials: Credentials,
     document_id: str,
@@ -291,6 +294,7 @@ async def docs_replace_text(
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("docs")
 async def docs_append_text(
     credentials: Credentials,
     document_id: str,
@@ -360,6 +364,7 @@ async def docs_append_text(
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("docs")
 async def docs_batch_update(
     credentials: Credentials,
     document_id: str,
@@ -415,6 +420,7 @@ async def docs_batch_update(
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("docs")
 async def docs_format_text(
     credentials: Credentials,
     document_id: str,

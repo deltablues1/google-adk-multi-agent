@@ -48,6 +48,9 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
 MAX_AUDIO_DURATION_SECONDS = int(os.getenv("TELEGRAM_AUDIO_MAX_DURATION_SECONDS", "120"))
+# Input guards: cap LLM cost per message and photo download size
+MAX_INPUT_TEXT_LENGTH = int(os.getenv("TELEGRAM_MAX_INPUT_TEXT_LENGTH", "4000"))
+MAX_PHOTO_BYTES = int(os.getenv("TELEGRAM_MAX_PHOTO_BYTES", str(10 * 1024 * 1024)))
 
 
 def authorized_only(func):
@@ -387,6 +390,27 @@ Koristi /classroom za ulazak.
             parse_mode=ParseMode.MARKDOWN
         )
 
+    @authorized_only
+    async def cmd_briefing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send the daily briefing (/pregled)."""
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=ChatAction.TYPING,
+        )
+        try:
+            from config.user_context import get_default_user_context
+            from services.daily_briefing import get_daily_briefing
+
+            text = await get_daily_briefing(
+                get_default_user_context(channel="telegram")
+            )
+        except Exception as e:
+            logger.error(f"Daily briefing failed: {e}")
+            text = "Ne mogu trenutno sastaviti dnevni pregled. Pokušaj ponovno kasnije."
+
+        for chunk in self._split_message(text):
+            await update.message.reply_text(chunk)
+
     # === Message Handler ===
 
     @authorized_only
@@ -395,6 +419,13 @@ Koristi /classroom za ulazak.
         chat_id = str(update.effective_chat.id)
         user_id = str(update.effective_user.id)
         message_text = update.message.text
+
+        if message_text and len(message_text) > MAX_INPUT_TEXT_LENGTH:
+            await update.message.reply_text(
+                f"Poruka je preduga ({len(message_text)} znakova, "
+                f"maksimum {MAX_INPUT_TEXT_LENGTH}). Skrati je i pošalji ponovno."
+            )
+            return
 
         # Get processing lock for this chat
         lock = await self._get_processing_lock(chat_id)
@@ -555,6 +586,15 @@ Koristi /classroom za ulazak.
 
                 # Get highest resolution photo
                 photo = update.message.photo[-1]
+
+                # Reject oversized photos BEFORE downloading them
+                if photo.file_size and photo.file_size > MAX_PHOTO_BYTES:
+                    await update.message.reply_text(
+                        f"Fotografija je prevelika ({photo.file_size} B, "
+                        f"maksimum {MAX_PHOTO_BYTES} B)."
+                    )
+                    return
+
                 file = await context.bot.get_file(photo.file_id)
 
                 # Download photo
@@ -723,6 +763,7 @@ Koristi /classroom za ulazak.
         self.application.add_handler(CommandHandler("classroom", self.cmd_classroom))
         self.application.add_handler(CommandHandler("leave", self.cmd_leave))
         self.application.add_handler(CommandHandler("reset", self.cmd_reset))
+        self.application.add_handler(CommandHandler("pregled", self.cmd_briefing))
         self.application.add_handler(CommandHandler("help", self.cmd_help))
 
         # Regular messages
@@ -757,6 +798,7 @@ Koristi /classroom za ulazak.
             BotCommand("classroom", "Philosophy Classroom"),
             BotCommand("leave", "Izađi iz Classroom-a"),
             BotCommand("reset", "Resetiraj sesiju"),
+            BotCommand("pregled", "Dnevni pregled (email, kalendar, zadaci, vrijeme)"),
             BotCommand("help", "Pomoć"),
         ]
 
@@ -817,11 +859,22 @@ Koristi /classroom za ulazak.
         """Start bot in webhook mode (for Cloud Run)."""
         logger.info(f"Starting Telegram bot in WEBHOOK mode: {self.webhook_url}")
 
+        # Secret token: Telegram echoes it back in the
+        # X-Telegram-Bot-Api-Secret-Token header, letting us reject forged
+        # POSTs that spoof an authorized chat_id.
+        secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        if not secret:
+            logger.warning(
+                "TELEGRAM_WEBHOOK_SECRET is not set — webhook updates cannot "
+                "be authenticated and forged POSTs would be processed."
+            )
+
         # Set webhook
         await self.application.bot.set_webhook(
             url=self.webhook_url,
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
+            drop_pending_updates=True,
+            secret_token=secret or None,
         )
 
         logger.info("Webhook set successfully")
@@ -842,18 +895,37 @@ Koristi /classroom za ulazak.
 
     # === Webhook Handler (for Cloud Run) ===
 
-    async def process_webhook_update(self, update_data: dict) -> None:
+    async def process_webhook_update(
+        self,
+        update_data: dict,
+        secret_header: Optional[str] = None,
+    ) -> None:
         """
         Process incoming webhook update.
 
         This method should be called by the HTTP server when receiving
-        updates from Telegram.
+        updates from Telegram. The server MUST pass the value of the
+        X-Telegram-Bot-Api-Secret-Token request header as ``secret_header`` —
+        with TELEGRAM_WEBHOOK_SECRET configured, updates that do not carry the
+        matching token are rejected (forged POSTs could otherwise spoof an
+        authorized chat_id).
 
         Args:
             update_data: Raw update data from Telegram webhook
+            secret_header: Value of X-Telegram-Bot-Api-Secret-Token, if any
+
+        Raises:
+            PermissionError: If the secret token does not match
         """
         if self.application is None:
             raise RuntimeError("Application not initialized")
+
+        expected = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+        if expected:
+            import hmac
+            if not secret_header or not hmac.compare_digest(expected, secret_header):
+                logger.warning("Rejected webhook update with missing/invalid secret token")
+                raise PermissionError("Invalid Telegram webhook secret token")
 
         update = Update.de_json(update_data, self.application.bot)
         await self.application.process_update(update)

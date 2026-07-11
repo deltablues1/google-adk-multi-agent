@@ -267,6 +267,37 @@ def _tool_loop_after(tool=None, args=None, tool_context=None, tool_response=None
     return None  # never alter the tool response
 
 
+# Agents that consume external content (email bodies, web pages, documents)
+# get a shared prompt-injection boundary appended to their instructions.
+_UNTRUSTED_CONTENT_AGENTS = {
+    "mailer", "librarian", "analyst", "scribe", "researcher",
+    "orchestrator", "scraper", "synthesizer",
+}
+
+
+def load_shared_fragment(name: str) -> Optional[str]:
+    """Load a shared instruction fragment from agents/shared/{name}.md."""
+    fragment_path = Path(__file__).parent.parent / "shared" / f"{name}.md"
+    if not fragment_path.exists():
+        logger.debug(f"No shared fragment at {fragment_path}")
+        return None
+    try:
+        return fragment_path.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Failed to load shared fragment '{name}': {e}")
+        return None
+
+
+def _append_untrusted_content_rule(name: str, instruction: str) -> str:
+    """Append the untrusted-content boundary for content-consuming agents."""
+    if name.lower() not in _UNTRUSTED_CONTENT_AGENTS:
+        return instruction
+    fragment = load_shared_fragment("untrusted_content")
+    if not fragment or fragment.strip() in instruction:
+        return instruction
+    return f"{instruction.rstrip()}\n\n---\n\n{fragment.strip()}\n"
+
+
 def load_instruction_file(agent_name: str) -> Optional[str]:
     """
     Load agent instructions from markdown file.
@@ -346,6 +377,9 @@ def create_adk_agent(
     if instruction is None:
         instruction = f"You are {name}, a specialized AI agent."
         logger.warning(f"No instruction found for {name}, using default")
+
+    # Prompt-injection boundary for agents that read external content.
+    instruction = _append_untrusted_content_rule(name, instruction)
 
     # Default description
     if description is None:

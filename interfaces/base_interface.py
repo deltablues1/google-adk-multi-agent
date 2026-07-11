@@ -81,6 +81,14 @@ _WEATHER_VRIJEME_CUES = (
     "prekosutra", "za vikend",
 )
 
+# Full phrases only (ASCII-folded) — the daily briefing lane. Deliberately
+# specific: "danas" alone must not hijack ordinary questions.
+BRIEFING_VOICE_KEYWORDS = (
+    "dnevni pregled", "dnevni izvjestaj", "jutarnji pregled", "jutarnji brifing",
+    "dnevni brifing", "sto me ceka danas", "sto me danas ceka",
+    "sta me ceka danas", "daily briefing",
+)
+
 HR_WEEKDAY_NAMES = (
     "ponedjeljak", "utorak", "srijeda", "četvrtak", "petak", "subota", "nedjelja",
 )
@@ -137,48 +145,13 @@ VOICE_ROUTING_USER_PREFIXES = (
 
 LOCAL_VOICE_ROUTE = "local_voice_response"
 WEATHER_VOICE_ROUTE = "local_weather_response"
+BRIEFING_VOICE_ROUTE = "local_briefing_response"
 ORCHESTRATOR_VOICE_ROUTE = "orchestrator"
 # voice_qa (tool-less) emits this sentinel when the request is actually a task;
 # the interface then re-routes the original message to the orchestrator.
 ESCALATE_SENTINEL = "[[ESCALATE]]"
-VOICE_SMART_HOME_RESPONSE_MODE = os.getenv(
-    "VOICE_SMART_HOME_RESPONSE_MODE",
-    "none",
-).strip().lower()
-
-SMART_HOME_ROOM_ALIASES = {
-    "svjetlo_boravak": ("boravak", "dnevni", "dnevni boravak", "dnevnom boravku"),
-    "svjetlo_kuhinja": ("kuhinja", "kuhinji"),
-    "svjetlo_hodnik": ("hodnik", "hodniku"),
-    "svjetlo_kupaona": ("kupaona", "kupaonici", "kupatilo", "kupatilu"),
-    "svjetlo_blagavaona": ("blagavaona", "blagovaona", "blagavaonici", "blagovaonici"),
-    "svjetlo_ulaz": ("ulaz",),
-    "svjetlo_terasa1": ("terasa", "terasi"),
-    "svjetlo_vani": ("vani", "dvoriste", "dvoristu"),
-    "svjetlo_soba1": ("soba 1", "soba1"),
-    "svjetlo_soba2": ("soba 2", "soba2"),
-}
-
-SMART_HOME_SPOKEN_NAMES = {
-    "svjetlo_boravak": "svjetlo u dnevnom boravku",
-    "svjetlo_kuhinja": "svjetlo u kuhinji",
-    "svjetlo_hodnik": "svjetlo u hodniku",
-    "svjetlo_kupaona": "svjetlo u kupaoni",
-    "svjetlo_blagavaona": "svjetlo u blagovaonici",
-    "svjetlo_ulaz": "svjetlo na ulazu",
-    "svjetlo_terasa1": "svjetlo na terasi",
-    "svjetlo_vani": "vanjsko svjetlo",
-    "svjetlo_soba1": "svjetlo u sobi 1",
-    "svjetlo_soba2": "svjetlo u sobi 2",
-}
-
-SMART_HOME_SCENE_ALIASES = {
-    "nocno": ("nocno", "noćno"),
-    "film": ("film", "kino"),
-    "dolazak": ("dolazak", "dosao sam", "došao sam"),
-    "odlazak": ("odlazak", "idem van", "izlazim"),
-    "kuhanje": ("kuhanje", "kuham", "kuhaj"),
-}
+# Smart-home matching (room/scene aliases, response modes) lives in
+# services/voice_fast_path.py — the copy that used to sit here drifted from it.
 
 
 class BaseInterface(ABC):
@@ -354,6 +327,10 @@ class BaseInterface(ABC):
                 return True
         return False
 
+    def _is_briefing_request(self, message: str) -> bool:
+        msg_lower = self._normalize_voice_text(message)
+        return any(kw in msg_lower for kw in BRIEFING_VOICE_KEYWORDS)
+
     def _is_weather_request(self, message: str) -> bool:
         msg_lower = self._normalize_voice_text(message)
         if any(kw in msg_lower for kw in WEATHER_VOICE_KEYWORDS):
@@ -388,6 +365,16 @@ class BaseInterface(ABC):
             "Pokušaj ponovno za koju minutu."
         )
 
+    async def _build_briefing_response(self) -> str:
+        from config.user_context import get_default_user_context
+        from services.daily_briefing import get_daily_briefing
+
+        try:
+            return await get_daily_briefing(get_default_user_context(channel="voice"))
+        except Exception as e:
+            logger.error(f"Daily briefing failed: {e}")
+            return "Ne mogu trenutno sastaviti dnevni pregled. Pokušaj ponovno kasnije."
+
     def _classify_voice_route(self, message: str) -> tuple[str, Optional[str]]:
         """
         Lightweight voice pre-router.
@@ -402,6 +389,11 @@ class BaseInterface(ABC):
         """
         if self._is_time_or_date_request(message):
             return LOCAL_VOICE_ROUTE, None
+
+        # Briefing phrases are specific ("dnevni pregled") — check before the
+        # business keywords so "što me čeka danas" doesn't hit the orchestrator.
+        if self._is_briefing_request(message):
+            return BRIEFING_VOICE_ROUTE, None
 
         if self._looks_like_business_orchestrator_task(message):
             return ORCHESTRATOR_VOICE_ROUTE, None
@@ -460,9 +452,11 @@ class BaseInterface(ABC):
                 logger.info("Voice lane pin -> %s (short follow-up)", pinned[0])
                 route_type, route_target = "agent", pinned[0]
 
-        if route_type == "agent" and route_target == "skladistar":
+        # Lanes with multi-turn confirmations: warehouse writes and meeting
+        # scheduling ("da" / "onaj prvi" must return to the pending flow).
+        if route_type == "agent" and route_target in ("skladistar", "secretary"):
             self._voice_pinned_lane[session_id] = (
-                "skladistar", now + VOICE_LANE_PIN_TTL_SECONDS
+                route_target, now + VOICE_LANE_PIN_TTL_SECONDS
             )
         else:
             self._voice_pinned_lane.pop(session_id, None)
@@ -480,72 +474,11 @@ class BaseInterface(ABC):
         message: str,
         response_mode: Optional[str] = None,
     ) -> Optional[str]:
-        fast_response = await execute_fast_smart_home_command(
+        # Single source of truth: services/voice_fast_path.py (this method
+        # previously duplicated the matching logic, and the copies drifted).
+        return await execute_fast_smart_home_command(
             message,
             response_mode=response_mode,
-        )
-        if fast_response is not None:
-            return fast_response
-
-        normalized = self._normalize_voice_text(message)
-
-        if "ugasi sve" in normalized or "sve ugasi" in normalized:
-            from tools.adk_tools.mqtt_adk_tools import mqtt_scene_control
-
-            result = await mqtt_scene_control("sve_ugasi")
-            if result.get("status") == "ok":
-                return self._resolve_voice_smart_home_response(
-                    "Ugasio sam sve sto se smije ugasiti.",
-                    response_mode,
-                )
-            return None
-
-        for scene, aliases in SMART_HOME_SCENE_ALIASES.items():
-            if any(alias in normalized for alias in aliases):
-                from tools.adk_tools.mqtt_adk_tools import mqtt_scene_control
-
-                result = await mqtt_scene_control(scene)
-                if result.get("status") == "ok":
-                    description = str(result.get("description") or scene).strip()
-                    return self._resolve_voice_smart_home_response(
-                        f"Uključio sam scenu {description}.",
-                        response_mode,
-                    )
-                return None
-
-        state = None
-        if any(token in normalized for token in ("upal", "ukljuc")):
-            state = "ON"
-        elif any(token in normalized for token in ("ugas", "iskljuc")):
-            state = "OFF"
-
-        if state is None:
-            return None
-
-        matched_devices = []
-        for device_name, aliases in SMART_HOME_ROOM_ALIASES.items():
-            if any(alias in normalized for alias in aliases):
-                matched_devices.append(device_name)
-
-        if len(matched_devices) != 1:
-            return None
-
-        from tools.adk_tools.mqtt_adk_tools import mqtt_switch_control
-
-        device_name = matched_devices[0]
-        result = await mqtt_switch_control(device_name, state)
-        if result.get("status") != "ok":
-            return None
-
-        spoken_name = SMART_HOME_SPOKEN_NAMES.get(device_name, device_name)
-        if state == "ON":
-            return self._resolve_voice_smart_home_response(
-                f"Uključio sam {spoken_name}.",
-                response_mode,
-            )
-        return self._resolve_voice_smart_home_response(
-            f"Ugasio sam {spoken_name}.",
-            response_mode,
         )
 
     async def _run_direct_worker_agent(
@@ -721,6 +654,8 @@ class BaseInterface(ABC):
                         result = self._build_time_or_date_response(message)
                     elif route_type == WEATHER_VOICE_ROUTE:
                         result = await self._build_weather_response(message)
+                    elif route_type == BRIEFING_VOICE_ROUTE:
+                        result = await self._build_briefing_response()
                     elif route_type == "agent" and route_target:
                         result = await self._run_direct_worker_agent(
                             route_target,
@@ -830,7 +765,11 @@ class BaseInterface(ABC):
 
         # Enterprise components
         lines.append("Enterprise Components:")
-        lines.append(f"  - Decision Validator ({self.system.decision_validator.model})")
+        validator = getattr(self.system, "decision_validator", None)
+        if validator:
+            lines.append(f"  - Decision Validator ({validator.model})")
+        else:
+            lines.append("  - Decision Validator: disabled (no specialist sub-agents)")
         lines.append(f"  - Ask User Agent ({self.system.ask_user.model})\n")
 
         # Philosophy

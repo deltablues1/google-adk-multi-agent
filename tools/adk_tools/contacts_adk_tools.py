@@ -177,22 +177,28 @@ async def contacts_get_by_name(
     """
     Get contact details by searching for a specific name.
 
-    This is a convenience function that searches for a contact and returns
-    the best match.
+    Searches for a contact by name. Returns the contact ONLY when exactly one
+    person matches. With multiple matches it returns status "ambiguous" and a
+    candidates list — present those to the user and ask which one they meant;
+    NEVER silently pick one (wrong pick = email/invite to the wrong person).
 
     Args:
         name: Person's name to search for (e.g., "Tomislav Golić")
 
     Returns:
-        Dictionary with contact details if found:
+        Dictionary with contact details if exactly one match:
         {
             "found": True,
             "name": "Tomislav Golić",
             "email": "tomislav.golic@example.com",
-            "phone": "+385...",
-            "resource_name": "people/c123456",
-            "organization": "Company Name",
-            "photo_url": "https://..."
+            ...
+        }
+
+        Multiple matches:
+        {
+            "found": False,
+            "status": "ambiguous",
+            "candidates": [{"name": ..., "email": ..., "organization": ...}, ...]
         }
 
         Or if not found:
@@ -200,16 +206,10 @@ async def contacts_get_by_name(
             "found": False,
             "error": "No contact found with name: Tomislav Golić"
         }
-
-    Example:
-        result = await contacts_get_by_name("Tomislav Golić")
-        if result['found']:
-            email = result['email']
-            print(f"Sending email to {email}")
     """
     try:
-        # Search for the contact
-        search_result = await contacts_search_people(query=name, max_results=1)
+        # Fetch several matches so ambiguity is detectable
+        search_result = await contacts_search_people(query=name, max_results=5)
 
         if search_result.get('count', 0) == 0:
             return {
@@ -218,8 +218,27 @@ async def contacts_get_by_name(
                 "status": "not_found"
             }
 
-        # Get first match
-        contact = search_result['contacts'][0]
+        contacts = search_result.get('contacts', [])
+        if len(contacts) > 1:
+            return {
+                "found": False,
+                "status": "ambiguous",
+                "message": (
+                    f"Found {len(contacts)} contacts matching '{name}'. "
+                    "Ask the user which one they meant before proceeding."
+                ),
+                "candidates": [
+                    {
+                        "name": c.get('name'),
+                        "email": c.get('email'),
+                        "organization": c.get('organization'),
+                        "resource_name": c.get('resource_name'),
+                    }
+                    for c in contacts
+                ],
+            }
+
+        contact = contacts[0]
 
         return {
             "found": True,

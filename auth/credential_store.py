@@ -41,6 +41,9 @@ class CredentialStore:
 
         self._oauth_manager = None
         self._service_account_manager = None
+        # Which auth path the LAST get_credentials() call actually used —
+        # surfaced in health/status so a silent OAuth->SA fallback is visible.
+        self.last_auth_mode: Optional[str] = None
 
     def get_credentials(
         self,
@@ -68,25 +71,42 @@ class CredentialStore:
         """
         # Force OAuth
         if force_oauth:
-            return self._get_oauth_credentials()
+            creds = self._get_oauth_credentials()
+            self.last_auth_mode = "oauth" if creds else None
+            return creds
 
         # Force Service Account
         if force_service_account:
-            return self._get_service_account_credentials(user_email)
+            creds = self._get_service_account_credentials(user_email)
+            self.last_auth_mode = "service_account" if creds else None
+            return creds
 
         # Preferiraj Service Account ako je konfiguriran
         if self.prefer_service_account:
             service_creds = self._get_service_account_credentials(user_email)
             if service_creds:
+                self.last_auth_mode = "service_account"
                 return service_creds
 
         # Pokušaj OAuth
         oauth_creds = self._get_oauth_credentials()
         if oauth_creds:
+            self.last_auth_mode = "oauth"
             return oauth_creds
 
-        # Fallback na Service Account
-        return self._get_service_account_credentials(user_email)
+        # Fallback na Service Account — vidljivo, ne debug: radnje se tada
+        # izvršavaju kao service account, a ne kao korisnikov Google račun.
+        sa_creds = self._get_service_account_credentials(user_email)
+        if sa_creds:
+            logger.warning(
+                "OAuth credentials unavailable — FALLING BACK to service "
+                "account. Actions will run as the service account, not the "
+                "user's Google account."
+            )
+            self.last_auth_mode = "service_account_fallback"
+        else:
+            self.last_auth_mode = None
+        return sa_creds
 
     def _get_oauth_credentials(self) -> Optional[OAuthCredentials]:
         """Dohvaća OAuth 2.0 credentials"""

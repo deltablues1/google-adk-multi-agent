@@ -184,27 +184,18 @@ async def upload_to_youtube(
         )
         # Returns: {"video_id": "dQw4w9WgXcQ", "video_url": "https://youtube.com/watch?v=...", ...}
     """
-    logger.info(f"Uploading video to YouTube: {title}")
+    logger.warning(f"upload_to_youtube called but YouTube Data API is not integrated: {title}")
 
-    try:
-        # TODO: Implement YouTube Data API integration
-        # For now, return mock response
-        return {
-            "video_id": "mock_video_id",
-            "video_url": f"https://www.youtube.com/watch?v=mock_video_id",
-            "title": title,
-            "privacy_status": privacy_status,
-            "status": "success",
-            "message": "Video uploaded to YouTube successfully"
-        }
-
-    except Exception as e:
-        logger.error(f"upload_to_youtube failed: {e}")
-        return {
-            "error": str(e),
-            "status": "error",
-            "message": "Failed to upload video to YouTube"
-        }
+    # TODO: Implement YouTube Data API integration
+    return {
+        "status": "not_implemented",
+        "error": "YouTube upload is not implemented yet — no video was uploaded.",
+        "message": (
+            "YouTube Data API integracija još ne postoji. Video NIJE uploadan. "
+            "Reci korisniku da je ova funkcionalnost u pripremi."
+        ),
+        "title": title,
+    }
 
 
 # ============================================================================
@@ -261,29 +252,17 @@ async def create_google_ad_draft(
         )
         # Returns: {"campaign_id": "123456", "status": "PAUSED", ...}
     """
-    logger.info(f"Creating Google Ads draft campaign: {campaign_name}")
+    logger.warning(
+        f"create_google_ad_draft called but Google Ads API is not integrated: {campaign_name}"
+    )
 
-    try:
-        # TODO: Implement Google Ads API integration
-        # For now, return mock response
-        return {
-            "campaign_id": "mock_campaign_123456",
-            "status": "PAUSED",
-            "campaign_name": campaign_name,
-            "headline": ad_copy_headline,
-            "description": ad_copy_description,
-            "target_url": target_url,
-            "budget_daily": budget_daily,
-            "message": (
-                f"Campaign '{campaign_name}' created in PAUSED status. "
-                "Review in Google Ads console and activate when ready."
-            )
-        }
-
-    except Exception as e:
-        logger.error(f"create_google_ad_draft failed: {e}")
-        return {
-            "error": str(e),
-            "status": "error",
-            "message": "Failed to create campaign draft"
-        }
+    # TODO: Implement Google Ads API integration
+    return {
+        "status": "not_implemented",
+        "error": "Google Ads integration is not implemented yet — no campaign was created.",
+        "message": (
+            "Google Ads API integracija još ne postoji. Kampanja NIJE kreirana i "
+            "ništa nije poslano Googleu. Reci korisniku da je ova funkcionalnost u pripremi."
+        ),
+        "campaign_name": campaign_name,
+    }

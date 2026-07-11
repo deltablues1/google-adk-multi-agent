@@ -130,11 +130,18 @@ async def run_webhook():
     await interface.application.initialize()
     await interface._setup_bot_commands()
 
-    # Set webhook
+    # Set webhook (secret token lets us reject forged POSTs)
+    webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+    if not webhook_secret:
+        logger.warning(
+            "TELEGRAM_WEBHOOK_SECRET is not set — webhook updates cannot be "
+            "authenticated."
+        )
     await interface.application.bot.set_webhook(
         url=webhook_url,
         allowed_updates=["message", "callback_query"],
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        secret_token=webhook_secret or None,
     )
     logger.info(f"Webhook set to: {webhook_url}")
 
@@ -143,8 +150,11 @@ async def run_webhook():
         """Handle incoming webhook requests."""
         try:
             data = await request.json()
-            await interface.process_webhook_update(data)
+            secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+            await interface.process_webhook_update(data, secret_header=secret_header)
             return web.Response(text="OK")
+        except PermissionError:
+            return web.Response(text="Forbidden", status=403)
         except Exception as e:
             logger.error(f"Webhook error: {e}")
             return web.Response(text="Error", status=500)

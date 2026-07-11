@@ -15,7 +15,7 @@ import logging
 from tools.resilience.retry_handler import with_retry, RetryConfig
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
-from tools.resilience.cache import with_cache
+from tools.resilience.cache import with_cache, invalidates_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
@@ -274,6 +274,7 @@ async def drive_get_file(
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("drive")
 async def drive_upload_file(
     credentials: Credentials,
     file_name: str,
@@ -376,6 +377,7 @@ async def drive_upload_file(
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("drive")
 async def drive_update_file(
     credentials: Credentials,
     file_id: str,
@@ -451,6 +453,7 @@ async def drive_update_file(
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("drive")
 async def drive_delete_file(
     credentials: Credentials,
     file_id: str
@@ -474,16 +477,16 @@ async def drive_delete_file(
         api_client = GoogleAPIClient(credentials=credentials)
         service = api_client.drive_service()
 
-        logger.info(f"Deleting Drive file: {file_id}")
+        logger.info(f"Moving Drive file to trash: {file_id}")
 
-        # Move to trash
-        await aexecute(service.files().delete(fileId=file_id))
+        # files().delete() would be permanent; trash keeps it recoverable ~30 days
+        await aexecute(service.files().update(fileId=file_id, body={'trashed': True}))
 
-        logger.info(f"File deleted successfully: {file_id}")
+        logger.info(f"File moved to trash: {file_id}")
 
         return {
             'id': file_id,
-            'status': 'deleted'
+            'status': 'trashed'
         }
 
     except HttpError as e:
@@ -497,6 +500,7 @@ async def drive_delete_file(
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("drive")
 async def drive_share_file(
     credentials: Credentials,
     file_id: str,
@@ -576,6 +580,7 @@ async def drive_share_file(
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("drive")
 async def drive_create_folder(
     credentials: Credentials,
     folder_name: str,
@@ -638,6 +643,7 @@ async def drive_create_folder(
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("drive")
 async def drive_move_file(
     credentials: Credentials,
     file_id: str,

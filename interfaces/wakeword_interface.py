@@ -22,14 +22,30 @@ logger = logging.getLogger(__name__)
 def looks_like_noise_transcript(text: str) -> bool:
     """Heuristic for background/appliance noise the STT hallucinated into text.
 
-    Two patterns cover what we see in practice: strings of isolated digits
-    ("3 7 1 2 0 6 8 3 8 3" from a washing machine) and transcripts with no
-    letters at all ("...", "123"). Real speech with numbers ("koliko je 2 i
+    Three patterns cover what we see in practice: strings of isolated digits
+    ("3 7 1 2 0 6 8 3 8 3" from a washing machine), transcripts with no
+    letters at all ("...", "123"), and STT non-speech placeholders like
+    "[nečujno]" / "(nerazumljivo)". Real speech with numbers ("koliko je 2 i
     2", "21:23") has letter tokens and is not flagged.
     """
     text = (text or "").strip()
     if not any(ch.isalpha() for ch in text):
         return True
+
+    # STT engines emit bracketed placeholders for non-speech audio; those must
+    # never reach the agent as a real query.
+    lowered = text.lower()
+    placeholders = (
+        "nečujno", "necujno", "nerazumljivo", "inaudible", "unintelligible",
+        "glazba", "music", "tišina", "tisina", "silence", "šum", "sum]",
+    )
+    if (
+        (lowered.startswith("[") or lowered.startswith("("))
+        and (lowered.endswith("]") or lowered.endswith(")"))
+        and any(p in lowered for p in placeholders)
+    ):
+        return True
+
     tokens = text.split()
     digit_tokens = sum(1 for token in tokens if token.isdigit())
     return digit_tokens >= 4 and digit_tokens >= 0.6 * len(tokens)

@@ -9,11 +9,25 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 from datetime import datetime
 import logging
+import os
+
+
+def _default_timezone() -> str:
+    """User's IANA timezone for event bodies (was hardcoded 'UTC')."""
+    return os.getenv("DEFAULT_USER_TIMEZONE", "Europe/Zagreb")
+
+
+def _parse_rfc3339(value: str) -> Optional[datetime]:
+    """Parse an RFC3339 timestamp; returns None when unparseable."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
 
 from tools.resilience.retry_handler import with_retry, RetryConfig, with_quota_retry
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
-from tools.resilience.cache import with_cache
+from tools.resilience.cache import with_cache, invalidates_cache
 from tools.google_api_client import aexecute
 
 logger = logging.getLogger(__name__)
@@ -183,6 +197,7 @@ async def calendar_get_event(
 
 @with_circuit_breaker("calendar")
 @with_quota_retry()  # 15s, 30s, 60s delays for API quota limits
+@invalidates_cache("calendar")
 async def calendar_create_event(
     credentials: Credentials,
     summary: str,
@@ -191,7 +206,10 @@ async def calendar_create_event(
     description: Optional[str] = None,
     location: Optional[str] = None,
     attendees: Optional[List[str]] = None,
-    calendar_id: str = "primary"
+    calendar_id: str = "primary",
+    timezone: Optional[str] = None,
+    add_meet_link: bool = False,
+    send_updates: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Create a new calendar event
@@ -205,9 +223,14 @@ async def calendar_create_event(
         location: Event location (optional)
         attendees: List of attendee email addresses (optional)
         calendar_id: Calendar ID (default: 'primary')
+        timezone: IANA timezone for the event (default: user's timezone,
+            Europe/Zagreb unless DEFAULT_USER_TIMEZONE overrides it)
+        add_meet_link: Attach a Google Meet conference to the event
+        send_updates: Invitation email policy: "all", "externalOnly" or
+            "none" (None = API default, i.e. no explicit choice)
 
     Returns:
-        Dictionary with created event details
+        Dictionary with created event details (incl. meet_link when requested)
 
     Raises:
         HttpError: If API call fails
@@ -215,21 +238,38 @@ async def calendar_create_event(
     try:
         from tools.google_api_client import GoogleAPIClient
 
+        # Validate the time range before touching the API.
+        start_dt = _parse_rfc3339(start_time)
+        end_dt = _parse_rfc3339(end_time)
+        if start_dt is None or end_dt is None:
+            return {
+                'status': 'error',
+                'error': f"Invalid RFC3339 time: start={start_time!r}, end={end_time!r}",
+            }
+        # Compare only when both are naive or both aware (mixed can't be compared).
+        if (start_dt.tzinfo is None) == (end_dt.tzinfo is None) and end_dt <= start_dt:
+            return {
+                'status': 'error',
+                'error': f"Event end ({end_time}) must be after start ({start_time})",
+            }
+
         api_client = GoogleAPIClient(credentials=credentials)
         service = api_client.calendar_service()
 
         logger.info(f"Creating Calendar event: {summary}")
+
+        tz = timezone or _default_timezone()
 
         # Build event object
         event = {
             'summary': summary,
             'start': {
                 'dateTime': start_time,
-                'timeZone': 'UTC'
+                'timeZone': tz
             },
             'end': {
                 'dateTime': end_time,
-                'timeZone': 'UTC'
+                'timeZone': tz
             }
         }
 
@@ -240,11 +280,24 @@ async def calendar_create_event(
         if attendees:
             event['attendees'] = [{'email': email} for email in attendees]
 
+        insert_kwargs: Dict[str, Any] = {
+            'calendarId': calendar_id,
+            'body': event,
+        }
+        if add_meet_link:
+            import uuid
+            event['conferenceData'] = {
+                'createRequest': {
+                    'requestId': uuid.uuid4().hex,
+                    'conferenceSolutionKey': {'type': 'hangoutsMeet'},
+                }
+            }
+            insert_kwargs['conferenceDataVersion'] = 1
+        if send_updates:
+            insert_kwargs['sendUpdates'] = send_updates
+
         # Create event
-        created_event = await aexecute(service.events().insert(
-            calendarId=calendar_id,
-            body=event
-        ))
+        created_event = await aexecute(service.events().insert(**insert_kwargs))
 
         logger.info(f"Event created successfully: {created_event['id']}")
 
@@ -254,6 +307,8 @@ async def calendar_create_event(
             'start': created_event['start'].get('dateTime'),
             'end': created_event['end'].get('dateTime'),
             'html_link': created_event.get('htmlLink'),
+            'meet_link': created_event.get('hangoutLink'),
+            'attendees': [a.get('email') for a in created_event.get('attendees', [])],
             'status': 'created'
         }
 
@@ -267,6 +322,7 @@ async def calendar_create_event(
 
 @with_circuit_breaker("calendar")
 @with_quota_retry()  # 15s, 30s, 60s delays for API quota limits
+@invalidates_cache("calendar")
 async def calendar_update_event(
     credentials: Credentials,
     event_id: str,
@@ -275,6 +331,7 @@ async def calendar_update_event(
     end_time: Optional[str] = None,
     description: Optional[str] = None,
     location: Optional[str] = None,
+    attendees: Optional[List[str]] = None,
     calendar_id: str = "primary"
 ) -> Dict[str, Any]:
     """
@@ -288,6 +345,7 @@ async def calendar_update_event(
         end_time: New end time in RFC3339 format (optional)
         description: New description (optional)
         location: New location (optional)
+        attendees: Replacement list of attendee emails (optional; omit to keep current)
         calendar_id: Calendar ID (default: 'primary')
 
     Returns:
@@ -321,6 +379,24 @@ async def calendar_update_event(
             event['description'] = description
         if location:
             event['location'] = location
+        if attendees is not None:
+            event['attendees'] = [{'email': email} for email in attendees]
+
+        # Reject an inverted time range after applying the changes.
+        new_start = _parse_rfc3339(event.get('start', {}).get('dateTime', ''))
+        new_end = _parse_rfc3339(event.get('end', {}).get('dateTime', ''))
+        if (
+            new_start is not None and new_end is not None
+            and (new_start.tzinfo is None) == (new_end.tzinfo is None)
+            and new_end <= new_start
+        ):
+            return {
+                'status': 'error',
+                'error': (
+                    f"Event end ({event['end'].get('dateTime')}) must be after "
+                    f"start ({event['start'].get('dateTime')})"
+                ),
+            }
 
         # Update event
         updated_event = await aexecute(service.events().update(
@@ -350,6 +426,7 @@ async def calendar_update_event(
 
 @with_circuit_breaker("calendar")
 @with_quota_retry()  # 15s, 30s, 60s delays for API quota limits
+@invalidates_cache("calendar")
 async def calendar_delete_event(
     credentials: Credentials,
     event_id: str,
@@ -396,6 +473,78 @@ async def calendar_delete_event(
         raise
     except Exception as e:
         logger.error(f"Unexpected error in calendar_delete_event: {e}")
+        raise
+
+
+@with_circuit_breaker("calendar")
+@with_rate_limit("calendar", user_id_param="credentials")
+@with_quota_retry()  # 15s, 30s, 60s delays for API quota limits
+async def calendar_freebusy(
+    credentials: Credentials,
+    time_min: str,
+    time_max: str,
+    emails: List[str],
+    timezone: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Query busy intervals for a set of calendars (FreeBusy API).
+
+    External calendars often deny free/busy access — those attendees are
+    reported under "unknown" instead of failing the whole query.
+
+    Args:
+        credentials: OAuth2 credentials
+        time_min: Window start in RFC3339 format
+        time_max: Window end in RFC3339 format
+        emails: Calendar IDs / attendee email addresses to query
+        timezone: IANA timezone for the response (default: user's timezone)
+
+    Returns:
+        {
+            'busy': {email: [{'start': ..., 'end': ...}, ...]},
+            'unknown': [emails whose availability could not be read],
+            'time_min': ..., 'time_max': ...
+        }
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.calendar_service()
+
+        logger.info(f"FreeBusy query for {len(emails)} calendars")
+
+        body = {
+            'timeMin': time_min,
+            'timeMax': time_max,
+            'timeZone': timezone or _default_timezone(),
+            'items': [{'id': email} for email in emails],
+        }
+        response = await aexecute(service.freebusy().query(body=body))
+
+        busy: Dict[str, List[Dict[str, str]]] = {}
+        unknown: List[str] = []
+        for email, calendar_info in (response.get('calendars') or {}).items():
+            if calendar_info.get('errors'):
+                unknown.append(email)
+                continue
+            busy[email] = [
+                {'start': interval.get('start'), 'end': interval.get('end')}
+                for interval in calendar_info.get('busy', [])
+            ]
+
+        return {
+            'busy': busy,
+            'unknown': unknown,
+            'time_min': time_min,
+            'time_max': time_max,
+        }
+
+    except HttpError as e:
+        logger.error(f"FreeBusy query failed: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in calendar_freebusy: {e}")
         raise
 
 

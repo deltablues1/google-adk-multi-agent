@@ -106,7 +106,13 @@ class PiLiveVoiceBridge:
             ) from e
 
         ws_url = self.interface.get_live_ws_url()
-        logger.info("Starting Pi live bridge: %s", ws_url)
+        # Never log the URL itself — it can carry the API token as a query param.
+        redacted = ws_url.split("?", 1)[0]
+        logger.info(
+            "Starting Pi live bridge: %s%s",
+            redacted,
+            " (token attached)" if "?" in ws_url else "",
+        )
 
         last_input_activity = time.monotonic()
         last_output_activity = time.monotonic()

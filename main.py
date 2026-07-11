@@ -97,7 +97,6 @@ from config.deployment_config import get_deployment_config
 
 # Import ADK agents and runner utils
 from agents.adk_agents.smart_orchestrator import create_smart_orchestrator
-from agents.adk_agents.decision_validator import create_decision_validator
 from agents.adk_agents.ask_user_agent import create_ask_user_agent
 from agents.adk_agents.runner_utils import RunnerHelper
 from agents.adk_agents.plan_execute import run_plan_execute
@@ -206,13 +205,11 @@ class WorkspaceADKSystem:
         # Kreiraj Enterprise Orchestration Components
         logger.info("Creating Enterprise Orchestration components...")
 
-        # 1. Decision Validator (NO sub_agents - will delegate through orchestrator hierarchy)
-        logger.info("  - Creating Decision Validator agent...")
-        self.decision_validator = create_decision_validator(
-            model="gemini-3.1-pro-preview",  # Tier 1: zero-tolerance precondition validation
-            sub_agents=[]  # Empty - will access workers through Smart Orchestrator
-        )
-        logger.info("  [OK] Decision Validator created")
+        # 1. Decision Validator — without specialist sub_agents it cannot
+        # actually validate/delegate anything, so don't construct it and don't
+        # claim validation is enabled. Wire real sub_agents here to enable it.
+        self.decision_validator = None
+        logger.info("  - Decision Validator: skipped (no specialist sub-agents configured)")
 
         # 2. Ask User Agent (for handling failed conditions)
         logger.info("  - Creating Ask User agent...")
@@ -238,8 +235,10 @@ class WorkspaceADKSystem:
         )
         logger.info(f"[OK] Smart Orchestrator initialized (enterprise-grade)")
         logger.info(f"  - {len(self.worker_agents)} worker agents")
-        logger.info(f"  - Decision validation: ENABLED")
-        logger.info(f"  - Conditional logic: ENABLED")
+        logger.info(
+            "  - Decision validation: %s",
+            "ENABLED" if self.decision_validator else "DISABLED (no sub-agents configured)",
+        )
 
         # Kreiraj RunnerHelper za persistent sessions
         logger.info("Creating RunnerHelper for persistent sessions...")
@@ -434,8 +433,11 @@ class WorkspaceADKSystem:
         print(f"   Features: Multi-agent coordination, precondition checking, error handling")
 
         print(sanitize_emojis(f"\n🔍 Enterprise Orchestration Components:"))
-        print(f"   - Decision Validator ({self.decision_validator.model})")
-        print(f"     |- Validates preconditions (IF-THEN-ELSE logic)")
+        if self.decision_validator:
+            print(f"   - Decision Validator ({self.decision_validator.model})")
+            print(f"     |- Validates preconditions (IF-THEN-ELSE logic)")
+        else:
+            print("   - Decision Validator: disabled (no specialist sub-agents)")
         print(f"   - Ask User Agent ({self.ask_user.model})")
         print(f"     |- Handles failed conditions with user alternatives")
 

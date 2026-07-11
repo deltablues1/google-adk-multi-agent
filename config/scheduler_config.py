@@ -58,6 +58,10 @@ class ScheduledJob(BaseModel):
     enabled: bool = Field(True, description="Whether the job is active")
     max_retries: int = Field(2, description="Max retry attempts on failure")
     description: Optional[str] = Field(None, description="Optional description")
+    # "nl" (default) runs agent_request through the orchestrator;
+    # "briefing" calls the deterministic daily-briefing service directly and
+    # delivers the result to the authorized Telegram chat.
+    action_type: str = Field("nl", description="Job action: 'nl' or 'briefing'")
 
 
 class SchedulerConfig(BaseModel):
@@ -83,11 +87,23 @@ def load_jobs(file_path: Path = JOBS_FILE) -> SchedulerConfig:
 
 
 def save_jobs(config: SchedulerConfig, file_path: Path = JOBS_FILE) -> None:
-    """Save scheduled jobs to JSON file."""
+    """Save scheduled jobs to JSON file (atomic replace).
+
+    Writing straight to the target file can leave it truncated/corrupted if
+    the process dies mid-write or two processes save at once; os.replace of a
+    fully written temp file is atomic on both POSIX and Windows.
+    """
+    tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(config.model_dump(), f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, file_path)
         logger.info(f"Saved {len(config.jobs)} jobs to {file_path}")
     except Exception as e:
         logger.error(f"Failed to save jobs to {file_path}: {e}")
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
         raise

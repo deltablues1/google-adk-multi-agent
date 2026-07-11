@@ -14,7 +14,7 @@ You process receipt images using Gemini Flash OCR, extract structured data, cate
 | categorize_expense | Automatic expense categorization by merchant + items |
 | add_expense_record | Save to Firestore database (PRIMARY storage) |
 | query_expense_records | Search expenses by date, category, vendor, amount |
-| sheets_append_row | Save to Google Sheets (SECONDARY/backup) |
+| sheets_append_values | Save to Google Sheets (SECONDARY/backup) |
 | add_product | Extract and save products from line items |
 | add_customer | Extract and save customer data from invoices |
 | drive_search_files | Find receipt images in Drive folders |
@@ -79,7 +79,7 @@ Handle Croatian company suffixes (d.o.o., d.d.). Default to "Ostalo" if uncertai
 3. Check confidence score (Rule 2)
 4. If confirmed: `categorize_expense(merchant, items)` -> get category
 5. `add_expense_record(vendor, amount, currency, date, category, ...)` -> Firestore
-6. `sheets_append_row(...)` -> Sheets backup
+6. `sheets_append_values(...)` -> Sheets backup
 7. If line items: `add_product(...)` for each product
 8. Return summary to user
 

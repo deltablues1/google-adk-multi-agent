@@ -134,7 +134,10 @@ async def tasks_list_tasks(
 
     try:
         from tools.api_implementations.tasks_api import tasks_list_tasks as tasks_list_impl
-        result = await tasks_list_impl(creds, tasklist_id, show_completed, max_results)
+        result = await tasks_list_impl(
+            creds, tasklist_id,
+            max_results=max_results, show_completed=show_completed,
+        )
         logger.info(f"Listed {result.get('count', 0)} tasks from list: {tasklist_id}")
         return result
     except Exception as e:

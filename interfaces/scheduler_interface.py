@@ -83,6 +83,52 @@ class SchedulerInterface(BaseInterface):
         else:
             raise ValueError(f"Unknown trigger type: {trigger.type}")
 
+    async def _deliver_to_telegram(self, text: str) -> bool:
+        """Push a job result to the authorized Telegram chat, if configured."""
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        if not token or not chat_id:
+            logger.info("[SCHEDULER] No Telegram token/chat configured for delivery")
+            return False
+        from telegram import Bot
+
+        bot = Bot(token=token)
+        # Telegram hard limit is 4096 chars per message
+        for start in range(0, len(text), 4000):
+            await bot.send_message(chat_id=chat_id, text=text[start:start + 4000])
+        return True
+
+    async def _execute_briefing_job(self, job_config: ScheduledJob) -> None:
+        """Deterministic daily-briefing job — no orchestrator, no NL replay."""
+        job_id = job_config.id
+        start_time = time.time()
+        try:
+            from config.user_context import get_default_user_context
+            from services.daily_briefing import get_daily_briefing
+
+            text = await get_daily_briefing(
+                get_default_user_context(channel="scheduler")
+            )
+            delivered = await self._deliver_to_telegram(text)
+            self.job_results[job_id] = {
+                "status": "SUCCESS",
+                "result_preview": text[:200],
+                "delivered": delivered,
+                "elapsed": round(time.time() - start_time, 1),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "attempt": 1,
+            }
+            logger.info(f"[SCHEDULER] Briefing job '{job_id}' done (delivered={delivered})")
+        except Exception as e:
+            self.job_results[job_id] = {
+                "status": "FAILED",
+                "error": str(e)[:200],
+                "elapsed": round(time.time() - start_time, 1),
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "attempt": 1,
+            }
+            logger.error(f"[SCHEDULER] Briefing job '{job_id}' failed: {e}")
+
     async def _execute_job(self, job_config: ScheduledJob) -> None:
         """
         Execute a scheduled job through the agent pipeline.
@@ -90,6 +136,11 @@ class SchedulerInterface(BaseInterface):
         This is called by APScheduler when a job triggers.
         """
         job_id = job_config.id
+
+        if getattr(job_config, "action_type", "nl") == "briefing":
+            await self._execute_briefing_job(job_config)
+            return
+
         logger.info(f"[SCHEDULER] Executing job '{job_id}': {job_config.agent_request}")
 
         start_time = time.time()
@@ -166,7 +217,10 @@ class SchedulerInterface(BaseInterface):
             id=job.id,
             name=job.name,
             args=[job],
-            replace_existing=True
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
         )
 
         # Save to config
@@ -236,13 +290,28 @@ class SchedulerInterface(BaseInterface):
                 "id": job.id,
                 "name": job.name,
                 "request": job.agent_request[:60] + "..." if len(job.agent_request) > 60 else job.agent_request,
-                "trigger": f"{job.trigger.type}: {job.trigger.cron_expression or f'{job.trigger.interval_seconds}s' or job.trigger.run_date}",
+                "trigger": f"{job.trigger.type}: {self._describe_trigger(job.trigger)}",
                 "enabled": job.enabled,
                 "next_run": next_run,
                 "last_status": last_result.get("status", "Never run"),
                 "last_run": last_result.get("timestamp", "N/A")
             })
         return jobs_info
+
+    @staticmethod
+    def _describe_trigger(trigger) -> str:
+        """Human-readable trigger description.
+
+        The old one-liner rendered date jobs as "Nones": interval_seconds is
+        None so f'{None}s' -> "Nones" (truthy) and run_date never showed.
+        """
+        if trigger.cron_expression:
+            return trigger.cron_expression
+        if trigger.interval_seconds is not None:
+            return f"{trigger.interval_seconds}s"
+        if trigger.run_date:
+            return str(trigger.run_date)
+        return "?"
 
     def _load_saved_jobs(self) -> None:
         """Load and register jobs from persistent storage."""
@@ -261,7 +330,10 @@ class SchedulerInterface(BaseInterface):
                     id=job.id,
                     name=job.name,
                     args=[job],
-                    replace_existing=True
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=300,
                 )
                 logger.info(f"[SCHEDULER] Loaded job '{job.id}': {job.name}")
             except Exception as e:
