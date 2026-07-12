@@ -238,13 +238,17 @@ def format_briefing_fallback(data: dict, ctx: Optional[UserContext] = None) -> s
             lines.append(f"  - {sender}: {mail['subject']}")
 
     home = data.get("home")
-    if home:
+    if home is None:
+        lines.append("Kuća: stanje nije dostupno.")
+    else:
         on_count = len(home.get("lights_on", [])) + len(home.get("outlets_on", []))
         if on_count:
             names = ", ".join((home.get("lights_on", []) + home.get("outlets_on", []))[:6])
             lines.append(f"Kuća: uključeno {on_count} uređaja ({names}).")
         else:
-            lines.append("Kuća: sve je ugašeno.")
+            # A snapshot only covers devices that reported — avoid the
+            # absolute claim "sve je ugašeno" from a possibly partial view.
+            lines.append("Kuća: nijedan od javljenih uređaja nije uključen.")
 
     return "\n".join(lines)
 

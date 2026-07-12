@@ -66,7 +66,7 @@ result = format_markdown_for_docs(markdown)   # returns a dict
 docs_batch_update(doc_id, result["requests"])  # pass the "requests" field
 ```
 
-Supported Markdown: `# H1`, `## H2`, `### H3`, `**bold**`, `*italic*`, `- lists`, `1. numbered`, `[text](url)`, `` `code` ``
+Supported Markdown: `# H1`, `## H2`, `### H3`, `**bold**`, `*italic*`, `- lists`, `1. numbered`, `[text](url)`. Inline `` `code` `` is NOT converted — avoid it (it stays as literal backticks).
 
 Only use manual formatting (docs_format_text) for simple single-field edits.
 

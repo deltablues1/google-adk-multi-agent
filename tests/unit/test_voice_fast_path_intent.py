@@ -71,6 +71,44 @@ class TestIntentGate:
     def test_commands_pass(self, text):
         assert classify_fast_path_intent(normalize_voice_text(text)) == "command"
 
+    @pytest.mark.parametrize("text", [
+        # scene alias inside an unrelated sentence must NOT fire the scene
+        "Objasni film Inception",
+        "Volim film Titanik",
+        # compound / conflicting commands the simple matcher can't execute
+        "Ugasi sve osim kuhinje",
+        "Ugasi sve i upali kuhinju",
+        "Upali pa ugasi svjetlo u kuhinji",
+        "Za dvije minute ugasi sve",
+        'Reci "upali svjetlo u kuhinji" na engleskom',
+    ])
+    def test_review_round2_blocked(self, text):
+        assert classify_fast_path_intent(normalize_voice_text(text)) == "blocked"
+
+    @pytest.mark.parametrize("text", [
+        "film",                 # exact alias = deliberate scene call
+        "Idemo gledati film",   # activation verb present
+        "Došao sam",
+        "Kuham",
+    ])
+    def test_scene_phrases_still_pass(self, text):
+        assert classify_fast_path_intent(normalize_voice_text(text)) == "command"
+
+    def test_sent_status_spoken_distinctly(self, monkeypatch):
+        # Confirm layer disabled ("sent") must not SOUND like verified success.
+        async def fake_switch(device_name, state):
+            return {"status": "sent"}
+
+        monkeypatch.setattr(voice_fast_path, "mqtt_switch_control", fake_switch)
+        monkeypatch.setenv("VOICE_SMART_HOME_RESPONSE_MODE", "none")
+
+        result = asyncio.run(
+            execute_fast_smart_home_command("Upali svjetlo u kuhinji")
+        )
+        assert result is not None
+        assert "potvrda stanja je isključena" in result
+        assert "Ukljucio sam" not in result
+
     def test_no_imperative_verb_blocked(self):
         # Positive grammar: without a command verb or scene alias, nothing fires
         assert classify_fast_path_intent(
@@ -198,11 +236,43 @@ class TestProtectedDevices:
 
         asyncio.run(mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF"))
         # simulate TTL expiry
-        entry = mqtt_tools._PENDING_APPROVALS[("uticnica_bojler", "OFF")]
+        entry = mqtt_tools._PENDING_APPROVALS[("global", "uticnica_bojler", "OFF")]
         entry["created_at"] = time_mod.monotonic() - 999
-        mqtt_tools.arm_pending_approvals()  # purges expired
+        mqtt_tools.arm_pending_approvals("global")  # purges expired
 
-        assert ("uticnica_bojler", "OFF") not in mqtt_tools._PENDING_APPROVALS
+        assert ("global", "uticnica_bojler", "OFF") not in mqtt_tools._PENDING_APPROVALS
+
+    def test_other_session_cannot_arm(self):
+        # An approval pending in session A must not be unlocked by traffic
+        # in session B.
+        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+
+        mqtt_tools.set_approval_session("session-a")
+        first = asyncio.run(mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF"))
+        assert first["status"] == "needs_confirmation"
+
+        mqtt_tools.arm_pending_approvals("session-b")  # wrong session
+
+        blocked = asyncio.run(
+            mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF", confirm=True)
+        )
+        assert blocked["status"] == "needs_confirmation"
+        mqtt_tools.set_approval_session("global")
+
+    def test_negative_reply_cancels(self):
+        # cancel_pending_approvals ("ne"/unrelated message) kills the approval.
+        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+
+        asyncio.run(mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF"))
+        assert mqtt_tools.has_pending_approval("global") is True
+
+        mqtt_tools.cancel_pending_approvals("global")
+        assert mqtt_tools.has_pending_approval("global") is False
+
+        blocked = asyncio.run(
+            mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF", confirm=True)
+        )
+        assert blocked["status"] == "needs_confirmation"
 
     @pytest.mark.parametrize("device,state", [
         ("uticnica_frizider", "ON"),   # turning fridge ON is safe
@@ -230,8 +300,8 @@ class TestProtectedDevices:
         assert captured["payload"] == state
 
     def test_confirmed_protected_publishes_after_user_turn(self, monkeypatch):
-        # Full turn-gated cycle: needs_confirmation -> new user turn arms the
-        # approval -> confirm=True executes.
+        # Full turn-gated cycle: needs_confirmation -> user's explicit "da"
+        # arms the approval -> confirm=True executes.
         import services.mqtt_confirm as mqtt_confirm
         import tools.adk_tools.mqtt_adk_tools as mqtt_tools
 
@@ -250,7 +320,7 @@ class TestProtectedDevices:
         first = asyncio.run(mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF"))
         assert first["status"] == "needs_confirmation"
 
-        mqtt_tools.arm_pending_approvals()  # user replied in a new turn
+        mqtt_tools.arm_pending_approvals("global")  # user said "da" in a new turn
 
         result = asyncio.run(
             mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF", confirm=True)
@@ -313,6 +383,76 @@ class TestSceneComposition:
         assert "esp32-io/switch/uticnica_frizider/command" not in all_topics
         assert "esp32-io/switch/uticnica_bojler/command" not in all_topics
         assert "esp32-io/switch/svjetlo_kuhinja/command" in all_topics
+
+
+# ---------------------------------------------------------------------------
+# Turn-approval semantics in the interface (da/ne parsing)
+# ---------------------------------------------------------------------------
+
+class TestTurnApprovalSemantics:
+    @pytest.fixture(autouse=True)
+    def clean_approvals(self):
+        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+
+        mqtt_tools._PENDING_APPROVALS.clear()
+        yield
+        mqtt_tools._PENDING_APPROVALS.clear()
+
+    @pytest.fixture
+    def iface(self):
+        from types import SimpleNamespace
+
+        from interfaces.base_interface import BaseInterface
+
+        class _Iface(BaseInterface):
+            def __init__(self):
+                super().__init__(session_prefix="test")
+                self.system = SimpleNamespace(philosophy_keywords=set())
+
+            async def start(self):  # pragma: no cover
+                pass
+
+            async def stop(self):  # pragma: no cover
+                pass
+
+            def format_response(self, response):  # pragma: no cover
+                return response
+
+        return _Iface()
+
+    def _register(self, session="sess-1"):
+        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+
+        mqtt_tools.set_approval_session(session)
+        mqtt_tools.register_pending_approval("uticnica_bojler", "OFF")
+        return mqtt_tools
+
+    def test_da_arms_approval(self, iface):
+        mqtt_tools = self._register()
+        iface._process_turn_approvals("sess-1", "da")
+        assert mqtt_tools.redeem_approval("uticnica_bojler", "OFF") is True
+
+    def test_ne_cancels_approval(self, iface):
+        mqtt_tools = self._register()
+        iface._process_turn_approvals("sess-1", "ne")
+        assert mqtt_tools.has_pending_approval("sess-1") is False
+
+    def test_unrelated_message_cancels(self, iface):
+        mqtt_tools = self._register()
+        iface._process_turn_approvals("sess-1", "koliko je sati u Tokiju")
+        assert mqtt_tools.has_pending_approval("sess-1") is False
+
+    def test_pending_approval_sets_one_shot_pin(self, iface):
+        self._register()
+        iface._process_turn_approvals("sess-1", "da")
+        # short reply gets routed back to smart_home via the pin
+        route = iface._apply_voice_lane_pin("sess-1", "da", "agent", "voice_qa")
+        assert route == ("agent", "smart_home")
+
+    def test_no_pin_without_pending_approval(self, iface):
+        iface._process_turn_approvals("sess-1", "da")
+        route = iface._apply_voice_lane_pin("sess-1", "da", "agent", "voice_qa")
+        assert route == ("agent", "voice_qa")
 
 
 # ---------------------------------------------------------------------------

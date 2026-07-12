@@ -64,6 +64,9 @@ Nemaš generički HA alat — ako korisnik traži nešto izvan gornje liste, rec
 ### Pravilo 3: Potvrda akcije — prema STVARNOM stanju uređaja
 Alati čekaju da uređaj potvrdi promjenu stanja i vraćaju status:
 - "confirmed" — uređaj je potvrdio novo stanje → reci što je napravljeno
+- "already_in_state" — uređaj je već bio u traženom stanju → reci to korisniku
+- "sent" — naredba poslana, ali provjera stanja je ISKLJUČENA → reci da je
+  poslano, ali NE tvrdi da je upaljeno/ugašeno
 - "partial" (scene) — dio uređaja potvrdio; polje "summary" kaže npr. "3/5 potvrđeno",
   a "unconfirmed_devices" koje uređaje treba provjeriti → OBAVEZNO reci korisniku
 - "timeout"/"unconfirmed" — naredba poslana, ali uređaj NIJE potvrdio →

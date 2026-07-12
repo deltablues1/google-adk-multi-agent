@@ -150,6 +150,54 @@ class TestTimeoutAndPartial:
         # aggregate treats it as success (device presumably already there)
         assert result["status"] == "confirmed"
 
+    def test_baseline_match_invalidated_by_contradicting_echo(self, monkeypatch):
+        # THE review bug: broker retains "ON" (baseline matches), but after
+        # the publish the device reports "OFF". The stale baseline must NOT
+        # produce a success — the device is observably NOT in the target state.
+        client = FakeMqttClient(
+            echo_topics=[],
+            retained={"esp32-io/switch/svjetlo_kuhinja/state": "ON"},
+        )
+        _use_client(monkeypatch, client)
+
+        original_publish = client.publish
+
+        def publish_contradicting_echo(topic, payload, qos=0):
+            original_publish(topic, payload, qos)
+            state_topic = topic.replace("/command", "/state")
+            if state_topic in client.subscribed and client.on_message:
+                msg = SimpleNamespace(topic=state_topic, payload=b"OFF", retain=False)
+                client.on_message(client, None, msg)
+
+        client.publish = publish_contradicting_echo
+
+        result = asyncio.run(publish_and_confirm([_switch_cmd("svjetlo_kuhinja", "ON")]))
+
+        assert result["status"] == "timeout"
+        assert result["devices"]["svjetlo_kuhinja"]["status"] == "timeout"
+        assert result["devices"]["svjetlo_kuhinja"]["observed"] == "OFF"
+
+    def test_late_retained_replay_not_counted_as_echo(self, monkeypatch):
+        # A retained packet arriving AFTER publish (marked retain=True) is
+        # still baseline — it must not confirm the command.
+        client = FakeMqttClient(echo_topics=[])
+        _use_client(monkeypatch, client)
+
+        original_publish = client.publish
+
+        def publish_late_retained(topic, payload, qos=0):
+            original_publish(topic, payload, qos)
+            state_topic = topic.replace("/command", "/state")
+            if state_topic in client.subscribed and client.on_message:
+                msg = SimpleNamespace(topic=state_topic, payload=b"ON", retain=True)
+                client.on_message(client, None, msg)
+
+        client.publish = publish_late_retained
+
+        result = asyncio.run(publish_and_confirm([_switch_cmd("svjetlo_kuhinja", "ON")]))
+        # baseline-only match => already_in_state, never "confirmed"
+        assert result["devices"]["svjetlo_kuhinja"]["status"] == "already_in_state"
+
     def test_retained_wrong_state_times_out(self, monkeypatch):
         # Broker retains stale "OFF" while we request ON and no echo arrives.
         _use_client(monkeypatch, FakeMqttClient(

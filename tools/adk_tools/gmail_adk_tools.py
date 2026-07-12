@@ -247,12 +247,28 @@ async def gmail_send_message(
         from tools.api_implementations.gmail_api import gmail_send_message as gmail_send_impl
         result = await gmail_send_impl(creds, to, subject, body, thread_id, cc, bcc, attachment_path)
         logger.info(f"Sent Gmail message to {to}: '{subject}'" + (f" with attachment: {attachment_path}" if attachment_path else ""))
-        if share_warnings and isinstance(result, dict):
-            result["share_warning"] = " ".join(share_warnings)
+        if isinstance(result, dict):
+            if share_warnings:
+                result["share_warning"] = " ".join(share_warnings)
+            # Attachment was pre-validated, but the send itself can still
+            # fail — be honest that the docs remain shared (rollback would
+            # need the permission IDs, which drive_share_file doesn't return).
+            if result.get("status") == "failed" and _extract_drive_file_ids(body):
+                result["share_warning"] = (
+                    result.get("share_warning", "") +
+                    " NAPOMENA: linkani dokumenti su već podijeljeni s "
+                    "primateljima iako email nije poslan."
+                ).strip()
         return result
     except Exception as e:
         logger.error(f"gmail_send_message failed: {e}")
-        return {"error": str(e), "status": "error"}
+        failure = {"error": str(e), "status": "error"}
+        if _extract_drive_file_ids(body):
+            failure["share_warning"] = (
+                "NAPOMENA: linkani dokumenti su već podijeljeni s primateljima "
+                "iako slanje emaila nije uspjelo."
+            )
+        return failure
 
 
 async def gmail_create_draft(

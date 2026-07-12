@@ -169,7 +169,28 @@ class TestAdkWrappers:
         assert result["status"] == "needs_confirmation"
         assert captured == {}  # impl was never called
 
-    def test_create_meeting_with_proposed_slot(self, monkeypatch, fake_creds):
+    def test_same_turn_propose_and_create_blocked(self, monkeypatch, fake_creds):
+        # Slots are TURN-gated: proposing and creating in the same model turn
+        # (no user message in between = no arm_pending_proposals) must fail.
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        captured = {}
+        calendar_adk = self._fake_create(monkeypatch, fake_creds, captured)
+
+        tz = ZoneInfo("Europe/Zagreb")
+        slot = (datetime(2026, 7, 13, 10, 0, tzinfo=tz),
+                datetime(2026, 7, 13, 11, 0, tzinfo=tz))
+        calendar_adk._register_proposed_slots([slot])  # NOT armed yet
+
+        result = asyncio.run(calendar_adk.calendar_create_meeting(
+            "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
+            ["ana@x.com"],
+        ))
+        assert result["status"] == "needs_confirmation"
+        assert captured == {}
+
+    def test_create_meeting_with_armed_proposed_slot(self, monkeypatch, fake_creds):
         from datetime import datetime
         from zoneinfo import ZoneInfo
 
@@ -180,6 +201,7 @@ class TestAdkWrappers:
         slot = (datetime(2026, 7, 13, 10, 0, tzinfo=tz),
                 datetime(2026, 7, 13, 11, 0, tzinfo=tz))
         calendar_adk._register_proposed_slots([slot])
+        calendar_adk.arm_pending_proposals()  # user replied in a new turn
 
         result = asyncio.run(calendar_adk.calendar_create_meeting(
             "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
@@ -198,10 +220,20 @@ class TestAdkWrappers:
         ))
         assert repeat["status"] == "needs_confirmation"
 
-    def test_create_meeting_custom_time_override(self, monkeypatch, fake_creds):
-        # The user personally dictated the time -> explicit override works.
+    def test_create_meeting_custom_time_turn_gated(self, monkeypatch, fake_creds):
+        # A user-dictated time also goes through the turn gate: first call
+        # registers + asks, only after the user's next turn does it proceed.
         captured = {}
         calendar_adk = self._fake_create(monkeypatch, fake_creds, captured)
+
+        first = asyncio.run(calendar_adk.calendar_create_meeting(
+            "Sastanak", "2026-07-15T14:00:00+02:00", "2026-07-15T15:00:00+02:00",
+            ["ana@x.com"], user_confirmed_custom_time=True,
+        ))
+        assert first["status"] == "needs_confirmation"
+        assert captured == {}
+
+        calendar_adk.arm_pending_proposals()  # user confirmed in a new turn
 
         result = asyncio.run(calendar_adk.calendar_create_meeting(
             "Sastanak", "2026-07-15T14:00:00+02:00", "2026-07-15T15:00:00+02:00",
@@ -209,6 +241,19 @@ class TestAdkWrappers:
         ))
         assert result["meet_link"]
         assert captured["send_updates"] == "all"
+
+    def test_generic_create_event_gates_attendees(self, monkeypatch, fake_creds):
+        # calendar_create_event must not be a bypass of the meeting gate.
+        import tools.adk_tools.calendar_adk_tools as calendar_adk
+
+        monkeypatch.setattr(calendar_adk, "_get_credentials", lambda: fake_creds)
+
+        result = asyncio.run(calendar_adk.calendar_create_event(
+            "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
+            attendees=["ana@x.com"],
+        ))
+        assert result["status"] == "needs_confirmation"
+        assert "calendar_create_meeting" in result["message"]
 
     def test_propose_slots_flags_unknown(self, monkeypatch, fake_creds):
         import tools.adk_tools.calendar_adk_tools as calendar_adk

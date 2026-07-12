@@ -49,26 +49,42 @@ PROTECTED_ON_DEVICES = {"pecnica"}
 
 # --- Turn-gated approvals for protected actions -----------------------------
 # confirm=True alone proves nothing: the model could set it immediately.
-# A protected action becomes redeemable only after the NEXT user turn arrives
-# (BaseInterface.process_message calls arm_pending_approvals() at turn start),
-# so the model physically cannot self-approve within the same turn — a real
-# user message must land between needs_confirmation and the confirmed call.
-_PENDING_APPROVALS: dict = {}  # (device, state) -> {"created_at": float, "armed": bool}
+# A protected action becomes redeemable only after the user EXPLICITLY
+# confirms in their next message ("da", "može", ...) in the SAME session:
+# BaseInterface.process_message parses the new user message and calls
+# arm_pending_approvals(session) on a positive reply — anything else
+# (a "ne", an unrelated request, a message from another session/channel)
+# CANCELS the pending approval instead of arming it.
+import contextvars as _contextvars
+
+_PENDING_APPROVALS: dict = {}  # (session, device, state) -> {"created_at", "armed"}
 _APPROVAL_TTL_SECONDS = 120.0
+_approval_session: _contextvars.ContextVar = _contextvars.ContextVar(
+    "mqtt_approval_session", default="global"
+)
+
+
+def set_approval_session(session_id: str) -> None:
+    """Bind subsequent register/redeem calls to this session's context."""
+    _approval_session.set(session_id or "global")
+
+
+def _session() -> str:
+    return _approval_session.get()
 
 
 def register_pending_approval(device_name: str, state: str) -> None:
     import time as _time
 
-    _PENDING_APPROVALS[(device_name, state)] = {
+    _PENDING_APPROVALS[(_session(), device_name, state)] = {
         "created_at": _time.monotonic(),
         "armed": False,
     }
 
 
-def arm_pending_approvals() -> None:
-    """Called at the start of each user turn: expired entries are purged,
-    surviving ones become redeemable (a user message has arrived since)."""
+def arm_pending_approvals(session_id: str) -> None:
+    """The user of *session_id* explicitly confirmed: purge expired entries,
+    arm the survivors belonging to that session only."""
     import time as _time
 
     now = _time.monotonic()
@@ -76,23 +92,44 @@ def arm_pending_approvals() -> None:
         entry = _PENDING_APPROVALS[key]
         if now - entry["created_at"] > _APPROVAL_TTL_SECONDS:
             del _PENDING_APPROVALS[key]
-        else:
+        elif key[0] == (session_id or "global"):
             entry["armed"] = True
 
 
-def redeem_approval(device_name: str, state: str) -> bool:
-    """Consume an armed, unexpired approval. Returns False otherwise."""
+def cancel_pending_approvals(session_id: str) -> None:
+    """The user said no / changed topic: drop that session's pending approvals."""
+    for key in list(_PENDING_APPROVALS):
+        if key[0] == (session_id or "global"):
+            del _PENDING_APPROVALS[key]
+
+
+def has_pending_approval(session_id: str) -> bool:
+    """True when this session has an unexpired pending approval (used by the
+    voice router to send short follow-ups back to the smart_home agent)."""
     import time as _time
 
-    entry = _PENDING_APPROVALS.get((device_name, state))
+    now = _time.monotonic()
+    return any(
+        key[0] == (session_id or "global")
+        and now - entry["created_at"] <= _APPROVAL_TTL_SECONDS
+        for key, entry in _PENDING_APPROVALS.items()
+    )
+
+
+def redeem_approval(device_name: str, state: str) -> bool:
+    """Consume an armed, unexpired approval for the current session."""
+    import time as _time
+
+    key = (_session(), device_name, state)
+    entry = _PENDING_APPROVALS.get(key)
     if not entry:
         return False
     if _time.monotonic() - entry["created_at"] > _APPROVAL_TTL_SECONDS:
-        del _PENDING_APPROVALS[(device_name, state)]
+        del _PENDING_APPROVALS[key]
         return False
     if not entry["armed"]:
         return False
-    del _PENDING_APPROVALS[(device_name, state)]
+    del _PENDING_APPROVALS[key]
     return True
 
 # Human-readable names (Croatian)

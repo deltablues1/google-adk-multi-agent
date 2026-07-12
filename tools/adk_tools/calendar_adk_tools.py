@@ -137,13 +137,27 @@ async def calendar_create_event(
     if creds is None:
         return {"error": "Authentication required"}
 
+    # Events WITH attendees are meetings — they must go through the gated
+    # meeting flow (propose -> user choice -> calendar_create_meeting).
+    # Without this, the generic create was a full bypass of that gate.
+    if attendees:
+        return {
+            "status": "needs_confirmation",
+            "message": (
+                "Događaji sa sudionicima idu kroz meeting tok: "
+                "calendar_propose_meeting_slots (ili potvrda termina s "
+                "korisnikom) pa calendar_create_meeting. "
+                "calendar_create_event služi samo za događaje bez sudionika."
+            ),
+        }
+
     try:
         from tools.api_implementations.calendar_api import calendar_create_event as calendar_create_impl
 
         # Correct parameter order: credentials, summary, start_time, end_time, description, location, attendees, calendar_id
         result = await calendar_create_impl(
             creds, summary, start_time, end_time,
-            description, location, attendees, calendar_id
+            description, location, None, calendar_id
         )
         return result
     except Exception as e:
@@ -255,11 +269,13 @@ async def calendar_delete_event(
 
 # --- Meeting proposal gate ---------------------------------------------------
 # "Wait for the user's choice" must not live only in the prompt: without a
-# gate the model can create a meeting immediately (or twice). Proposed slots
-# are registered here; calendar_create_meeting only proceeds for a slot that
-# was actually proposed (consume-on-use -> no double create), or with an
-# explicit user_confirmed_custom_time=True for times the user dictated.
-_PROPOSED_SLOTS: Dict[tuple, float] = {}  # (start_utc, end_utc) -> created_at
+# gate the model can create a meeting immediately (or twice). Slots become
+# redeemable only after the NEXT user turn arrives (arm_pending_proposals is
+# called from BaseInterface.process_message) — proposing and creating in the
+# SAME model turn is therefore impossible. Consume-on-use prevents double
+# creates. Custom (user-dictated) times go through the same turn gate via
+# needs_confirmation -> user reply -> user_confirmed_custom_time=True.
+_PROPOSED_SLOTS: Dict[tuple, dict] = {}  # (start_utc, end_utc) -> {created_at, armed}
 _PROPOSAL_TTL_SECONDS = 600.0
 
 
@@ -273,28 +289,50 @@ def _norm_slot_time(value: str) -> str:
     return dt.astimezone(_tz.utc).isoformat(timespec="seconds")
 
 
-def _register_proposed_slots(slots) -> None:
+def _register_slot(start_iso: str, end_iso: str) -> None:
     import time as _time
 
-    now = _time.monotonic()
+    _PROPOSED_SLOTS[(_norm_slot_time(start_iso), _norm_slot_time(end_iso))] = {
+        "created_at": _time.monotonic(),
+        "armed": False,
+    }
+
+
+def _register_proposed_slots(slots) -> None:
     for start, end in slots:
-        _PROPOSED_SLOTS[(
-            _norm_slot_time(start.isoformat()), _norm_slot_time(end.isoformat())
-        )] = now
+        _register_slot(start.isoformat(), end.isoformat())
 
 
-def _consume_proposed_slot(start_time: str, end_time: str) -> bool:
+def arm_pending_proposals() -> None:
+    """A new user turn arrived: purge expired slots, arm the rest."""
     import time as _time
 
     now = _time.monotonic()
     for key in list(_PROPOSED_SLOTS):
-        if now - _PROPOSED_SLOTS[key] > _PROPOSAL_TTL_SECONDS:
+        entry = _PROPOSED_SLOTS[key]
+        if now - entry["created_at"] > _PROPOSAL_TTL_SECONDS:
+            del _PROPOSED_SLOTS[key]
+        else:
+            entry["armed"] = True
+
+
+def _consume_proposed_slot(start_time: str, end_time: str) -> bool:
+    """Consume an ARMED slot (proposed/registered in an earlier turn)."""
+    import time as _time
+
+    now = _time.monotonic()
+    for key in list(_PROPOSED_SLOTS):
+        if now - _PROPOSED_SLOTS[key]["created_at"] > _PROPOSAL_TTL_SECONDS:
             del _PROPOSED_SLOTS[key]
     try:
         key = (_norm_slot_time(start_time), _norm_slot_time(end_time))
     except ValueError:
         return False
-    return _PROPOSED_SLOTS.pop(key, None) is not None
+    entry = _PROPOSED_SLOTS.get(key)
+    if not entry or not entry["armed"]:
+        return False
+    del _PROPOSED_SLOTS[key]
+    return True
 
 
 async def calendar_check_freebusy(
@@ -418,12 +456,14 @@ async def calendar_create_meeting(
     """
     Create a meeting: calendar event with attendees and a Google Meet link.
 
-    GATED: the (start_time, end_time) pair must be one of the slots returned
-    by calendar_propose_meeting_slots (each slot is single-use — no double
-    create). For a time the USER personally dictated (not from proposals),
-    set user_confirmed_custom_time=True — ONLY after their explicit choice.
-    With send_updates="all" Google Calendar emails the invitations itself —
-    do NOT additionally auto-send an email; offer a follow-up DRAFT instead.
+    TURN-GATED: a slot (from calendar_propose_meeting_slots OR a first call
+    with a custom time) becomes usable only after the USER's next message
+    arrives — creating a meeting in the same turn as the proposal is
+    impossible, and each slot is single-use (no double create). This is an
+    inter-turn barrier, not NL proof of the user's exact choice: you MUST
+    still present the time and honor the user's reply. With
+    send_updates="all" Google Calendar emails the invitations itself — do
+    NOT additionally auto-send an email; offer a follow-up DRAFT instead.
 
     Args:
         summary: Meeting title
@@ -444,14 +484,26 @@ async def calendar_create_meeting(
     if creds is None:
         return {"error": "Authentication required"}
 
-    if not _consume_proposed_slot(start_time, end_time) and not user_confirmed_custom_time:
+    if not _consume_proposed_slot(start_time, end_time):
+        # Not an armed proposed slot. Custom (user-dictated) times go through
+        # the same turn gate: register now, demand the user's reply, accept
+        # only on the NEXT turn with the explicit flag. The model cannot
+        # bypass the gate by setting the flag itself in the same turn.
+        try:
+            _register_slot(start_time, end_time)
+        except ValueError:
+            return {
+                "status": "error",
+                "error": f"Invalid RFC3339 time: {start_time!r} / {end_time!r}",
+            }
         return {
             "status": "needs_confirmation",
             "message": (
-                "Ovaj termin nije među predloženim slotovima. Prvo pozovi "
-                "calendar_propose_meeting_slots i pusti korisnika da izabere, "
-                "ili — ako je korisnik osobno diktirao točno ovo vrijeme — "
-                "ponovi poziv s user_confirmed_custom_time=True."
+                "Ovaj termin nije potvrđen. Predstavi ga korisniku i ČEKAJ "
+                "njegov odgovor u sljedećoj poruci; nakon potvrde ponovi poziv "
+                "(za termin koji je korisnik osobno diktirao proslijedi "
+                "user_confirmed_custom_time=True). Za nove prijedloge koristi "
+                "calendar_propose_meeting_slots."
             ),
         }
 

@@ -109,11 +109,18 @@ _client_factory = _default_client_factory
 
 def _blind_publish(commands: List[DeviceCommand]) -> None:
     """Fire-and-forget fallback: the action must not be lost because the
-    confirmation machinery failed."""
+    confirmation machinery failed. Waits for broker delivery (qos=1) where
+    the client supports it, so "sent" at least means "broker accepted"."""
     client = _client_factory()
     try:
         for cmd in commands:
-            client.publish(cmd.command_topic, cmd.payload, qos=1)
+            result = client.publish(cmd.command_topic, cmd.payload, qos=1)
+            wait = getattr(result, "wait_for_publish", None)
+            if callable(wait):
+                try:
+                    wait(timeout=5)
+                except Exception:
+                    pass
     finally:
         try:
             client.disconnect()
@@ -148,15 +155,26 @@ def _confirm_worker(commands: List[DeviceCommand], timeout: float) -> Dict[str, 
 
     def on_message(_client, _userdata, msg):
         payload = msg.payload.decode("utf-8", errors="replace")
+        # Broker marks retained replays explicitly — they are baseline no
+        # matter WHEN they arrive (a late retained packet must never count
+        # as a fresh echo).
+        is_retained = bool(getattr(msg, "retain", False))
         with lock:
             for cmd in commands:
                 if cmd.state_topic == msg.topic:
                     observed[cmd.name] = payload
+                    is_baseline = is_retained or not published.is_set()
                     if cmd.matches(payload):
-                        if published.is_set():
-                            confirmed[cmd.name] = True
-                        else:
+                        if is_baseline:
                             baseline_match[cmd.name] = True
+                        else:
+                            confirmed[cmd.name] = True
+                    elif not is_baseline:
+                        # Post-publish observation CONTRADICTS the target
+                        # state — the device is observably NOT there, so a
+                        # stale baseline match must not report success.
+                        confirmed[cmd.name] = False
+                        baseline_match[cmd.name] = False
             if all(confirmed.values()):
                 all_confirmed.set()
 
@@ -168,7 +186,8 @@ def _confirm_worker(commands: List[DeviceCommand], timeout: float) -> Dict[str, 
             client.subscribe(topic, qos=1)
         client.loop_start()
         try:
-            # Let retained replay land in the baseline.
+            # Let retained replay land in the baseline (belt-and-braces next
+            # to the msg.retain check — some brokers/bridges drop the flag).
             time.sleep(_RETAINED_DRAIN_SECONDS)
             published.set()
             for cmd in commands:

@@ -94,7 +94,10 @@ class AudioIngressService:
             "source": source,
             "mime_type": mime_type,
             "bytes": len(audio_bytes),
-            "model": self.model,
+            # Engine-aware: reporting the Gemini model while Chirp/OpenAI did
+            # the transcription was misleading in logs.
+            "engine": engine or "gemini",
+            "model": self.model if engine in {"gemini", ""} else f"stt:{engine}",
         })
         return AudioIngressResult(transcript=transcript, metadata=metadata)
 

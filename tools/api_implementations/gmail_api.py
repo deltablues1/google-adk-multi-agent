@@ -99,9 +99,18 @@ def validate_attachment_path(attachment_path: str) -> tuple:
             "under the project's output/uploads/temp directories can be "
             "attached. Email NOT sent."
         )
-    if not os.path.exists(resolved):
+    # isfile, not exists: a directory would pass exists() and explode at
+    # open() — AFTER the linked docs were already shared.
+    if not os.path.isfile(resolved):
         return attachment_path, (
-            f"Attachment not found: {attachment_path}. Email NOT sent."
+            f"Attachment not found or not a file: {attachment_path}. Email NOT sent."
+        )
+    max_bytes = int(os.getenv("GMAIL_ATTACHMENT_MAX_BYTES", str(25 * 1024 * 1024)))
+    size = os.path.getsize(resolved)
+    if size > max_bytes:
+        return attachment_path, (
+            f"Attachment too large ({size} B, max {max_bytes} B): "
+            f"{attachment_path}. Email NOT sent."
         )
     return resolved, None
 

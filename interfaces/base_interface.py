@@ -228,10 +228,20 @@ class BaseInterface(ABC):
         return "".join(ch for ch in normalized if not unicodedata.combining(ch))
 
     def _should_use_voice_direct_routing(self, user_id: str) -> bool:
-        """Enable direct routing only for voice-tagged users when the feature is on."""
-        direct_enabled = os.getenv("VOICE_DIRECT_ROUTING", "false").lower() in (
-            "1", "true", "yes", "on"
-        )
+        """Enable direct routing only for voice-tagged users when the feature is on.
+
+        The flag comes from the deployment profile (rpi-home defaults to
+        True; VOICE_DIRECT_ROUTING env still overrides) — reading the env
+        directly here once silently disabled direct routing on a Pi whose
+        .env lacked the variable.
+        """
+        try:
+            from config.deployment_config import is_voice_direct_routing
+            direct_enabled = is_voice_direct_routing()
+        except Exception:
+            direct_enabled = os.getenv("VOICE_DIRECT_ROUTING", "false").lower() in (
+                "1", "true", "yes", "on"
+            )
         if not direct_enabled:
             return False
         return user_id.startswith(VOICE_ROUTING_USER_PREFIXES)
@@ -445,6 +455,62 @@ class BaseInterface(ABC):
         # escalate-to-orchestrator handoff (Phase 2).
         return "agent", "voice_qa"
 
+    # Explicit confirmations that arm a pending protected action. Matched
+    # against the normalized message: exact, or as the leading word ("da,
+    # ugasi ga"). Anything else cancels — an unrelated message, another
+    # session's traffic or a "ne" must never unlock a protected action.
+    _APPROVAL_POSITIVE_WORDS = (
+        "da", "moze", "potvrdujem", "potvrdi", "u redu", "ok", "okej",
+        "tako je", "tocno", "svakako",
+    )
+
+    def _process_turn_approvals(self, session_id: str, message: str) -> None:
+        from tools.adk_tools.mqtt_adk_tools import (
+            arm_pending_approvals,
+            cancel_pending_approvals,
+            has_pending_approval,
+            set_approval_session,
+        )
+
+        # Bind this turn's tool calls (register/redeem) to the session.
+        set_approval_session(session_id)
+
+        # Arm meeting-slot proposals on any new user turn (same-turn
+        # propose+create stays impossible; the slot match is the gate).
+        try:
+            from tools.adk_tools.calendar_adk_tools import arm_pending_proposals
+            arm_pending_proposals()
+        except Exception:
+            pass
+
+        if not has_pending_approval(session_id):
+            return
+
+        # A pending approval means the smart_home agent just asked a
+        # question — route this short reply back to it (one-shot pin).
+        # Pinning every smart-home turn was too broad: an unrelated short
+        # question minutes after "upali svjetlo" landed in the wrong agent.
+        self._voice_pinned_lane[session_id] = (
+            "smart_home", time.time() + VOICE_LANE_PIN_TTL_SECONDS
+        )
+
+        normalized = self._normalize_voice_text(message).strip(" ?!.,")
+        tokens = normalized.split()
+        is_positive = normalized in self._APPROVAL_POSITIVE_WORDS or (
+            bool(tokens)
+            and tokens[0] in ("da", "moze", "potvrdujem")
+            and len(tokens) <= 6
+        )
+        if is_positive:
+            logger.info("Protected-action approval ARMED for session %s", session_id)
+            arm_pending_approvals(session_id)
+        else:
+            logger.info(
+                "Pending protected-action approval CANCELLED for session %s "
+                "(non-affirmative reply)", session_id,
+            )
+            cancel_pending_approvals(session_id)
+
     def _apply_voice_lane_pin(
         self,
         session_id: str,
@@ -474,10 +540,11 @@ class BaseInterface(ABC):
                 logger.info("Voice lane pin -> %s (short follow-up)", pinned[0])
                 route_type, route_target = "agent", pinned[0]
 
-        # Lanes with multi-turn confirmations: warehouse writes, meeting
-        # scheduling and protected smart-home actions ("da" / "onaj prvi"
-        # must return to the pending flow).
-        if route_type == "agent" and route_target in ("skladistar", "secretary", "smart_home"):
+        # Lanes with multi-turn confirmations: warehouse writes and meeting
+        # scheduling ("da" / "onaj prvi" must return to the pending flow).
+        # smart_home is NOT pinned per-turn — its confirmations are routed
+        # via the pending-approval one-shot pin in _process_turn_approvals.
+        if route_type == "agent" and route_target in ("skladistar", "secretary"):
             self._voice_pinned_lane[session_id] = (
                 route_target, now + VOICE_LANE_PIN_TTL_SECONDS
             )
@@ -628,18 +695,20 @@ class BaseInterface(ABC):
         if self.system is None:
             self.initialize_system()
 
-        # A new user turn arms pending protected-device approvals (the model
-        # cannot self-approve confirm=True within the same turn). Best-effort,
-        # all channels.
-        try:
-            from tools.adk_tools.mqtt_adk_tools import arm_pending_approvals
-            arm_pending_approvals()
-        except Exception:
-            pass
-
         # Get or create session
         if session_id is None:
             session_id = self.generate_session_id(user_id)
+
+        # Protected-action approvals are session-bound and require an
+        # EXPLICIT positive reply: "da"/"može" arms this session's pending
+        # approvals; "ne"/anything else cancels them. The model can never
+        # self-approve — only a real user message routes through here.
+        # Meeting slot proposals are armed by any new user turn (choosing a
+        # slot is free-text, so the create-gate itself checks the match).
+        try:
+            self._process_turn_approvals(session_id, message)
+        except Exception:
+            logger.debug("Turn approval processing failed", exc_info=True)
 
         # Update system session
         self.system.session_id = session_id

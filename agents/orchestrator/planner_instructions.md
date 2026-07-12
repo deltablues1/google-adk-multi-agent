@@ -28,7 +28,9 @@ Typical chains:
 - research + create doc + email → `researcher` → `scribe` → `mailer`
 - find file + analyze → `librarian` → `analyst`
 - find contact + email → `rolodex` → `mailer`
-- schedule + notify → `secretary` → `rolodex` → `mailer`
+- schedule a meeting → `secretary` alone (it resolves contacts itself,
+  proposes slots, and Calendar sends the invitations; follow-up email only
+  as a DRAFT on explicit request — never auto-send)
 
 ### Mandatory pre-lookup rules
 - Email to a PERSON named (no @ address given): add a `rolodex` step BEFORE `mailer`.

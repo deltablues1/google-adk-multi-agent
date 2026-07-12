@@ -134,11 +134,17 @@ class STTService:
             raise RuntimeError("OPENAI_API_KEY not set - required for STT_ENGINE=openai")
         client = OpenAI(api_key=key)
 
+        # Keep in sync with services/audio_ingress.py SUPPORTED_AUDIO_MIME_TYPES
+        # — a wrong extension makes OpenAI misparse the container.
         ext = {
             "audio/ogg": "ogg",
+            "audio/opus": "ogg",
             "audio/wav": "wav",
             "audio/x-wav": "wav",
             "audio/mpeg": "mp3",
+            "audio/mp3": "mp3",
+            "audio/mp4": "mp4",
+            "audio/m4a": "m4a",
             "audio/webm": "webm",
             "audio/L16": "wav",
         }.get(mime_type, "wav")

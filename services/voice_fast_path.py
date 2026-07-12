@@ -63,40 +63,72 @@ _FAST_PATH_BLOCK_MARKERS = (
     # questions (STT often drops the trailing "?")
     " koji", " koja", " koje", " kakav", " kakva", " kakvo", " sto ", " zasto",
     " je li", " jesu li", " jel ", " jeli ", " da li ", " dal ",
-    " moze li", " mozes li", " hoces li", " hoce li", " preporuc", " reci mi",
-    # negations
+    " moze li", " mozes li", " hoces li", " hoce li", " preporuc", " reci",
+    # negations / exceptions / compound sentences the matcher can't parse
     " nemoj", " ne gasi", " ne pali", " ne ukljuc", " ne iskljuc",
-    " ne upal", " ne ugas", " nista ne ", " nikad",
+    " ne upal", " ne ugas", " nista ne ", " nikad", " osim", " ali ",
+    " pa onda", " a onda", " zatim",
     # future / conditional / scheduling
     " sutra", " prekosutra", " kasnije", " veceras", " navecer", " ujutro", " za sat",
-    " za pola sata", " za pet ", " za deset ", " za petnaest", " za dvadeset",
-    " u ponoc", " kad ", " kada ", " ako ", " cim ", " nakon ",
+    " za pola sata", " za pet", " za deset", " za petnaest", " za dvadeset",
+    " za dvije", " za tri", " za cetiri", " u ponoc", " kad ", " kada ",
+    " ako ", " cim ", " nakon ",
     " podsjeti", " zakazi", " rasporedi",
 )
 
-# Time-of-day expressions ("u 22 sata ugasi sve", "u 7:30 upali...").
+# Time expressions ("u 22 sata ugasi sve", "u 7:30", "za 2 minute").
 _FAST_PATH_BLOCK_REGEXES = (
     re.compile(r" u \d+ sat"),
     re.compile(r" u \d+[:.]\d+"),
+    re.compile(r" za \d+ (minut|sekund|sat)"),
 )
 
 # Positive trigger: an imperative command verb...
-_COMMAND_TRIGGER_RE = re.compile(
-    r"\b(upali(te)?|ugasi(te)?|ukljuci(te)?|iskljuci(te)?|pali|gasi)\b"
+_ON_VERB_RE = re.compile(r"\b(upali(te)?|ukljuci(te)?|pali)\b")
+_OFF_VERB_RE = re.compile(r"\b(ugasi(te)?|iskljuci(te)?|gasi)\b")
+
+# Scene activation verbs: a scene alias alone inside a longer sentence
+# ("objasni film Inception") must NOT fire — it needs an activation verb
+# or the utterance must BE the alias.
+_SCENE_ACTIVATION_MARKERS = (
+    "idemo", "gledati", "gledamo", "pusti", "aktiviraj", "ukljuci", "upali",
+    "pokreni", "prebaci", "mod", "scena", "scen", "rezim",
+    # per-scene natural phrases already carry intent:
+    "dosao sam", "dosla sam", "idem van", "izlazim", "kuham", "kuhaj",
+    "ugasi sve", "sve ugasi",
 )
 
 # Longer sentences carry context the substring matcher can't understand.
 _FAST_PATH_MAX_TOKENS = 12
 
 
-def _has_command_trigger(normalized: str) -> bool:
-    if _COMMAND_TRIGGER_RE.search(normalized):
-        return True
-    # ...or a scene alias ("idemo gledati film", "nocno", "dosao sam")
+def _scene_alias_hit(normalized: str) -> bool:
     for aliases in SMART_HOME_SCENE_ALIASES.values():
         if any(alias in normalized for alias in aliases):
             return True
     return False
+
+
+def _has_command_trigger(normalized: str) -> bool:
+    has_on = bool(_ON_VERB_RE.search(normalized))
+    has_off = bool(_OFF_VERB_RE.search(normalized))
+    # Both directions in one sentence ("ugasi sve i upali kuhinju") — the
+    # simple matcher would execute only half of it. Leave it to the LLM.
+    if has_on and has_off:
+        return False
+    if has_on or has_off:
+        return True
+
+    # Scene alias: fire only when the utterance IS the alias (short exact
+    # phrase) or an activation verb accompanies it — a bare "film" inside
+    # "objasni film Inception" must not trigger the scene.
+    stripped = normalized.strip()
+    if not _scene_alias_hit(normalized):
+        return False
+    for aliases in SMART_HOME_SCENE_ALIASES.values():
+        if stripped in aliases:
+            return True
+    return any(marker in normalized for marker in _SCENE_ACTIVATION_MARKERS)
 
 
 def classify_fast_path_intent(normalized: str) -> str:
@@ -105,7 +137,7 @@ def classify_fast_path_intent(normalized: str) -> str:
     "blocked" does NOT mean rejected — the request continues to the LLM
     smart-home agent; only the deterministic substring shortcut is skipped.
     """
-    if "?" in normalized:
+    if "?" in normalized or '"' in normalized:
         return "blocked"
     stripped = normalized.strip()
     if len(stripped.split()) > _FAST_PATH_MAX_TOKENS:
@@ -135,10 +167,12 @@ def resolve_voice_smart_home_response(
     return base_response
 
 
-# Statuses that mean "the action worked": confirmed = device echoed the new
-# state; already_in_state = baseline already matched; sent = confirmation
-# layer disabled, publish succeeded.
-_SUCCESS_STATUSES = ("confirmed", "already_in_state", "sent")
+# Statuses that mean "the device is verifiably in the target state":
+# confirmed = device echoed the new state; already_in_state = baseline
+# already matched. "sent" (confirm layer disabled) is handled separately —
+# it must not SOUND like a verified success.
+_SUCCESS_STATUSES = ("confirmed", "already_in_state")
+_SENT_SUFFIX = " Napomena: potvrda stanja je isključena, uređaj nije provjeren."
 
 
 def _scene_outcome_response(
@@ -150,6 +184,8 @@ def _scene_outcome_response(
     status = result.get("status")
     if status in _SUCCESS_STATUSES:
         return resolve_voice_smart_home_response(success_text, response_mode)
+    if status == "sent":
+        return f"Poslao sam naredbe za scenu.{_SENT_SUFFIX}"
     if status == "partial":
         confirmed = result.get("confirmed", 0)
         total = result.get("total", 0)
@@ -226,6 +262,8 @@ async def execute_fast_smart_home_command(
             else f"Ugasio sam {spoken_name}."
         )
         return resolve_voice_smart_home_response(success_text, response_mode)
+    if status == "sent":
+        return f"Poslao sam naredbu za {spoken_name}.{_SENT_SUFFIX}"
     if status in ("timeout", "unconfirmed"):
         # Failures are always spoken, regardless of response mode.
         return (
