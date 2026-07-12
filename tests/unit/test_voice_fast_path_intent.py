@@ -81,6 +81,10 @@ class TestIntentGate:
         "Upali pa ugasi svjetlo u kuhinji",
         "Za dvije minute ugasi sve",
         'Reci "upali svjetlo u kuhinji" na engleskom',
+        # LIVE incident 2026-07-12: compound + dim-level executed only half
+        "Ugasi svjetlo u dnevnom boravku, a stavi svjetlo u fotelju na 60%",
+        "Stavi fotelju na 60 posto",
+        "Upali svjetlo u kuhinji na pola",
     ])
     def test_review_round2_blocked(self, text):
         assert classify_fast_path_intent(normalize_voice_text(text)) == "blocked"

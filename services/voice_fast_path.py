@@ -67,7 +67,11 @@ _FAST_PATH_BLOCK_MARKERS = (
     # negations / exceptions / compound sentences the matcher can't parse
     " nemoj", " ne gasi", " ne pali", " ne ukljuc", " ne iskljuc",
     " ne upal", " ne ugas", " nista ne ", " nikad", " osim", " ali ",
-    " pa onda", " a onda", " zatim",
+    " pa onda", " a onda", " zatim", ", a ",
+    # brightness/percentage requests — the switch fast path would turn the
+    # device fully ON instead of dimming (live incident: "...a stavi svjetlo
+    # u fotelju na 60%" executed only the first half)
+    " posto", " na pola", "%",
     # future / conditional / scheduling
     " sutra", " prekosutra", " kasnije", " veceras", " navecer", " ujutro", " za sat",
     " za pola sata", " za pet", " za deset", " za petnaest", " za dvadeset",
@@ -76,15 +80,19 @@ _FAST_PATH_BLOCK_MARKERS = (
     " podsjeti", " zakazi", " rasporedi",
 )
 
-# Time expressions ("u 22 sata ugasi sve", "u 7:30", "za 2 minute").
+# Time expressions ("u 22 sata ugasi sve", "u 7:30", "za 2 minute") and
+# numeric levels ("na 60", "na 128") the ON/OFF fast path cannot honor.
 _FAST_PATH_BLOCK_REGEXES = (
     re.compile(r" u \d+ sat"),
     re.compile(r" u \d+[:.]\d+"),
     re.compile(r" za \d+ (minut|sekund|sat)"),
+    re.compile(r" na \d+"),
 )
 
-# Positive trigger: an imperative command verb...
-_ON_VERB_RE = re.compile(r"\b(upali(te)?|ukljuci(te)?|pali)\b")
+# Positive trigger: an imperative command verb. "stavi/postavi/namjesti"
+# count as set-verbs so a compound "ugasi X, a stavi Y..." trips the
+# conflicting-verbs check below instead of executing only half.
+_ON_VERB_RE = re.compile(r"\b(upali(te)?|ukljuci(te)?|pali|stavi(te)?|postavi(te)?|namjesti(te)?)\b")
 _OFF_VERB_RE = re.compile(r"\b(ugasi(te)?|iskljuci(te)?|gasi)\b")
 
 # Scene activation verbs: a scene alias alone inside a longer sentence
