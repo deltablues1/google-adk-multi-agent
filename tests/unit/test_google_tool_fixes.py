@@ -260,6 +260,29 @@ class TestGmailAttachmentSandbox:
         )
         assert result["status"] == "failed"
 
+    @pytest.mark.asyncio
+    async def test_doomed_send_does_not_share_linked_docs(self, monkeypatch, fake_creds):
+        # Attachment validation must run BEFORE doc auto-sharing: a send that
+        # cannot succeed must not leave documents shared with the recipient.
+        import tools.adk_tools.gmail_adk_tools as gmail_adk
+
+        share_called = {"value": False}
+
+        async def fake_autoshare(creds, body, recipients):
+            share_called["value"] = True
+            return []
+
+        monkeypatch.setattr(gmail_adk, "_autoshare_linked_docs", fake_autoshare)
+        monkeypatch.setattr(gmail_adk, "_get_credentials", lambda: fake_creds)
+
+        result = await gmail_adk.gmail_send_message(
+            to="x@example.com", subject="S",
+            body="https://docs.google.com/document/d/abc123def456ghi789jkl/edit",
+            attachment_path=".env",
+        )
+        assert result["status"] == "failed"
+        assert share_called["value"] is False
+
     def test_send_has_no_retry_decorator(self):
         # Retrying a non-idempotent send can duplicate emails; ensure the
         # retry wrapper is gone (it exposes a `retry_config` closure cell).

@@ -196,7 +196,9 @@ async def calendar_get_event(
 
 
 @with_circuit_breaker("calendar")
-@with_quota_retry()  # 15s, 30s, 60s delays for API quota limits
+# NOTE: no retry here — create is not idempotent. The quota-retry wrapper also
+# retries 5xx/timeouts, and a timeout after Google accepted the insert would
+# create the event twice (same reasoning as gmail_send_message).
 @invalidates_cache("calendar")
 async def calendar_create_event(
     credentials: Credentials,

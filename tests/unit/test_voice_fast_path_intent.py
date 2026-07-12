@@ -47,6 +47,16 @@ class TestIntentGate:
         "Ako nikoga nema, ugasi sve",
         "Podsjeti me da ugasim bojler",
         "Zakaži gašenje svih svjetala",
+        # review phrases: deferred/negated/questions without "?"
+        "Večeras ugasi sve",
+        "Prekosutra ugasi sve",
+        "U 22 sata ugasi sve",
+        "U 7:30 upali svjetlo u kuhinji",
+        "Nikad ugasi sve",
+        "Jesu li upaljena svjetla u kuhinji",
+        "Može li se ugasiti svjetlo u kuhinji",
+        "Možeš li ugasiti sve kad završi film",
+        "Hoćeš li upaliti svjetlo",
     ])
     def test_blocked_phrases(self, text):
         assert classify_fast_path_intent(normalize_voice_text(text)) == "blocked"
@@ -61,11 +71,24 @@ class TestIntentGate:
     def test_commands_pass(self, text):
         assert classify_fast_path_intent(normalize_voice_text(text)) == "command"
 
-    def test_nikad_does_not_match_kad(self):
-        # " kad " marker must not fire inside the word "nikad"
+    def test_no_imperative_verb_blocked(self):
+        # Positive grammar: without a command verb or scene alias, nothing fires
         assert classify_fast_path_intent(
-            normalize_voice_text("nikad ugasi sve")
-        ) == "command"
+            normalize_voice_text("svjetla u kuhinji")
+        ) == "blocked"
+
+    def test_overlong_sentence_blocked(self):
+        text = ("upali svjetlo u kuhinji ali samo ako je vani mrak i "
+                "nitko nije u dnevnom boravku niti na terasi")
+        assert classify_fast_path_intent(normalize_voice_text(text)) == "blocked"
+
+    def test_persona_wrapped_text_is_blocked(self):
+        # Documents WHY the persona wrapper must never enter the routing path:
+        # its own text trips the gate. The pipeline passes raw transcripts.
+        from config.voice_persona import wrap_agent_voice_message
+
+        wrapped = wrap_agent_voice_message("Upali svjetlo u kuhinji")
+        assert classify_fast_path_intent(normalize_voice_text(wrapped)) == "blocked"
 
     def test_question_never_fires_device(self, monkeypatch):
         called = {"scene": False, "switch": False}
@@ -106,7 +129,7 @@ class TestIntentGate:
         async def fake_switch(device_name, state):
             assert device_name == "svjetlo_kuhinja"
             assert state == "ON"
-            return {"status": "ok"}
+            return {"status": "confirmed"}
 
         monkeypatch.setattr(voice_fast_path, "mqtt_switch_control", fake_switch)
 
@@ -127,6 +150,14 @@ class TestIntentGate:
 # ---------------------------------------------------------------------------
 
 class TestProtectedDevices:
+    @pytest.fixture(autouse=True)
+    def clean_approvals(self):
+        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+
+        mqtt_tools._PENDING_APPROVALS.clear()
+        yield
+        mqtt_tools._PENDING_APPROVALS.clear()
+
     @pytest.mark.parametrize("device,state", [
         ("uticnica_frizider", "OFF"),
         ("uticnica_bojler", "OFF"),
@@ -137,6 +168,41 @@ class TestProtectedDevices:
 
         result = asyncio.run(mqtt_switch_control(device, state))
         assert result["status"] == "needs_confirmation"
+
+    def test_same_turn_confirm_rejected(self):
+        # confirm=True without a user turn in between must NOT execute —
+        # the model cannot self-approve.
+        from tools.adk_tools.mqtt_adk_tools import mqtt_switch_control
+
+        first = asyncio.run(mqtt_switch_control("uticnica_bojler", "OFF"))
+        assert first["status"] == "needs_confirmation"
+
+        same_turn = asyncio.run(
+            mqtt_switch_control("uticnica_bojler", "OFF", confirm=True)
+        )
+        assert same_turn["status"] == "needs_confirmation"
+
+    def test_cold_confirm_rejected(self):
+        # confirm=True out of nowhere (no prior needs_confirmation) is rejected.
+        from tools.adk_tools.mqtt_adk_tools import mqtt_switch_control
+
+        result = asyncio.run(
+            mqtt_switch_control("uticnica_frizider", "OFF", confirm=True)
+        )
+        assert result["status"] == "needs_confirmation"
+
+    def test_approval_expires(self, monkeypatch):
+        import time as time_mod
+
+        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+
+        asyncio.run(mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF"))
+        # simulate TTL expiry
+        entry = mqtt_tools._PENDING_APPROVALS[("uticnica_bojler", "OFF")]
+        entry["created_at"] = time_mod.monotonic() - 999
+        mqtt_tools.arm_pending_approvals()  # purges expired
+
+        assert ("uticnica_bojler", "OFF") not in mqtt_tools._PENDING_APPROVALS
 
     @pytest.mark.parametrize("device,state", [
         ("uticnica_frizider", "ON"),   # turning fridge ON is safe
@@ -163,7 +229,9 @@ class TestProtectedDevices:
         assert result["status"] == "confirmed"
         assert captured["payload"] == state
 
-    def test_confirmed_protected_publishes(self, monkeypatch):
+    def test_confirmed_protected_publishes_after_user_turn(self, monkeypatch):
+        # Full turn-gated cycle: needs_confirmation -> new user turn arms the
+        # approval -> confirm=True executes.
         import services.mqtt_confirm as mqtt_confirm
         import tools.adk_tools.mqtt_adk_tools as mqtt_tools
 
@@ -179,11 +247,22 @@ class TestProtectedDevices:
 
         monkeypatch.setattr(mqtt_confirm, "publish_and_confirm", fake_confirm)
 
+        first = asyncio.run(mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF"))
+        assert first["status"] == "needs_confirmation"
+
+        mqtt_tools.arm_pending_approvals()  # user replied in a new turn
+
         result = asyncio.run(
             mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF", confirm=True)
         )
         assert result["status"] == "confirmed"
         assert captured["payload"] == "OFF"
+
+        # approval was consumed — a repeat needs a fresh confirmation
+        repeat = asyncio.run(
+            mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF", confirm=True)
+        )
+        assert repeat["status"] == "needs_confirmation"
 
 
 # ---------------------------------------------------------------------------
@@ -269,10 +348,30 @@ class TestSttEngineDispatch:
     def test_unknown_engine_fails_loudly(self, monkeypatch):
         from services.audio_ingress import AudioIngressError, AudioIngressService
 
-        monkeypatch.setenv("STT_ENGINE", "openai")
+        monkeypatch.setenv("STT_ENGINE", "whisperx")
         service = AudioIngressService(api_key="dummy")
 
         with pytest.raises(AudioIngressError, match="Unsupported STT_ENGINE"):
             asyncio.run(
                 service.transcribe_audio(b"RIFF....", "audio/wav", "test")
             )
+
+    @pytest.mark.parametrize("engine", ["openai", "chirp", "chirp_2", "cloud"])
+    def test_stt_service_engines_delegated(self, engine, monkeypatch):
+        # STT_ENGINE=openai is implemented by STTService and must be
+        # delegated, not rejected (regression: it was rejected once).
+        from services.audio.stt_service import STTService
+        from services.audio_ingress import AudioIngressService
+
+        monkeypatch.setenv("STT_ENGINE", engine)
+
+        async def fake_transcribe(self, audio_bytes, mime_type):
+            return "upali svjetlo"
+
+        monkeypatch.setattr(STTService, "transcribe", fake_transcribe)
+
+        service = AudioIngressService(api_key="dummy")
+        result = asyncio.run(
+            service.transcribe_audio(b"RIFF....", "audio/wav", "test")
+        )
+        assert result.transcript == "upali svjetlo"

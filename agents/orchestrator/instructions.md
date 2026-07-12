@@ -169,7 +169,7 @@ If the user also asks to send the result by email, proceed with the partial-but-
 | Research + Doc | researcher -> scribe | "istraži i napravi dokument" |
 | Research + Doc + Email | researcher -> scribe -> mailer | "istraži, napravi dokument i pošalji" |
 | Find file + Analyze | librarian -> analyst | "nađi tablicu X i analiziraj" |
-| Schedule + Notify | secretary -> rolodex -> mailer | "zakaži sastanak i pošalji potvrdu" |
+| Schedule meeting | secretary | "zakaži sastanak s Anom" — secretary SAM razrješava kontakte, predlaže termine i šalje pozivnice kroz Calendar (send_updates="all"); follow-up email samo kao DRAFT |
 | Find contact + Email | rolodex -> mailer | "pošalji email Tomislavu" |
 | ERP report + Doc | analyst -> scribe | "napravi PDV izvještaj u Docs-u" |
 

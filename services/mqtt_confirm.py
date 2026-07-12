@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Union
@@ -51,14 +52,34 @@ class DeviceCommand:
         return observed_payload.strip() == self.expected
 
 
-def expect_json_state(state: str) -> Callable[[str], bool]:
-    """Predicate for JSON state payloads like {"state": "ON", "brightness": 64}."""
+def expect_json_state(
+    state: str,
+    brightness: Optional[int] = None,
+    tolerance: int = 10,
+) -> Callable[[str], bool]:
+    """Predicate for JSON state payloads like {"state": "ON", "brightness": 64}.
+
+    When ``brightness`` is given (and state is ON), the observed brightness
+    must match within ``tolerance`` — otherwise a lamp already ON at 100%
+    would falsely confirm a request for 25%.
+    """
 
     def _match(payload: str) -> bool:
         try:
-            return json.loads(payload).get("state") == state
+            data = json.loads(payload)
         except (json.JSONDecodeError, AttributeError):
             return False
+        if data.get("state") != state:
+            return False
+        if brightness is not None and state == "ON":
+            observed = data.get("brightness")
+            if observed is None:
+                return False
+            try:
+                return abs(int(observed) - int(brightness)) <= tolerance
+            except (TypeError, ValueError):
+                return False
+        return True
 
     return _match
 
@@ -100,12 +121,30 @@ def _blind_publish(commands: List[DeviceCommand]) -> None:
             pass
 
 
+# How long to let the broker replay retained states before publishing —
+# retained messages must land in the baseline, not count as echoes.
+_RETAINED_DRAIN_SECONDS = 0.25
+
+
 def _confirm_worker(commands: List[DeviceCommand], timeout: float) -> Dict[str, dict]:
-    """Sync worker: subscribe → publish → await expected state echoes."""
+    """Sync worker: subscribe → drain retained states → publish → await echoes.
+
+    Retained/baseline separation: the broker replays each topic's retained
+    (possibly stale) state right after subscribe. If a device is OFFLINE but
+    the broker retains exactly the requested state, counting that replay as
+    confirmation would be a false positive. So states received BEFORE the
+    publish go into a baseline; per-device outcome is:
+      - "confirmed"        — a state matching the expectation arrived AFTER publish
+      - "already_in_state" — no echo, but the baseline already matched (device
+                             was presumably in the target state; weaker signal)
+      - "timeout"          — neither
+    """
     confirmed: Dict[str, bool] = {cmd.name: False for cmd in commands}
+    baseline_match: Dict[str, bool] = {cmd.name: False for cmd in commands}
     observed: Dict[str, Optional[str]] = {cmd.name: None for cmd in commands}
     all_confirmed = threading.Event()
     lock = threading.Lock()
+    published = threading.Event()
 
     def on_message(_client, _userdata, msg):
         payload = msg.payload.decode("utf-8", errors="replace")
@@ -114,20 +153,24 @@ def _confirm_worker(commands: List[DeviceCommand], timeout: float) -> Dict[str, 
                 if cmd.state_topic == msg.topic:
                     observed[cmd.name] = payload
                     if cmd.matches(payload):
-                        confirmed[cmd.name] = True
+                        if published.is_set():
+                            confirmed[cmd.name] = True
+                        else:
+                            baseline_match[cmd.name] = True
             if all(confirmed.values()):
                 all_confirmed.set()
 
     client = _client_factory()
     try:
         client.on_message = on_message
-        # Subscribe BEFORE publishing so the echo cannot be missed. Retained
-        # old states arriving now are harmless: they only confirm a device
-        # that is already in the target state.
+        # Subscribe BEFORE publishing so the echo cannot be missed.
         for topic in {cmd.state_topic for cmd in commands}:
             client.subscribe(topic, qos=1)
         client.loop_start()
         try:
+            # Let retained replay land in the baseline.
+            time.sleep(_RETAINED_DRAIN_SECONDS)
+            published.set()
             for cmd in commands:
                 client.publish(cmd.command_topic, cmd.payload, qos=1)
             all_confirmed.wait(timeout)
@@ -140,13 +183,16 @@ def _confirm_worker(commands: List[DeviceCommand], timeout: float) -> Dict[str, 
             pass
 
     with lock:
-        return {
-            name: {
-                "status": "confirmed" if confirmed[name] else "timeout",
-                "observed": observed[name],
-            }
-            for name in confirmed
-        }
+        results: Dict[str, dict] = {}
+        for name in confirmed:
+            if confirmed[name]:
+                status = "confirmed"
+            elif baseline_match[name]:
+                status = "already_in_state"
+            else:
+                status = "timeout"
+            results[name] = {"status": status, "observed": observed[name]}
+        return results
 
 
 async def publish_and_confirm(
@@ -158,15 +204,21 @@ async def publish_and_confirm(
     Returns::
 
         {
-            "status": "confirmed" | "partial" | "timeout" | "ok" | "error",
+            "status": "confirmed" | "partial" | "timeout" | "sent" | "error",
             "operation_id": "1a2b3c4d",
             "confirmed": 3, "total": 5,
             "devices": {name: {"status": ..., "observed": ...}, ...},
         }
 
-    "ok" = confirmation disabled (fire-and-forget succeeded);
+    "sent" = confirmation disabled (published fire-and-forget, NOT confirmed);
     "partial" = some but not all devices confirmed;
     "error" = even the blind publish failed (broker unreachable).
+    Per-device "already_in_state" counts as success (baseline matched).
+
+    LIMITATION: this observes state topics, not per-command ACKs. A true ACK
+    would need the ESP32 firmware to echo the operation_id with each state
+    change — until then, a concurrent automation flipping the same device can
+    in principle be attributed to this command.
     """
     operation_id = uuid.uuid4().hex[:8]
     timeout = timeout if timeout is not None else _confirm_timeout()
@@ -176,8 +228,12 @@ async def publish_and_confirm(
     if not _confirm_enabled():
         try:
             await loop.run_in_executor(None, _blind_publish, commands)
+            logger.info(
+                f"[{operation_id}] MQTT published unconfirmed "
+                "(confirm layer disabled)"
+            )
             return {
-                "status": "ok",
+                "status": "sent",
                 "operation_id": operation_id,
                 "confirmed": 0,
                 "total": total,
@@ -227,7 +283,10 @@ async def publish_and_confirm(
                 "devices": {},
             }
 
-    confirmed_count = sum(1 for d in devices.values() if d["status"] == "confirmed")
+    confirmed_count = sum(
+        1 for d in devices.values()
+        if d["status"] in ("confirmed", "already_in_state")
+    )
     if confirmed_count == total:
         status = "confirmed"
     elif confirmed_count > 0:

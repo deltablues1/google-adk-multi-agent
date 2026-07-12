@@ -67,6 +67,45 @@ def _plain_from_markdown(text: str) -> str:
     return clean
 
 
+def validate_attachment_path(attachment_path: str) -> tuple:
+    """Resolve and sandbox-check an attachment path.
+
+    Returns (resolved_path, None) when the file is inside an allowed dir and
+    exists; (attachment_path, error_message) otherwise. Shared by the send
+    implementation AND the ADK wrapper — the wrapper must validate BEFORE
+    auto-sharing linked docs, or a doomed send could still leak doc access.
+    """
+    import os
+
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    resolved = attachment_path
+    if not os.path.isabs(resolved):
+        resolved = os.path.join(project_root, resolved)
+
+    # Sandbox: attachments may only come from designated output dirs —
+    # otherwise the LLM could be tricked into mailing .env, tokens, certs...
+    allowed_dirs = [
+        os.path.realpath(os.path.join(project_root, d))
+        for d in os.getenv("GMAIL_ATTACHMENT_DIRS", "output,uploads,temp").split(",")
+        if d.strip()
+    ]
+    real_path = os.path.realpath(resolved)
+    if not any(
+        real_path == d or real_path.startswith(d + os.sep)
+        for d in allowed_dirs
+    ):
+        return attachment_path, (
+            f"Attachment path not allowed: {attachment_path}. Only files "
+            "under the project's output/uploads/temp directories can be "
+            "attached. Email NOT sent."
+        )
+    if not os.path.exists(resolved):
+        return attachment_path, (
+            f"Attachment not found: {attachment_path}. Email NOT sent."
+        )
+    return resolved, None
+
+
 # ============================================================================
 # GMAIL API FUNCTIONS
 # ============================================================================
@@ -331,57 +370,23 @@ async def gmail_send_message(
         # Add attachment if provided
         if attachment_path:
             import os
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            # Resolve relative paths from project root
-            if not os.path.isabs(attachment_path):
-                attachment_path = os.path.join(project_root, attachment_path)
+            attachment_path, path_error = validate_attachment_path(attachment_path)
+            if path_error:
+                logger.error(f"Attachment rejected: {path_error}")
+                return {"error": path_error, "status": "failed"}
 
-            # Sandbox: attachments may only come from designated output dirs —
-            # otherwise the LLM could be tricked into mailing .env, tokens, certs...
-            allowed_dirs = [
-                os.path.realpath(os.path.join(project_root, d))
-                for d in os.getenv(
-                    "GMAIL_ATTACHMENT_DIRS", "output,uploads,temp"
-                ).split(",")
-                if d.strip()
-            ]
-            real_path = os.path.realpath(attachment_path)
-            if not any(
-                real_path == d or real_path.startswith(d + os.sep)
-                for d in allowed_dirs
-            ):
-                logger.error(f"Attachment path outside allowed dirs: {attachment_path}")
-                return {
-                    "error": (
-                        f"Attachment path not allowed: {attachment_path}. Only files "
-                        "under the project's output/uploads/temp directories can be "
-                        "attached. Email NOT sent."
-                    ),
-                    "status": "failed",
-                }
+            filename = os.path.basename(attachment_path)
+            ext = os.path.splitext(filename)[1].lower()
+            subtype_map = {'.pdf': 'pdf', '.xlsx': 'vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                           '.docx': 'vnd.openxmlformats-officedocument.wordprocessingml.document',
+                           '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg'}
+            subtype = subtype_map.get(ext, 'octet-stream')
 
-            if os.path.exists(attachment_path):
-                filename = os.path.basename(attachment_path)
-                ext = os.path.splitext(filename)[1].lower()
-                subtype_map = {'.pdf': 'pdf', '.xlsx': 'vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                               '.docx': 'vnd.openxmlformats-officedocument.wordprocessingml.document',
-                               '.png': 'png', '.jpg': 'jpeg', '.jpeg': 'jpeg'}
-                subtype = subtype_map.get(ext, 'octet-stream')
-
-                with open(attachment_path, 'rb') as f:
-                    file_attachment = MIMEApplication(f.read(), _subtype=subtype)
-                file_attachment.add_header('Content-Disposition', 'attachment', filename=filename)
-                message.attach(file_attachment)
-                logger.info(f"Attached file: {filename} ({os.path.getsize(attachment_path)} bytes)")
-            else:
-                # Caller explicitly requested an attachment but the file is
-                # missing. Fail loudly instead of silently sending an email
-                # without the attachment the user expects.
-                logger.error(f"Attachment file not found: {attachment_path} — aborting send")
-                return {
-                    "error": f"Attachment not found: {attachment_path}. Email NOT sent.",
-                    "status": "failed",
-                }
+            with open(attachment_path, 'rb') as f:
+                file_attachment = MIMEApplication(f.read(), _subtype=subtype)
+            file_attachment.add_header('Content-Disposition', 'attachment', filename=filename)
+            message.attach(file_attachment)
+            logger.info(f"Attached file: {filename} ({os.path.getsize(attachment_path)} bytes)")
 
         # Encode message
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')

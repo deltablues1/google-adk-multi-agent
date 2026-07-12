@@ -122,12 +122,25 @@ class TestVoiceLanePin:
 
     def test_other_agent_turn_clears_pin(self, iface):
         self._pin_skladistar(iface)
+        # christian_guide is not a pinned lane -> the turn voids the pin
         rt, tgt = iface._apply_voice_lane_pin(
-            self.SESSION, "upali svjetlo u kuhinji", "agent", "smart_home"
+            self.SESSION, "tko je papa", "agent", "christian_guide"
+        )
+        assert (rt, tgt) == ("agent", "christian_guide")
+        rt, tgt = iface._apply_voice_lane_pin(self.SESSION, "da", "agent", "voice_qa")
+        assert (rt, tgt) == ("agent", "voice_qa")
+
+    def test_smart_home_turn_repins_lane(self, iface):
+        # smart_home is itself a pinned lane (protected-device confirmations):
+        # a smart-home turn REPLACES the warehouse pin, and the follow-up "da"
+        # returns to smart_home.
+        self._pin_skladistar(iface)
+        rt, tgt = iface._apply_voice_lane_pin(
+            self.SESSION, "ugasi bojler", "agent", "smart_home"
         )
         assert (rt, tgt) == ("agent", "smart_home")
         rt, tgt = iface._apply_voice_lane_pin(self.SESSION, "da", "agent", "voice_qa")
-        assert (rt, tgt) == ("agent", "voice_qa")
+        assert (rt, tgt) == ("agent", "smart_home")
 
     def test_expired_pin_is_ignored(self, iface):
         self._pin_skladistar(iface)

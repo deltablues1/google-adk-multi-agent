@@ -253,6 +253,50 @@ async def calendar_delete_event(
         return {"error": str(e), "event_id": event_id}
 
 
+# --- Meeting proposal gate ---------------------------------------------------
+# "Wait for the user's choice" must not live only in the prompt: without a
+# gate the model can create a meeting immediately (or twice). Proposed slots
+# are registered here; calendar_create_meeting only proceeds for a slot that
+# was actually proposed (consume-on-use -> no double create), or with an
+# explicit user_confirmed_custom_time=True for times the user dictated.
+_PROPOSED_SLOTS: Dict[tuple, float] = {}  # (start_utc, end_utc) -> created_at
+_PROPOSAL_TTL_SECONDS = 600.0
+
+
+def _norm_slot_time(value: str) -> str:
+    from datetime import datetime, timezone as _tz
+
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        from zoneinfo import ZoneInfo
+        dt = dt.replace(tzinfo=ZoneInfo(os.getenv("DEFAULT_USER_TIMEZONE", "Europe/Zagreb")))
+    return dt.astimezone(_tz.utc).isoformat(timespec="seconds")
+
+
+def _register_proposed_slots(slots) -> None:
+    import time as _time
+
+    now = _time.monotonic()
+    for start, end in slots:
+        _PROPOSED_SLOTS[(
+            _norm_slot_time(start.isoformat()), _norm_slot_time(end.isoformat())
+        )] = now
+
+
+def _consume_proposed_slot(start_time: str, end_time: str) -> bool:
+    import time as _time
+
+    now = _time.monotonic()
+    for key in list(_PROPOSED_SLOTS):
+        if now - _PROPOSED_SLOTS[key] > _PROPOSAL_TTL_SECONDS:
+            del _PROPOSED_SLOTS[key]
+    try:
+        key = (_norm_slot_time(start_time), _norm_slot_time(end_time))
+    except ValueError:
+        return False
+    return _PROPOSED_SLOTS.pop(key, None) is not None
+
+
 async def calendar_check_freebusy(
     emails: List[str],
     time_min: str,
@@ -344,6 +388,8 @@ async def calendar_propose_meeting_slots(
             working_hours=(working_hours_start, working_hours_end),
             tz_name=tz_name,
         )
+        # Only proposed slots may be turned into meetings (create-gate).
+        _register_proposed_slots(slots)
 
         return {
             "status": "ok",
@@ -366,14 +412,18 @@ async def calendar_create_meeting(
     attendee_emails: List[str],
     description: Optional[str] = None,
     add_meet_link: bool = True,
-    send_updates: str = "all"
+    send_updates: str = "all",
+    user_confirmed_custom_time: bool = False
 ) -> dict:
     """
     Create a meeting: calendar event with attendees and a Google Meet link.
 
-    Use ONLY after the user explicitly confirmed a specific slot. With
-    send_updates="all" Google Calendar emails the invitations itself — do
-    NOT additionally auto-send an email; offer a follow-up DRAFT instead.
+    GATED: the (start_time, end_time) pair must be one of the slots returned
+    by calendar_propose_meeting_slots (each slot is single-use — no double
+    create). For a time the USER personally dictated (not from proposals),
+    set user_confirmed_custom_time=True — ONLY after their explicit choice.
+    With send_updates="all" Google Calendar emails the invitations itself —
+    do NOT additionally auto-send an email; offer a follow-up DRAFT instead.
 
     Args:
         summary: Meeting title
@@ -383,13 +433,27 @@ async def calendar_create_meeting(
         description: Optional agenda/description
         add_meet_link: Attach Google Meet (default True)
         send_updates: "all" (default, Google sends invites), "externalOnly" or "none"
+        user_confirmed_custom_time: True ONLY when the user personally
+            dictated this exact time (bypasses the proposed-slot check)
 
     Returns:
-        Dictionary with event id, html_link, meet_link and attendees.
+        Dictionary with event id, html_link, meet_link and attendees,
+        or needs_confirmation when the slot was never proposed/confirmed.
     """
     creds = _get_credentials()
     if creds is None:
         return {"error": "Authentication required"}
+
+    if not _consume_proposed_slot(start_time, end_time) and not user_confirmed_custom_time:
+        return {
+            "status": "needs_confirmation",
+            "message": (
+                "Ovaj termin nije među predloženim slotovima. Prvo pozovi "
+                "calendar_propose_meeting_slots i pusti korisnika da izabere, "
+                "ili — ako je korisnik osobno diktirao točno ovo vrijeme — "
+                "ponovi poziv s user_confirmed_custom_time=True."
+            ),
+        }
 
     try:
         from tools.api_implementations.calendar_api import (

@@ -63,7 +63,13 @@ class TestUntrustedContentFragment:
         assert "NEPOUZDANI PODATAK" in result
         assert result.startswith("Base instructions.")
 
-    @pytest.mark.parametrize("agent", ["smart_home", "voice_qa", "secretary"])
+    def test_real_orchestrator_name_is_protected(self):
+        # The coordinator agent is created as "smart_orchestrator" — a stale
+        # "orchestrator" entry once left the REAL orchestrator unprotected.
+        assert "smart_orchestrator" in _UNTRUSTED_CONTENT_AGENTS
+        assert "orchestrator" not in _UNTRUSTED_CONTENT_AGENTS
+
+    @pytest.mark.parametrize("agent", ["smart_home", "voice_qa", "socrates"])
     def test_not_appended_for_other_agents(self, agent):
         result = _append_untrusted_content_rule(agent, "Base instructions.")
         assert result == "Base instructions."

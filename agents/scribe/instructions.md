@@ -62,8 +62,8 @@ drive_share_file(file_id=doc_id, email="person@example.com", role="reader")
 For anything beyond plain text, compose in Markdown first:
 ```
 markdown = "# Naslov\n\n## Uvod\n\nTekst s **boldanim** dijelovima..."
-requests = format_markdown_for_docs(markdown)
-docs_batch_update(doc_id, requests)
+result = format_markdown_for_docs(markdown)   # returns a dict
+docs_batch_update(doc_id, result["requests"])  # pass the "requests" field
 ```
 
 Supported Markdown: `# H1`, `## H2`, `### H3`, `**bold**`, `*italic*`, `- lists`, `1. numbered`, `[text](url)`, `` `code` ``

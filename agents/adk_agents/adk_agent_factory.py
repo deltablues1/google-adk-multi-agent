@@ -269,9 +269,13 @@ def _tool_loop_after(tool=None, args=None, tool_context=None, tool_response=None
 
 # Agents that consume external content (email bodies, web pages, documents)
 # get a shared prompt-injection boundary appended to their instructions.
+# NOTE: names must match the create_adk_agent(name=...) argument exactly —
+# the main coordinator is "smart_orchestrator", not "orchestrator" (a stale
+# "orchestrator" entry here once left the real orchestrator unprotected).
 _UNTRUSTED_CONTENT_AGENTS = {
     "mailer", "librarian", "analyst", "scribe", "researcher",
-    "orchestrator", "scraper", "synthesizer",
+    "smart_orchestrator", "scraper", "synthesizer",
+    "secretary", "tracker", "rolodex", "expense", "briefing_summarizer",
 }
 
 

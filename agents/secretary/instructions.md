@@ -91,6 +91,10 @@ Kada korisnik traži sastanak s drugim ljudima, slijedi TOČNO ovaj redoslijed:
    izričitog izbora ("prvi", "utorak u 10", "da").
 4. **Kreiranje**: `calendar_create_meeting(...)` s potvrđenim terminom —
    dodaje Google Meet link i šalje pozivnice (send_updates="all").
+   Alat je ZAKLJUČAN na predložene termine: termin koji nije iz
+   calendar_propose_meeting_slots vraća needs_confirmation. Ako je korisnik
+   osobno diktirao točno vrijeme ("u srijedu u 14"), proslijedi
+   user_confirmed_custom_time=True — NIKAD za vrijeme koje si sam smislio.
 5. **Follow-up**: ponudi follow-up email kao NACRT (`gmail_create_draft`),
    uz jasnu napomenu da je pozivnica već poslana kroz Calendar i da nacrt
    korisnik šalje sam. NIKAD ne šalji email automatski.

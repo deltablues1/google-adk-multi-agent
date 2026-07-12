@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import unicodedata
 from typing import Optional
 
@@ -51,24 +52,51 @@ def normalize_voice_text(text: str) -> str:
 
 # The fast path is substring-based, so a question ("koji film preporucujes?"),
 # a negation ("nemoj ugasiti sve") or a future/conditional request ("sutra
-# ugasi sve") would otherwise fire a real device action. Any of these markers
-# blocks the fast path; the request falls through to the LLM smart_home agent
-# which understands the sentence. Markers are matched against the
+# ugasi sve") would otherwise fire a real device action. The gate is a
+# POSITIVE grammar: a message counts as a command only when it carries an
+# imperative trigger AND no blocking marker AND is short. "blocked" is not a
+# rejection — the request continues to the LLM smart_home agent; a false
+# positive only costs the latency shortcut. Markers are matched against the
 # diacritic-stripped text with a leading space = word start ("kad" must not
-# match "nikad"); a false positive only costs the latency shortcut.
+# match "nikad").
 _FAST_PATH_BLOCK_MARKERS = (
-    # questions
+    # questions (STT often drops the trailing "?")
     " koji", " koja", " koje", " kakav", " kakva", " kakvo", " sto ", " zasto",
-    " je li ", " jel ", " jeli ", " da li ", " dal ", " preporuc", " reci mi",
+    " je li", " jesu li", " jel ", " jeli ", " da li ", " dal ",
+    " moze li", " mozes li", " hoces li", " hoce li", " preporuc", " reci mi",
     # negations
     " nemoj", " ne gasi", " ne pali", " ne ukljuc", " ne iskljuc",
-    " ne upal", " ne ugas", " nista ne ",
+    " ne upal", " ne ugas", " nista ne ", " nikad",
     # future / conditional / scheduling
-    " sutra", " kasnije", " navecer", " ujutro", " za sat", " za pola sata",
-    " za pet ", " za deset ", " za petnaest", " za dvadeset", " u ponoc",
-    " kad ", " kada ", " ako ", " cim ", " nakon ",
+    " sutra", " prekosutra", " kasnije", " veceras", " navecer", " ujutro", " za sat",
+    " za pola sata", " za pet ", " za deset ", " za petnaest", " za dvadeset",
+    " u ponoc", " kad ", " kada ", " ako ", " cim ", " nakon ",
     " podsjeti", " zakazi", " rasporedi",
 )
+
+# Time-of-day expressions ("u 22 sata ugasi sve", "u 7:30 upali...").
+_FAST_PATH_BLOCK_REGEXES = (
+    re.compile(r" u \d+ sat"),
+    re.compile(r" u \d+[:.]\d+"),
+)
+
+# Positive trigger: an imperative command verb...
+_COMMAND_TRIGGER_RE = re.compile(
+    r"\b(upali(te)?|ugasi(te)?|ukljuci(te)?|iskljuci(te)?|pali|gasi)\b"
+)
+
+# Longer sentences carry context the substring matcher can't understand.
+_FAST_PATH_MAX_TOKENS = 12
+
+
+def _has_command_trigger(normalized: str) -> bool:
+    if _COMMAND_TRIGGER_RE.search(normalized):
+        return True
+    # ...or a scene alias ("idemo gledati film", "nocno", "dosao sam")
+    for aliases in SMART_HOME_SCENE_ALIASES.values():
+        if any(alias in normalized for alias in aliases):
+            return True
+    return False
 
 
 def classify_fast_path_intent(normalized: str) -> str:
@@ -79,8 +107,15 @@ def classify_fast_path_intent(normalized: str) -> str:
     """
     if "?" in normalized:
         return "blocked"
-    padded = f" {normalized.strip()} "
+    stripped = normalized.strip()
+    if len(stripped.split()) > _FAST_PATH_MAX_TOKENS:
+        return "blocked"
+    padded = f" {stripped} "
     if any(marker in padded for marker in _FAST_PATH_BLOCK_MARKERS):
+        return "blocked"
+    if any(rx.search(padded) for rx in _FAST_PATH_BLOCK_REGEXES):
+        return "blocked"
+    if not _has_command_trigger(padded):
         return "blocked"
     return "command"
 
@@ -100,9 +135,10 @@ def resolve_voice_smart_home_response(
     return base_response
 
 
-# Statuses that mean "the action worked" (confirmed = device echoed the new
-# state; ok = confirmation layer disabled, publish succeeded).
-_SUCCESS_STATUSES = ("confirmed", "ok")
+# Statuses that mean "the action worked": confirmed = device echoed the new
+# state; already_in_state = baseline already matched; sent = confirmation
+# layer disabled, publish succeeded.
+_SUCCESS_STATUSES = ("confirmed", "already_in_state", "sent")
 
 
 def _scene_outcome_response(
@@ -118,6 +154,12 @@ def _scene_outcome_response(
         confirmed = result.get("confirmed", 0)
         total = result.get("total", 0)
         unconfirmed = result.get("unconfirmed_devices") or []
+        if not confirmed:
+            # Degraded scene: lead with the warning, never with "Uključio sam".
+            return (
+                "Pažnja: naredbe su poslane, ali nijedan uređaj nije potvrdio "
+                "promjenu. Provjeri jesu li uređaji dostupni."
+            )
         detail = f" Nisu potvrdili: {', '.join(unconfirmed[:4])}." if unconfirmed else ""
         return f"{success_text} Potvrđeno {confirmed} od {total} uređaja.{detail}"
     if status in ("timeout", "unconfirmed"):

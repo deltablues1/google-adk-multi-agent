@@ -18,10 +18,7 @@ from typing import Optional, Dict, Any
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from services.voice_fast_path import (
-    execute_fast_smart_home_command,
-    resolve_voice_smart_home_response,
-)
+from services.voice_fast_path import execute_fast_smart_home_command
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -331,6 +328,26 @@ class BaseInterface(ABC):
         msg_lower = self._normalize_voice_text(message)
         return any(kw in msg_lower for kw in BRIEFING_VOICE_KEYWORDS)
 
+    def _is_meeting_scheduling_request(self, message: str) -> bool:
+        """Pure meeting-scheduling requests go straight to secretary.
+
+        Without this, "zakaži sastanak s Anom" hits the business keywords
+        ("sastanak", "zakazi") and lands on the minutes-slow orchestrator, so
+        the secretary confirmation lane never engages. Mixed multi-step
+        requests ("zakaži sastanak i pošalji mail") still go to the
+        orchestrator.
+        """
+        msg = self._normalize_voice_text(message)
+        has_subject = "sastanak" in msg or "sastanka" in msg or "termin" in msg
+        has_verb = any(v in msg for v in ("zakazi", "dogovori", "nadi termin", "nadji termin"))
+        if not (has_subject and has_verb):
+            return False
+        multi_step_markers = (
+            "posalji mail", "posalji email", "posalji poruku", "mailom",
+            "dokument", "istrazi", "izvjestaj",
+        )
+        return not any(m in msg for m in multi_step_markers)
+
     def _is_weather_request(self, message: str) -> bool:
         msg_lower = self._normalize_voice_text(message)
         if any(kw in msg_lower for kw in WEATHER_VOICE_KEYWORDS):
@@ -395,6 +412,11 @@ class BaseInterface(ABC):
         if self._is_briefing_request(message):
             return BRIEFING_VOICE_ROUTE, None
 
+        # Pure meeting scheduling → secretary lane (with its confirmation
+        # pin), before the business keywords would send it to the orchestrator.
+        if self._is_meeting_scheduling_request(message):
+            return "agent", "secretary"
+
         if self._looks_like_business_orchestrator_task(message):
             return ORCHESTRATOR_VOICE_ROUTE, None
 
@@ -452,22 +474,16 @@ class BaseInterface(ABC):
                 logger.info("Voice lane pin -> %s (short follow-up)", pinned[0])
                 route_type, route_target = "agent", pinned[0]
 
-        # Lanes with multi-turn confirmations: warehouse writes and meeting
-        # scheduling ("da" / "onaj prvi" must return to the pending flow).
-        if route_type == "agent" and route_target in ("skladistar", "secretary"):
+        # Lanes with multi-turn confirmations: warehouse writes, meeting
+        # scheduling and protected smart-home actions ("da" / "onaj prvi"
+        # must return to the pending flow).
+        if route_type == "agent" and route_target in ("skladistar", "secretary", "smart_home"):
             self._voice_pinned_lane[session_id] = (
                 route_target, now + VOICE_LANE_PIN_TTL_SECONDS
             )
         else:
             self._voice_pinned_lane.pop(session_id, None)
         return route_type, route_target
-
-    def _resolve_voice_smart_home_response(
-        self,
-        base_response: str,
-        response_mode: Optional[str],
-    ) -> str:
-        return resolve_voice_smart_home_response(base_response, response_mode)
 
     async def _try_fast_smart_home_response(
         self,
@@ -506,7 +522,10 @@ class BaseInterface(ABC):
                 "Direct voice routing target '%s' not loaded; falling back to orchestrator",
                 agent_name,
             )
-            return await self.system.orchestrator_helper.run(message)
+            from config.voice_persona import wrap_agent_voice_message
+            return await self.system.orchestrator_helper.run(
+                wrap_agent_voice_message(message)
+            )
 
         from agents.adk_agents.runner_utils import run_agent_simple
 
@@ -523,9 +542,16 @@ class BaseInterface(ABC):
         worker_session_id = f"{session_id}-{agent_name}"
 
         logger.info("Direct voice route -> %s", agent_name)
-        worker_message = message
+        # Persona is injected HERE, at the LLM boundary — routing and the
+        # deterministic fast path above operate on the raw transcript only
+        # (persona text once tripped the smart-home intent gate).
+        from config.voice_persona import build_voice_persona_preamble
+
+        persona = build_voice_persona_preamble()
+        worker_message = f"{persona}\n\n{message}"
         if agent_name == "smart_home":
             worker_message = (
+                f"{persona}\n\n"
                 "Voice smart-home mode. Interpret the request, execute the home action if the "
                 "tools allow it, and answer in one short Croatian sentence suitable for spoken output only when a spoken confirmation is necessary. "
                 "If clarification is required, ask only one concise follow-up question.\n\n"
@@ -533,6 +559,7 @@ class BaseInterface(ABC):
             )
         elif agent_name == "skladistar":
             worker_message = (
+                f"{persona}\n\n"
                 "Voice warehouse mode. Odgovori na hrvatskom, jednom kratkom rečenicom "
                 "prikladnom za izgovor. Prije SVAKOG upisa (erp_adjust_stock, "
                 "erp_create_product) OBAVEZNO ponovi što si razumio (artikl, količina, "
@@ -541,12 +568,14 @@ class BaseInterface(ABC):
             )
         elif agent_name == "secretary":
             worker_message = (
+                f"{persona}\n\n"
                 "Voice utility mode. Answer in Croatian with a short spoken-friendly response. "
                 "Prefer one sentence unless the user explicitly asks for more detail.\n\n"
                 f"User request: {message}"
             )
         elif agent_name == "voice_qa":
             worker_message = (
+                f"{persona}\n\n"
                 "Voice Q&A mode. Answer the user's question directly in Croatian. "
                 "Keep it concise, useful, and suitable for spoken output. "
                 "Prefer one short paragraph or at most two short sentences unless the user explicitly asks for depth. "
@@ -562,8 +591,9 @@ class BaseInterface(ABC):
             session_service=session_service,
             app_name="agents",
         )
-        if agent_name == "smart_home" and user_id.startswith(VOICE_ROUTING_USER_PREFIXES):
-            return self._resolve_voice_smart_home_response(response, response_mode)
+        # NOTE: the LLM agent's answer is returned verbatim — response-mode
+        # squashing ("U redu.") applies only to fast-path success texts.
+        # Squashing here once hid confirmation questions and MQTT timeouts.
 
         # Phase 2: voice_qa has no tools; when it flags an action request with
         # the [[ESCALATE]] sentinel, re-run the original message through the
@@ -571,7 +601,8 @@ class BaseInterface(ABC):
         if agent_name == "voice_qa" and ESCALATE_SENTINEL in response[:200]:
             logger.info("voice_qa escalated to orchestrator: %r", message[:120])
             await self._speak_working_ack()
-            return await self.system.run_orchestration(message)
+            from config.voice_persona import wrap_agent_voice_message
+            return await self.system.run_orchestration(wrap_agent_voice_message(message))
 
         return response
 
@@ -596,6 +627,15 @@ class BaseInterface(ABC):
         """
         if self.system is None:
             self.initialize_system()
+
+        # A new user turn arms pending protected-device approvals (the model
+        # cannot self-approve confirm=True within the same turn). Best-effort,
+        # all channels.
+        try:
+            from tools.adk_tools.mqtt_adk_tools import arm_pending_approvals
+            arm_pending_approvals()
+        except Exception:
+            pass
 
         # Get or create session
         if session_id is None:
@@ -667,9 +707,13 @@ class BaseInterface(ABC):
                         )
                     else:
                         # Multi-step orchestrator run — tell the user we're on
-                        # it before minutes of silent work.
+                        # it before minutes of silent work. Persona goes in at
+                        # this LLM boundary (routing above saw the raw text).
                         await self._speak_working_ack()
-                        result = await self.system.run_orchestration(message)
+                        from config.voice_persona import wrap_agent_voice_message
+                        result = await self.system.run_orchestration(
+                            wrap_agent_voice_message(message)
+                        )
                 elif direct_agent == "socrates":
                     self.system.active_mode = "CLASSROOM"
                     result = await self._process_classroom_mode(message, first_entry=True)

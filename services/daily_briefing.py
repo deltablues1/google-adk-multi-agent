@@ -51,6 +51,8 @@ def _day_bounds(tz_name: str) -> tuple[datetime, datetime]:
 # ---------------------------------------------------------------------------
 
 async def _collect_emails(creds) -> list[dict]:
+    # Recency-only ("is:unread newer_than:1d"), NOT priority-ranked — a real
+    # priority inbox would need sender/thread importance signals.
     from tools.api_implementations.gmail_api import gmail_search_threads
 
     result = await gmail_search_threads(creds, "is:unread newer_than:1d", 10)
@@ -139,6 +141,10 @@ async def _collect_home() -> Optional[dict]:
     from tools.adk_tools.mqtt_adk_tools import mqtt_get_status
 
     status = await mqtt_get_status()
+    # Broker reachable but zero devices reported = state UNKNOWN — reporting
+    # "sve je ugašeno" from an empty snapshot would be a lie.
+    if status.get("status") != "ok" or not status.get("total_devices"):
+        return None
     lights_on = [n for n, v in status.get("lights", {}).items() if v == "ON"]
     outlets_on = [n for n, v in status.get("outlets", {}).items() if v == "ON"]
     return {"lights_on": lights_on, "outlets_on": outlets_on}

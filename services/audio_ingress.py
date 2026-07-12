@@ -57,14 +57,15 @@ class AudioIngressService:
         if len(audio_bytes) > MAX_AUDIO_BYTES:
             raise AudioIngressError(f"Audio payload exceeds {MAX_AUDIO_BYTES} bytes inline limit")
 
-        # Native Cloud STT (Chirp) path — native per-language ASR, far more
-        # reliable for Croatian than Gemini multimodal (which drifts to other
-        # languages on short utterances). Delegated to STTService so there is a
-        # single Chirp implementation shared by every voice path. Chirp
-        # authenticates via ADC/SA, so GEMINI_API_KEY is only required on the
-        # Gemini fallback branch.
+        # Engines implemented by STTService (single shared implementation for
+        # every voice path): Chirp — native per-language ASR, far more reliable
+        # for Croatian than Gemini multimodal; and the opt-in OpenAI
+        # gpt-4o-transcribe path. Keep this set in sync with
+        # services/audio/stt_service.py STTService.transcribe.
+        _stt_service_engines = {"chirp", "chirp_2", "chirp2", "cloud", "openai"}
+
         engine = os.getenv("STT_ENGINE", "gemini").strip().lower()
-        if engine in {"chirp", "chirp_2", "chirp2", "cloud"}:
+        if engine in _stt_service_engines:
             from services.audio.stt_service import STTService
 
             transcript = await STTService().transcribe(audio_bytes, mime_type)
@@ -79,11 +80,11 @@ class AudioIngressService:
                 mime_type,
             )
         else:
-            # Fail loudly: an unknown value (e.g. "openai") used to fall into
-            # the Gemini branch silently and transcribe with the wrong engine.
+            # Fail loudly: an unknown value used to fall into the Gemini
+            # branch silently and transcribe with the wrong engine.
             raise AudioIngressError(
                 f"Unsupported STT_ENGINE '{engine}'. "
-                "Supported: chirp (chirp_2/cloud) or gemini."
+                "Supported: chirp (chirp_2/cloud), openai or gemini."
             )
         transcript = (transcript or "").strip()
         if not transcript:

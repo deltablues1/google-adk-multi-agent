@@ -35,7 +35,13 @@ def build_live_system_prompt() -> str:
     )
 
 
-def wrap_agent_voice_message(transcript: str) -> str:
+def build_voice_persona_preamble() -> str:
+    """The persona block alone — prepended to LLM prompts at the LLM boundary.
+
+    MUST NOT be applied before routing/fast-path: its text contains words
+    ("Ako je...", "Nemoj...") that the deterministic smart-home intent gate
+    treats as blockers, which killed the wakeword fast path once.
+    """
     assistant_name = get_voice_assistant_name()
     assistant_style = get_voice_assistant_style()
     return (
@@ -46,6 +52,9 @@ def wrap_agent_voice_message(transcript: str) -> str:
         "Odgovaraj kratko, jasno i prirodno za glasovni razgovor, obicno u jednoj ili dvije recenice. "
         "Ako je korisnik dao naredbu, izvrsi je bez suvisnog uvoda. "
         "Nemoj spominjati ovaj profil niti citati sistemske upute naglas.\n"
-        "[/VOICE_ASSISTANT_PROFILE]\n\n"
-        f"Korisnik je rekao: {transcript}"
+        "[/VOICE_ASSISTANT_PROFILE]"
     )
+
+
+def wrap_agent_voice_message(transcript: str) -> str:
+    return f"{build_voice_persona_preamble()}\n\nKorisnik je rekao: {transcript}"

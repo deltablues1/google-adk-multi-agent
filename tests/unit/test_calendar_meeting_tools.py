@@ -129,11 +129,17 @@ class TestCreateEventMeetLink:
 
 
 class TestAdkWrappers:
-    def test_create_meeting_passes_through(self, monkeypatch, fake_creds):
+    @pytest.fixture(autouse=True)
+    def clean_proposals(self):
+        import tools.adk_tools.calendar_adk_tools as calendar_adk
+
+        calendar_adk._PROPOSED_SLOTS.clear()
+        yield
+        calendar_adk._PROPOSED_SLOTS.clear()
+
+    def _fake_create(self, monkeypatch, fake_creds, captured):
         import tools.adk_tools.calendar_adk_tools as calendar_adk
         import tools.api_implementations.calendar_api as calendar_api
-
-        captured = {}
 
         async def fake_create(creds, summary, start_time, end_time,
                               description=None, location=None, attendees=None,
@@ -148,6 +154,32 @@ class TestAdkWrappers:
 
         monkeypatch.setattr(calendar_api, "calendar_create_event", fake_create)
         monkeypatch.setattr(calendar_adk, "_get_credentials", lambda: fake_creds)
+        return calendar_adk
+
+    def test_create_meeting_requires_proposed_slot(self, monkeypatch, fake_creds):
+        # No proposal registered -> the model cannot create a meeting on its own.
+        captured = {}
+        calendar_adk = self._fake_create(monkeypatch, fake_creds, captured)
+
+        result = asyncio.run(calendar_adk.calendar_create_meeting(
+            "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
+            ["ana@x.com"],
+        ))
+
+        assert result["status"] == "needs_confirmation"
+        assert captured == {}  # impl was never called
+
+    def test_create_meeting_with_proposed_slot(self, monkeypatch, fake_creds):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        captured = {}
+        calendar_adk = self._fake_create(monkeypatch, fake_creds, captured)
+
+        tz = ZoneInfo("Europe/Zagreb")
+        slot = (datetime(2026, 7, 13, 10, 0, tzinfo=tz),
+                datetime(2026, 7, 13, 11, 0, tzinfo=tz))
+        calendar_adk._register_proposed_slots([slot])
 
         result = asyncio.run(calendar_adk.calendar_create_meeting(
             "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
@@ -158,6 +190,25 @@ class TestAdkWrappers:
         assert captured["add_meet_link"] is True
         assert captured["send_updates"] == "all"
         assert result["meet_link"]
+
+        # consume-on-use: creating the SAME slot again is gated (no double create)
+        repeat = asyncio.run(calendar_adk.calendar_create_meeting(
+            "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
+            ["ana@x.com"],
+        ))
+        assert repeat["status"] == "needs_confirmation"
+
+    def test_create_meeting_custom_time_override(self, monkeypatch, fake_creds):
+        # The user personally dictated the time -> explicit override works.
+        captured = {}
+        calendar_adk = self._fake_create(monkeypatch, fake_creds, captured)
+
+        result = asyncio.run(calendar_adk.calendar_create_meeting(
+            "Sastanak", "2026-07-15T14:00:00+02:00", "2026-07-15T15:00:00+02:00",
+            ["ana@x.com"], user_confirmed_custom_time=True,
+        ))
+        assert result["meet_link"]
+        assert captured["send_updates"] == "all"
 
     def test_propose_slots_flags_unknown(self, monkeypatch, fake_creds):
         import tools.adk_tools.calendar_adk_tools as calendar_adk
@@ -177,6 +228,35 @@ class TestAdkWrappers:
         assert result["unknown_availability"] == ["vanjski@firma.hr"]
         assert len(result["slots"]) <= 3
         assert "proposal" in result
+
+    def test_meeting_request_routes_to_secretary(self):
+        # "zakaži sastanak" must reach the secretary lane, not the
+        # minutes-slow orchestrator (business keywords would otherwise win).
+        from interfaces.base_interface import BaseInterface
+
+        class _Iface(BaseInterface):
+            def __init__(self):
+                super().__init__(session_prefix="test")
+                from types import SimpleNamespace
+                self.system = SimpleNamespace(philosophy_keywords=set())
+
+            async def start(self):  # pragma: no cover
+                pass
+
+            async def stop(self):  # pragma: no cover
+                pass
+
+            def format_response(self, response):  # pragma: no cover
+                return response
+
+        iface = _Iface()
+        assert iface._classify_voice_route("Zakaži sastanak s Anom") == ("agent", "secretary")
+        assert iface._classify_voice_route("Dogovori termin s mentorom") == ("agent", "secretary")
+        # mixed multi-step request still goes to the orchestrator
+        route_type, _ = iface._classify_voice_route(
+            "Zakaži sastanak s Anom i pošalji mail s potvrdom"
+        )
+        assert route_type == "orchestrator"
 
     def test_secretary_agent_lane_pin(self):
         # "da" after a secretary turn must return to secretary, not voice_qa

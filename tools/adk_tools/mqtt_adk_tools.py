@@ -47,6 +47,54 @@ VALID_SWITCHES = VALID_LIGHTS + VALID_OUTLETS
 PROTECTED_OFF_DEVICES = {"uticnica_frizider", "uticnica_bojler"}
 PROTECTED_ON_DEVICES = {"pecnica"}
 
+# --- Turn-gated approvals for protected actions -----------------------------
+# confirm=True alone proves nothing: the model could set it immediately.
+# A protected action becomes redeemable only after the NEXT user turn arrives
+# (BaseInterface.process_message calls arm_pending_approvals() at turn start),
+# so the model physically cannot self-approve within the same turn — a real
+# user message must land between needs_confirmation and the confirmed call.
+_PENDING_APPROVALS: dict = {}  # (device, state) -> {"created_at": float, "armed": bool}
+_APPROVAL_TTL_SECONDS = 120.0
+
+
+def register_pending_approval(device_name: str, state: str) -> None:
+    import time as _time
+
+    _PENDING_APPROVALS[(device_name, state)] = {
+        "created_at": _time.monotonic(),
+        "armed": False,
+    }
+
+
+def arm_pending_approvals() -> None:
+    """Called at the start of each user turn: expired entries are purged,
+    surviving ones become redeemable (a user message has arrived since)."""
+    import time as _time
+
+    now = _time.monotonic()
+    for key in list(_PENDING_APPROVALS):
+        entry = _PENDING_APPROVALS[key]
+        if now - entry["created_at"] > _APPROVAL_TTL_SECONDS:
+            del _PENDING_APPROVALS[key]
+        else:
+            entry["armed"] = True
+
+
+def redeem_approval(device_name: str, state: str) -> bool:
+    """Consume an armed, unexpired approval. Returns False otherwise."""
+    import time as _time
+
+    entry = _PENDING_APPROVALS.get((device_name, state))
+    if not entry:
+        return False
+    if _time.monotonic() - entry["created_at"] > _APPROVAL_TTL_SECONDS:
+        del _PENDING_APPROVALS[(device_name, state)]
+        return False
+    if not entry["armed"]:
+        return False
+    del _PENDING_APPROVALS[(device_name, state)]
+    return True
+
 # Human-readable names (Croatian)
 DEVICE_NAMES = {
     "svjetlo_vani": "Vanjsko svjetlo",
@@ -122,9 +170,15 @@ async def mqtt_switch_control(device_name: str, state: str, confirm: bool = Fals
     Controls any switch-type device in the smart home system (lights and outlets).
     Note: turning on svjetlo_kupaona automatically turns off bojler (hardware interlock).
 
-    PROTECTED devices need confirm=True (set ONLY after the user explicitly
-    confirmed): turning OFF uticnica_frizider or uticnica_bojler, and turning
-    ON pecnica. Without confirmation the call returns needs_confirmation.
+    PROTECTED actions (uticnica_frizider/uticnica_bojler OFF, pecnica ON)
+    need confirm=True — and the confirmation only works after the USER has
+    replied in a NEW message since the needs_confirmation response (turn-gated
+    approval; same-turn confirm=True is rejected). Flow: call normally →
+    needs_confirmation → ask the user → user replies "da" → call again with
+    confirm=True.
+
+    NOTE (hardware limitation): turning svjetlo_kupaona ON switches the
+    boiler OFF via a hardware interlock — no software guard can intercept it.
 
     Args:
         device_name: Device identifier, e.g. "svjetlo_kuhinja", "uticnica_tv", "pecnica".
@@ -150,17 +204,22 @@ async def mqtt_switch_control(device_name: str, state: str, confirm: bool = Fals
         (state == "OFF" and device_name in PROTECTED_OFF_DEVICES)
         or (state == "ON" and device_name in PROTECTED_ON_DEVICES)
     )
-    if protected and not confirm:
+    if protected:
         friendly = DEVICE_NAMES.get(device_name, device_name)
-        return {
-            "status": "needs_confirmation",
-            "device": friendly,
-            "requested_state": state,
-            "message": (
-                f"'{friendly} -> {state}' je zaštićena radnja. Pitaj korisnika za "
-                "izričitu potvrdu, pa ponovi poziv s confirm=True."
-            ),
-        }
+        if not confirm or not redeem_approval(device_name, state):
+            # Either no confirm, or confirm=True without a user turn in
+            # between — register/refresh and demand a real user confirmation.
+            register_pending_approval(device_name, state)
+            return {
+                "status": "needs_confirmation",
+                "device": friendly,
+                "requested_state": state,
+                "message": (
+                    f"'{friendly} -> {state}' je zaštićena radnja. Potvrda mora "
+                    "doći od korisnika u SLJEDEĆOJ poruci: pitaj korisnika, "
+                    "pričekaj njegov odgovor, pa ponovi poziv s confirm=True."
+                ),
+            }
 
     topic = f"{SWITCH_PREFIX}/{device_name}/command"
     friendly = DEVICE_NAMES.get(device_name, device_name)
@@ -225,7 +284,9 @@ async def mqtt_dimmer_control(state: str, brightness: int = 255) -> dict:
             command_topic=topic,
             payload=payload,
             state_topic=f"{LIGHT_PREFIX}/svjetlo_fotelja/state",
-            expected=expect_json_state(state),
+            expected=expect_json_state(
+                state, brightness=brightness if state == "ON" else None
+            ),
         )
     ])
     device_result = outcome.get("devices", {}).get("svjetlo_fotelja", {})
@@ -351,7 +412,7 @@ async def mqtt_scene_control(scene: str) -> dict:
             command_topic=f"{LIGHT_PREFIX}/svjetlo_fotelja/command",
             payload=json.dumps(d),
             state_topic=f"{LIGHT_PREFIX}/svjetlo_fotelja/state",
-            expected=expect_json_state(d["state"]),
+            expected=expect_json_state(d["state"], brightness=d.get("brightness")),
         ))
         if d["state"] == "ON":
             pct = round(d.get("brightness", 255) / 255 * 100)

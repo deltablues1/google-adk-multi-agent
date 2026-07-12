@@ -228,6 +228,15 @@ async def gmail_send_message(
             "status": "invalid_email"
         }
 
+    # Validate the attachment BEFORE auto-sharing linked docs: a send that is
+    # doomed to fail must not leave documents shared with the recipients.
+    if attachment_path:
+        from tools.api_implementations.gmail_api import validate_attachment_path
+
+        _, path_error = validate_attachment_path(attachment_path)
+        if path_error:
+            return {"error": path_error, "status": "failed"}
+
     # Least-privilege: share any linked Google Doc/Drive file with the actual
     # recipients before sending, so the emailed link opens (no public sharing).
     share_warnings = await _autoshare_linked_docs(

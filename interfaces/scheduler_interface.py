@@ -111,7 +111,8 @@ class SchedulerInterface(BaseInterface):
             )
             delivered = await self._deliver_to_telegram(text)
             self.job_results[job_id] = {
-                "status": "SUCCESS",
+                # A briefing nobody received is not a success.
+                "status": "SUCCESS" if delivered else "SUCCESS_NOT_DELIVERED",
                 "result_preview": text[:200],
                 "delivered": delivered,
                 "elapsed": round(time.time() - start_time, 1),

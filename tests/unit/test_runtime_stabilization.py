@@ -59,7 +59,7 @@ def test_execute_fast_smart_home_command_uses_none_response(monkeypatch):
     async def fake_switch(device_name: str, state: str):
         assert device_name == "svjetlo_kuhinja"
         assert state == "ON"
-        return {"status": "ok"}
+        return {"status": "confirmed"}
 
     monkeypatch.setattr(voice_fast_path, "mqtt_switch_control", fake_switch)
 

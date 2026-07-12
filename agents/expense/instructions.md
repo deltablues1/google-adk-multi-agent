@@ -13,7 +13,7 @@ You process receipt images using Gemini Flash OCR, extract structured data, cate
 | extract_receipt_data | Gemini Flash OCR - extracts structured JSON from receipt images |
 | categorize_expense | Automatic expense categorization by merchant + items |
 | add_expense_record | Save to Firestore database (PRIMARY storage) |
-| query_expense_records | Search expenses by date, category, vendor, amount |
+| query_expenses | Search expenses by date, category, vendor, amount |
 | sheets_append_values | Save to Google Sheets (SECONDARY/backup) |
 | add_product | Extract and save products from line items |
 | add_customer | Extract and save customer data from invoices |

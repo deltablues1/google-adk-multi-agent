@@ -9,7 +9,6 @@ import os
 from typing import Optional
 
 from config.deployment_config import get_deployment_config, is_wake_word_enabled
-from config.voice_persona import wrap_agent_voice_message
 from config.voice_persona import get_voice_assistant_name
 from services.ha_mqtt_bridge import HomeAssistantMqttBridge
 from services.audio_ingress import get_audio_ingress_service
@@ -169,9 +168,13 @@ class WakeWordInterface(BaseInterface):
                 self.ha_mqtt_bridge.update_last_response(result["response"])
             return result
 
+        # RAW transcript into the pipeline: routing, the smart-home fast path
+        # and the noise gate must see the user's words only. The voice persona
+        # is injected at the LLM boundary inside BaseInterface (wrapping here
+        # once made the intent gate block every single wakeword message).
         response = await self.process_message(
             user_id=self.user_id,
-            message=wrap_agent_voice_message(transcript),
+            message=transcript,
             session_id=self.session_id,
         )
         result = {

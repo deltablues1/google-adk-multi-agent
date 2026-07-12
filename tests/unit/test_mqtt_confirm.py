@@ -21,19 +21,26 @@ from services.mqtt_confirm import DeviceCommand, expect_json_state, publish_and_
 
 class FakeMqttClient:
     """Fake paho client. echo_topics: command topics whose devices 'reply'
-    by publishing the payload on the matching /state topic."""
+    by publishing the payload on the matching /state topic. retained: state
+    topics whose (possibly stale) value the broker replays on subscribe."""
 
-    def __init__(self, echo_topics=None, subscribe_raises=False):
+    def __init__(self, echo_topics=None, subscribe_raises=False, retained=None):
         self.published = []
         self.subscribed = []
         self.on_message = None
         self.echo_topics = echo_topics  # None = echo everything
         self.subscribe_raises = subscribe_raises
+        self.retained = retained or {}
 
     def subscribe(self, topic, qos=0):
         if self.subscribe_raises:
             raise RuntimeError("subscribe failed")
         self.subscribed.append(topic)
+        if topic in self.retained and self.on_message:
+            msg = SimpleNamespace(
+                topic=topic, payload=str(self.retained[topic]).encode("utf-8")
+            )
+            self.on_message(self, None, msg)
 
     def loop_start(self):
         pass
@@ -129,6 +136,67 @@ class TestTimeoutAndPartial:
         assert result["devices"]["svjetlo_kuhinja"]["status"] == "confirmed"
         assert result["devices"]["svjetlo_hodnik"]["status"] == "timeout"
 
+    def test_retained_expected_is_already_in_state_not_confirmed(self, monkeypatch):
+        # Broker retains "ON" (device possibly OFFLINE), no echo after publish:
+        # must NOT count as "confirmed" — it becomes "already_in_state".
+        _use_client(monkeypatch, FakeMqttClient(
+            echo_topics=[],
+            retained={"esp32-io/switch/svjetlo_kuhinja/state": "ON"},
+        ))
+
+        result = asyncio.run(publish_and_confirm([_switch_cmd("svjetlo_kuhinja", "ON")]))
+
+        assert result["devices"]["svjetlo_kuhinja"]["status"] == "already_in_state"
+        # aggregate treats it as success (device presumably already there)
+        assert result["status"] == "confirmed"
+
+    def test_retained_wrong_state_times_out(self, monkeypatch):
+        # Broker retains stale "OFF" while we request ON and no echo arrives.
+        _use_client(monkeypatch, FakeMqttClient(
+            echo_topics=[],
+            retained={"esp32-io/switch/svjetlo_kuhinja/state": "OFF"},
+        ))
+
+        result = asyncio.run(publish_and_confirm([_switch_cmd("svjetlo_kuhinja", "ON")]))
+
+        assert result["status"] == "timeout"
+        assert result["devices"]["svjetlo_kuhinja"]["status"] == "timeout"
+
+    def test_dimmer_brightness_mismatch_not_confirmed(self, monkeypatch):
+        # Lamp echoes ON at 255 while we asked for 64 — must not confirm.
+        client = FakeMqttClient(echo_topics=[])
+        _use_client(monkeypatch, client)
+
+        original_publish = client.publish
+
+        def publish_wrong_brightness(topic, payload, qos=0):
+            original_publish(topic, payload, qos)
+            state_topic = topic.replace("/command", "/state")
+            if state_topic in client.subscribed and client.on_message:
+                msg = SimpleNamespace(
+                    topic=state_topic,
+                    payload=json.dumps({"state": "ON", "brightness": 255}).encode(),
+                )
+                client.on_message(client, None, msg)
+
+        client.publish = publish_wrong_brightness
+
+        cmd = DeviceCommand(
+            name="svjetlo_fotelja",
+            command_topic="esp32-io/light/svjetlo_fotelja/command",
+            payload=json.dumps({"state": "ON", "brightness": 64}),
+            state_topic="esp32-io/light/svjetlo_fotelja/state",
+            expected=expect_json_state("ON", brightness=64),
+        )
+        result = asyncio.run(publish_and_confirm([cmd]))
+        assert result["status"] == "timeout"
+
+    def test_dimmer_brightness_within_tolerance_confirmed(self):
+        match = expect_json_state("ON", brightness=64, tolerance=10)
+        assert match(json.dumps({"state": "ON", "brightness": 70})) is True
+        assert match(json.dumps({"state": "ON", "brightness": 90})) is False
+        assert match(json.dumps({"state": "ON"})) is False
+
     def test_wrong_state_echo_not_confirmed(self, monkeypatch):
         # Device echoes OFF (e.g. retained old state) while we expect ON.
         client = FakeMqttClient(echo_topics=[])
@@ -157,7 +225,8 @@ class TestFallbacks:
 
         result = asyncio.run(publish_and_confirm([_switch_cmd("svjetlo_kuhinja")]))
 
-        assert result["status"] == "ok"
+        # "sent" — published fire-and-forget, explicitly NOT confirmed
+        assert result["status"] == "sent"
         assert result["devices"]["svjetlo_kuhinja"]["status"] == "unconfirmed"
         assert len(client.published) == 1
 
