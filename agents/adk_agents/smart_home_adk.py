@@ -47,7 +47,18 @@ def create_smart_home_agent(
     agent = create_adk_agent(
         name="smart_home",
         model=model,
-        description="Smart home MQTT specialist: lights, outlets, dimmer, scenes",
+        # The orchestrator routes on this string. When it said only "lights,
+        # outlets, dimmer, scenes", the orchestrator answered a TV request with
+        # "nemam agenta koji može upravljati TV-om" — the tools were there, the
+        # description was not. Anything this agent can do belongs here.
+        description=(
+            "Smart home, TV and house sensors. MQTT (ESP32-IO): lights, outlets, "
+            "dimmer, scenes. Television via Home Assistant: power, volume, launch "
+            "apps (YouTube, Netflix, and learned ones such as A1 Xplore TV), "
+            "switch channels by name or number, play from YouTube, remote keys. "
+            "Reads sensors: temperature, humidity, pressure per room, air quality, "
+            "power consumption, and their history (daily min/max/average)."
+        ),
         tools=tools,
         instruction=instruction,
         load_instruction_from_file=False,

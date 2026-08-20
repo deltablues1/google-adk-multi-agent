@@ -465,7 +465,17 @@ AGENT_REGISTRY: Dict[str, AgentConfig] = {
         module="agents.adk_agents.smart_home_adk",
         class_name="create_smart_home_agent",
         model=LITE_MODEL,  # Tier 4: Cheapest GA model — simple MQTT commands, high-volume
-        description="Smart home MQTT specialist: controls lights (15), outlets (14), dimmer (1) via ESP32-IO. Keywords: svjetlo, upali, ugasi, uključi, isključi, utičnica, bojler, pametna kuća, smart home, scena, film, noćno.",
+        description=(
+            "Smart home, TV and house sensors. MQTT via ESP32-IO: lights (15), "
+            "outlets (14), dimmer (1), scenes. TV via Home Assistant: power, "
+            "volume, apps (YouTube/Netflix/A1 Xplore TV), channels by name or "
+            "number, YouTube playback, remote keys. Sensor readings and history: "
+            "temperature, humidity, pressure per room, air quality, power. "
+            "Keywords: svjetlo, upali, ugasi, uključi, isključi, utičnica, bojler, "
+            "pametna kuća, smart home, scena, film, noćno, TV, televizor, "
+            "aplikacija, kanal, program, youtube, glasnoća, temperatura, vlaga, "
+            "tlak, zrak, kvaliteta zraka, potrošnja."
+        ),
         tools=["mqtt_adk"],
         instruction_file="agents/smart_home/instructions.md",
         config={

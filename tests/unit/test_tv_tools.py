@@ -362,3 +362,53 @@ def test_normalisation_does_not_merge_different_channels(ha, channels_file):
     tv.tv_channel("Arena sport 10")
 
     assert ha["calls"][-1][1]["command"] == ["2", "1", "0", "DPAD_CENTER"]
+
+
+# --- routing --------------------------------------------------------------
+
+def test_agent_descriptions_advertise_everything_smart_home_can_do():
+    """The orchestrator routes on descriptions, not on tool lists.
+
+    On 2026-08-20 it answered "Na tv otvori a1 xplore tv aplikaciju" with
+    "nemam agenta koji može upravljati TV-om" — the tools existed, but every
+    description still said only "lights, outlets, dimmer, scenes". A capability
+    the router cannot see does not exist.
+    """
+    import inspect
+    from pathlib import Path
+
+    from agents.adk_agents import smart_home_adk
+    from config import agent_registry
+
+    root = Path(__file__).resolve().parents[2]
+    surfaces = {
+        "smart_home_adk": inspect.getsource(smart_home_adk.create_smart_home_agent),
+        "agent_registry": inspect.getsource(agent_registry),
+        "orchestrator instructions":
+            (root / "agents" / "orchestrator" / "instructions.md").read_text(encoding="utf-8"),
+    }
+
+    for label, text in surfaces.items():
+        lowered = text.lower()
+        assert "tv" in lowered, f"{label} never mentions the TV"
+        for capability in ("app", "channel", "kanal", "aplikacij"):
+            if capability in lowered:
+                break
+        else:
+            raise AssertionError(f"{label} mentions no apps or channels")
+        assert any(word in lowered for word in ("sensor", "senzor", "temperature", "temperatura")), (
+            f"{label} never mentions sensors"
+        )
+
+
+def test_voice_routing_catches_app_and_channel_requests():
+    from interfaces.base_interface import SMART_HOME_KEYWORDS, _TV_WORD_RE
+
+    for phrase in (
+        "na tv otvori a1 xplore tv aplikaciju",
+        "stavi hrt 1",
+        "prebaci na arena sport 4",
+        "otvori aplikaciju netflix",
+    ):
+        matched = any(kw in phrase for kw in SMART_HOME_KEYWORDS) or bool(_TV_WORD_RE.search(phrase))
+        assert matched, f"voice routing would miss: {phrase}"

@@ -32,6 +32,7 @@ SMART_HOME_KEYWORDS = {
     # substring match hvata "tvoj"/"molitva" — rješava ga _TV_WORD_RE.
     "televizor", "youtube", "jutjub", "netflix", "pojačaj", "pojacaj",
     "stišaj", "stisaj", "glasnoć", "glasnoc", "kanal", "pauziraj",
+    "aplikacij", "xplore", "program", "hrt", "arena sport", "sportklub",
 }
 
 # Word-boundary match for the bare word "tv" ("upali tv", "tv u dnevnoj").

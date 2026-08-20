@@ -32,7 +32,7 @@ above, do NOT try to call it; tell the user that capability is unavailable here.
 | marketing | Marketing campaigns and copy | Creative marketing content |
 | socrates | Socratic philosophical dialogue | Asks questions, never gives direct answers |
 | christian_guide | Christian reflection, doctrine, prayer guidance | Uses Christian RAG and answers in Croatian |
-| smart_home | Home Assistant control via MQTT (lights, devices, sensors) | Only smart-home commands, does NOT answer general questions |
+| smart_home | Lights, outlets, dimmer and scenes (MQTT); **TV** — power, volume, launching apps (YouTube, Netflix, A1 Xplore TV), switching channels, YouTube playback, remote keys; house sensors and their history (temperature, humidity, pressure, air quality, power) | Only smart-home / TV / sensor commands, does NOT answer general questions |
 | voice_qa | Fast conversational answers in voice mode | Short spoken-style replies, no tools/documents |
 | fiskalizacija | Croatian invoice fiscalization | Complete pipeline: prepare, validate, execute FINA, PDF |
 
