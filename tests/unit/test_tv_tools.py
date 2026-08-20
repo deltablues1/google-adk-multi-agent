@@ -1,0 +1,341 @@
+"""Tests for the TV tools, pinned to what the hardware actually supports.
+
+Verified against the TCL on 2026-08-20:
+- media_player.tv reports VOLUME_STEP but NOT VOLUME_SET (volume_set -> HTTP 500)
+- remote.tv.activity_list is empty, so HA knows no installed apps at all
+- launching by package name via remote.turn_on works
+"""
+
+import json
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.adk_tools import ha_adk_tools as tv  # noqa: E402
+
+
+@pytest.fixture
+def apps_file(tmp_path, monkeypatch):
+    path = tmp_path / "tv_apps.json"
+    monkeypatch.setenv("TV_APPS_FILE", str(path))
+    return path
+
+
+@pytest.fixture
+def ha(monkeypatch):
+    """Record HA service calls and serve canned states."""
+    calls = []
+    states = {
+        "media_player.tv": {
+            "state": "on",
+            "attributes": {"volume_level": 0.30, "app_id": "com.google.android.apps.tv.launcherx"},
+        },
+        "remote.tv": {"state": "on", "attributes": {"activity_list": []}},
+    }
+
+    def fake_request(path, payload=None, timeout=10.0):
+        if payload is None:
+            entity = path.rsplit("/", 1)[-1]
+            if entity not in states:
+                raise RuntimeError(f"nema {entity}")
+            return states[entity]
+        calls.append((path, payload))
+        return []
+
+    monkeypatch.setattr(tv, "_ha_request", fake_request)
+    return {"calls": calls, "states": states}
+
+
+# --- volume ---------------------------------------------------------------
+
+def test_volume_set_steps_instead_of_calling_unsupported_volume_set(ha):
+    """volume_set returns HTTP 500 on this TV, so it must never be called."""
+    current = {"value": 0.30}
+
+    def fake_request(path, payload=None, timeout=10.0):
+        if payload is None:
+            return {"attributes": {"volume_level": current["value"]}}
+        ha["calls"].append((path, payload))
+        if "volume_up" in path:
+            current["value"] = round(current["value"] + 0.05, 2)
+        return []
+
+    with patch.object(tv, "_ha_request", fake_request):
+        result = tv.tv_volume("set", 50)
+
+    services = [path for path, _ in ha["calls"]]
+    assert not any("volume_set" in s for s in services)
+    assert all("volume_up" in s for s in services)
+    assert result["success"] is True
+    assert "50" in result["detail"]
+
+
+def test_volume_set_gives_up_instead_of_looping_forever(ha):
+    """A TV that stops responding to steps must not spin 30 requests."""
+    def stuck(path, payload=None, timeout=10.0):
+        if payload is None:
+            return {"attributes": {"volume_level": 0.10}}
+        ha["calls"].append((path, payload))
+        return []
+
+    with patch.object(tv, "_ha_request", stuck):
+        result = tv.tv_volume("set", 90)
+
+    assert len(ha["calls"]) == 1          # level never moved -> stop at once
+    assert result["exact"] is False       # and say so
+
+
+def test_volume_set_reports_inexactness(ha):
+    with patch.object(tv, "_ha_request", lambda p, payload=None, timeout=10.0:
+                      {"attributes": {"volume_level": 0.30}} if payload is None else []):
+        result = tv.tv_volume("set", 30)
+
+    assert result["exact"] is True
+
+
+def test_volume_up_still_uses_steps(ha):
+    tv.tv_volume("up")
+    assert all("volume_up" in path for path, _ in ha["calls"])
+
+
+# --- apps -----------------------------------------------------------------
+
+def test_unknown_app_lists_what_is_known_instead_of_pretending(ha, apps_file):
+    result = tv.tv_open_app("a1 xplore tv")
+
+    assert "error" in result
+    assert "youtube" in result["poznate_aplikacije"]
+    assert "zapamti ovu aplikaciju" in result["kako_dodati"]
+    assert ha["calls"] == []            # nothing was launched
+
+
+def test_builtin_app_launches_by_deep_link(ha, apps_file):
+    result = tv.tv_open_app("netflix")
+
+    assert result["success"] is True
+    path, payload = ha["calls"][0]
+    assert "remote/turn_on" in path
+    assert payload["activity"].startswith("https://www.netflix.com")
+
+
+def test_learning_an_app_then_launching_it(ha, apps_file):
+    ha["states"]["media_player.tv"]["attributes"]["app_id"] = "hr.a1.xplore"
+
+    learned = tv.tv_learn_app("A1 Xplore TV")
+    assert learned["success"] is True
+    assert learned["package"] == "hr.a1.xplore"
+    assert json.loads(apps_file.read_text(encoding="utf-8")) == {"A1 Xplore TV": "hr.a1.xplore"}
+
+    result = tv.tv_open_app("a1 xplore tv")
+    assert result["success"] is True
+    assert ha["calls"][-1][1]["activity"] == "hr.a1.xplore"
+
+
+def test_learned_app_matches_partially(ha, apps_file):
+    apps_file.write_text(json.dumps({"a1 xplore tv": "hr.a1.xplore"}), encoding="utf-8")
+
+    result = tv.tv_open_app("a1")
+
+    assert result["success"] is True
+    assert ha["calls"][-1][1]["activity"] == "hr.a1.xplore"
+
+
+def test_learning_refuses_the_home_screen(ha, apps_file):
+    # app_id is the launcher in the default fixture
+    result = tv.tv_learn_app("A1")
+
+    assert "error" in result
+    assert not apps_file.exists()
+
+
+@pytest.mark.parametrize("package", [
+    "com.google.android.apps.tv.launcherx",
+    "com.google.android.apps.tv.dreamx",      # screensaver, seen live
+    "com.google.android.tvlauncher",
+])
+def test_learning_refuses_launcher_and_screensaver(ha, apps_file, package):
+    ha["states"]["media_player.tv"]["attributes"]["app_id"] = package
+
+    result = tv.tv_learn_app("A1")
+
+    assert "error" in result
+    assert not apps_file.exists()
+
+
+def test_learning_needs_a_name(ha, apps_file):
+    assert "error" in tv.tv_learn_app("  ")
+
+
+def test_list_apps_reports_all_three_sources(ha, apps_file):
+    apps_file.write_text(json.dumps({"a1": "hr.a1.xplore"}), encoding="utf-8")
+    ha["states"]["remote.tv"]["attributes"]["activity_list"] = ["Netflix"]
+
+    listed = tv.tv_list_apps()
+
+    assert "youtube" in listed["ugradene"]
+    assert listed["naucene"] == {"a1": "hr.a1.xplore"}
+    assert listed["iz_home_assistanta"] == ["Netflix"]
+    assert listed["trenutno_otvorena"].endswith("launcherx")
+
+
+def test_raw_package_or_url_is_launched_as_is(ha, apps_file):
+    assert tv.tv_open_app("com.example.app")["success"] is True
+    assert ha["calls"][-1][1]["activity"] == "com.example.app"
+
+
+# --- youtube --------------------------------------------------------------
+
+def test_youtube_plays_the_first_hit_not_the_search_page(ha):
+    with patch.object(tv, "_youtube_first_result", return_value=("XFkzRNyygfk", "Radiohead - Creep")):
+        result = tv.tv_play_youtube("Radiohead Creep")
+
+    assert result["playing"] is True
+    assert result["naslov"] == "Radiohead - Creep"
+    assert ha["calls"][-1][1]["activity"] == "https://www.youtube.com/watch?v=XFkzRNyygfk"
+
+
+def test_youtube_falls_back_to_search_when_resolution_fails(ha):
+    with patch.object(tv, "_youtube_first_result", return_value=(None, None)):
+        result = tv.tv_play_youtube("nešto nepostojeće")
+
+    assert result["playing"] is False
+    assert "results?search_query=" in ha["calls"][-1][1]["activity"]
+    assert "izaberi daljinskim" in result["detail"]
+
+
+def test_youtube_search_only_mode_is_honoured(ha):
+    with patch.object(tv, "_youtube_first_result") as resolver:
+        result = tv.tv_play_youtube("Radiohead Creep", play_first=False)
+
+    resolver.assert_not_called()
+    assert result["playing"] is False
+    assert "results?search_query=" in ha["calls"][-1][1]["activity"]
+
+
+def test_youtube_parser_extracts_id_and_title():
+    html = '{"videoId":"XFkzRNyygfk","title":{"runs":[{"text":"Radiohead - Creep"}]}}'
+
+    class FakeResponse:
+        def read(self):
+            return html.encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        video_id, title = tv._youtube_first_result("Radiohead Creep")
+
+    assert video_id == "XFkzRNyygfk"
+    assert title == "Radiohead - Creep"
+
+
+def test_youtube_network_failure_is_not_an_exception():
+    with patch("urllib.request.urlopen", side_effect=OSError("no network")):
+        assert tv._youtube_first_result("x") == (None, None)
+
+
+# --- channels -------------------------------------------------------------
+
+@pytest.fixture
+def channels_file(tmp_path, monkeypatch):
+    path = tmp_path / "tv_channels.json"
+    monkeypatch.setenv("TV_CHANNELS_FILE", str(path))
+    monkeypatch.setenv("TV_CHANNEL_APP_DELAY_SECONDS", "0")
+    return path
+
+
+def test_learn_then_switch_to_channel_by_name(ha, channels_file):
+    assert tv.tv_learn_channel("HRT 1", 101)["success"] is True
+
+    result = tv.tv_channel("hrt 1")
+
+    assert result["success"] is True
+    path, payload = ha["calls"][-1]
+    assert "remote/send_command" in path
+    assert payload["command"] == ["1", "0", "1", "DPAD_CENTER"]
+
+
+def test_channel_can_be_given_as_a_bare_number(ha, channels_file):
+    result = tv.tv_channel("305")
+
+    assert result["success"] is True
+    assert ha["calls"][-1][1]["command"] == ["3", "0", "5", "DPAD_CENTER"]
+
+
+def test_unknown_channel_asks_instead_of_guessing(ha, channels_file):
+    tv.tv_learn_channel("HRT 1", 101)
+
+    result = tv.tv_channel("Nova TV")
+
+    assert "error" in result
+    assert result["poznati_kanali"] == ["HRT 1"]
+    assert ha["calls"] == []
+
+
+def test_channel_opens_its_app_when_not_already_there(ha, channels_file, apps_file):
+    apps_file.write_text(json.dumps({"a1 xplore tv": "hr.a1.xplore"}), encoding="utf-8")
+    tv.tv_learn_channel("HRT 1", 101, app="a1 xplore tv")
+
+    tv.tv_channel("HRT 1")
+
+    launched = [p for path, p in ha["calls"] if "remote/turn_on" in path]
+    assert launched and launched[0]["activity"] == "hr.a1.xplore"
+
+
+def test_channel_does_not_relaunch_the_app_it_is_already_in(ha, channels_file, apps_file):
+    apps_file.write_text(json.dumps({"a1 xplore tv": "hr.a1.xplore"}), encoding="utf-8")
+    ha["states"]["media_player.tv"]["attributes"]["app_id"] = "hr.a1.xplore"
+    tv.tv_learn_channel("HRT 1", 101, app="a1 xplore tv")
+
+    tv.tv_channel("HRT 1")
+
+    assert not any("remote/turn_on" in path for path, _ in ha["calls"])
+
+
+def test_learn_channel_rejects_nonsense(ha, channels_file):
+    assert "error" in tv.tv_learn_channel("", 101)
+    assert "error" in tv.tv_learn_channel("HRT 1", "abc")
+    assert "error" in tv.tv_learn_channel("HRT 1", 0)
+    assert not channels_file.exists()
+
+
+def test_list_channels_reports_what_is_stored(ha, channels_file):
+    tv.tv_learn_channel("HRT 1", 101, app="a1 xplore tv")
+
+    listed = tv.tv_list_channels()
+
+    assert listed["broj"] == 1
+    assert listed["kanali"]["HRT 1"] == {"number": 101, "app": "a1 xplore tv"}
+
+
+def test_catalogue_channel_without_a_number_asks_for_it(ha, channels_file):
+    """Seeded from A1's public list, which publishes names but no numbers."""
+    channels_file.write_text(
+        json.dumps({"Arena Sport 1 HD": {"number": None, "app": "a1 xplore tv"}}),
+        encoding="utf-8",
+    )
+
+    result = tv.tv_channel("Arena Sport 1 HD")
+
+    assert "error" in result
+    assert "ne znam njegov broj" in result["error"]
+    assert ha["calls"] == []
+
+
+def test_learning_a_number_keeps_the_app_from_the_catalogue(ha, channels_file):
+    channels_file.write_text(
+        json.dumps({"Arena Sport 1 HD": {"number": None, "app": "a1 xplore tv"}}),
+        encoding="utf-8",
+    )
+
+    tv.tv_learn_channel("Arena Sport 1 HD", 204)
+
+    stored = json.loads(channels_file.read_text(encoding="utf-8"))
+    assert stored["Arena Sport 1 HD"] == {"number": 204, "app": "a1 xplore tv"}

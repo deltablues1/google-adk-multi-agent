@@ -163,3 +163,5 @@ deploy/rpi/*.env
 tmp_tts_*.pcm
 tmp_tts_*.wav
 test_results_*.log
+config/tv_apps.json
+config/tv_channels.json

@@ -667,6 +667,48 @@ gašenje bojlera, paljenje pećnice.
 | `TELEGRAM_MAX_INPUT_TEXT_LENGTH` | `4000` | Limit duljine tekstualne poruke |
 | `TELEGRAM_MAX_PHOTO_BYTES` | `10485760` | Limit veličine fotografije (provjera PRIJE downloada) |
 
+### Liveness servisa (kolovoz 2026)
+
+Nakon incidenta 18.08.2026. (Telegram bot je dva dana bio mrtav dok je systemd
+javljao `active (running)`) svaki dugotrajni servis dokazuje da stvarno radi, a
+ne samo da mu proces postoji.
+
+| Varijabla | Default | Opis |
+|-----------|---------|------|
+| `TELEGRAM_HEALTHCHECK_ENABLED` | `true` | Nadzor pollinga; `false` isključuje provjeru (samo za debug) |
+| `TELEGRAM_HEALTHCHECK_INTERVAL_SECONDS` | `30` | Koliko često se provjerava je li updater još u pollingu |
+| `TELEGRAM_HEALTHCHECK_PING_SECONDS` | `300` | Interval pravog `getMe` poziva prema Telegramu; `0` isključuje |
+| `TELEGRAM_HEALTHCHECK_MAX_FAILURES` | `3` | Koliko uzastopnih neuspjelih `getMe` poziva tolerira prije restarta |
+| `SCHEDULER_HEALTHCHECK_INTERVAL_SECONDS` | `30` | Provjera da APScheduler još radi (daemon mod) |
+| `SHUTDOWN_FLUSH_TIMEOUT_SECONDS` | `5` | Koliko se čeka flush logova pri gašenju prije nego proces ionako izađe |
+
+Ponašanje: kad provjera padne, servis izlazi s kodom 1 (`utils/process_guard.hard_exit`,
+ne `sys.exit` — non-daemon thread Cloud Logginga inače spriječi izlaz) i
+`Restart=always` ga podigne. Ako unit ima `WatchdogSec=`, servis šalje
+`WATCHDOG=1` samo dok je stvarno zdrav, pa systemd sam ubije zamrznut proces.
+
+### Senzori i zakazivanje (kolovoz 2026)
+
+| Varijabla | Default | Opis |
+|-----------|---------|------|
+| `HA_SENSOR_MAX_AGE_SECONDS` | `900` | Starije očitanje senzora agent označava zastarjelim |
+| `SCHEDULER_SYNC_INTERVAL_SECONDS` | `30` | Koliko često `adk-scheduler` preuzima nove zadatke iz zajedničke datoteke |
+| `SCHEDULER_STORE_FALLBACK` | `true` | Dopušta Telegramu/glasu da zapiše zadatak koji izvršava daemon; `false` vraća staro ponašanje ("scheduler nije dostupan") |
+
+**Tko što izvršava:** Telegram i glasovni proces namjerno nemaju vlastiti
+APScheduler — jedan izvršitelj znači da se zadatak ne može pokrenuti dvaput.
+Zadatak zatražen u chatu zapisuje se u `config/scheduled_jobs.<profil>.json`, a
+`adk-scheduler.service` ga preuzme na sljedećoj sinkronizaciji i rezultat pošalje
+u chat iz kojeg je zatražen (`deliver_chat_id`, fallback `TELEGRAM_CHAT_ID`).
+Jednokratni (`date`) zadatak briše se iz datoteke nakon izvršenja da ga sync ne
+bi pokušao ponovno registrirati s vremenom u prošlosti.
+
+**Senzori:** smart_home agent čita mjerenja iz Home Assistanta preko read-only
+alata (`home_climate_read`, `home_air_quality_read`, `home_power_read`,
+`home_sensor_search`). Klasifikacija ide po `device_class`, pa novi ESPHome node
+proradi bez izmjene koda. Vrijednosti izvan fizikalnog raspona senzora dobiju
+`"sumnjivo": true` i agent ih ne smije čitati kao stvarno stanje.
+
 ### Gmail
 
 | Varijabla | Default | Opis |
@@ -716,6 +758,6 @@ traže izbor korisnika.
 
 ---
 
-**Zadnje ažurirano:** 11.07.2026
+**Zadnje ažurirano:** 20.08.2026
 **Verzija:** 1.1
 **Status:** Production-ready

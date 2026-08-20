@@ -19,12 +19,14 @@ Env (Pi .env):
 
 import json
 import logging
+import re
 import os
 import socket
 import struct
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -202,11 +204,10 @@ def tv_volume(action: str, level: int = 0) -> dict:
             for _ in range(2):
                 _ha_service("media_player", "volume_down", entity)
         elif action == "set":
-            level = max(0, min(100, level))
-            _ha_service(
-                "media_player", "volume_set", entity,
-                {"volume_level": round(level / 100.0, 2)},
-            )
+            # media_player.tv (Android TV Remote) reports VOLUME_STEP but NOT
+            # VOLUME_SET — calling volume_set returns HTTP 500. Verified on the
+            # TCL on 2026-08-20. So step towards the target instead.
+            return _volume_step_to(entity, max(0, min(100, level)))
         elif action == "mute":
             _ha_service("media_player", "volume_mute", entity, {"is_volume_muted": True})
         elif action == "unmute":
@@ -218,53 +219,455 @@ def tv_volume(action: str, level: int = 0) -> dict:
         return {"error": str(e)}
 
 
+def _volume_level(entity: str) -> Optional[float]:
+    """Current volume as 0.0-1.0, or None when the entity does not report it."""
+    try:
+        state = _ha_request(f"/api/states/{entity}")
+    except RuntimeError:
+        return None
+    value = (state or {}).get("attributes", {}).get("volume_level")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _volume_step_to(entity: str, target_percent: int, max_steps: int = 30) -> dict:
+    """Walk the volume to a target using up/down steps.
+
+    Needed because the Android TV Remote entity has no absolute volume control.
+    Re-reads the level each step: the TV decides its own step size, so counting
+    blindly would overshoot.
+    """
+    target = target_percent / 100.0
+    current = _volume_level(entity)
+    if current is None:
+        return {"error": "TV ne javlja trenutnu glasnoću, pa je ne mogu postaviti na točnu vrijednost."}
+
+    tolerance = 0.02
+    for _ in range(max_steps):
+        if abs(current - target) <= tolerance:
+            break
+        _ha_service("media_player", "volume_up" if current < target else "volume_down", entity)
+        updated = _volume_level(entity)
+        if updated is None or updated == current:
+            break  # TV stopped responding or hit its own limit
+        current = updated
+
+    reached = int(round(current * 100))
+    return {
+        "success": True,
+        "detail": f"glasnoća ~{reached}%",
+        "exact": abs(current - target) <= tolerance,
+    }
+
+
+def _apps_file() -> Path:
+    return Path(os.getenv(
+        "TV_APPS_FILE",
+        str(Path(__file__).resolve().parents[2] / "config" / "tv_apps.json"),
+    ))
+
+
+def _load_learned_apps() -> dict:
+    path = _apps_file()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("Ne mogu pročitati %s: %s", path, e)
+        return {}
+
+
+def _save_learned_apps(apps: dict) -> None:
+    path = _apps_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(apps, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _ha_activities() -> dict:
+    """Apps configured in the HA Android TV Remote integration, if any.
+
+    Empty by default — the integration only knows the apps a human added in its
+    options, which is exactly why "upali A1 Xplore" found nothing.
+    """
+    try:
+        state = _ha_request(f"/api/states/{_tv_remote()}")
+    except RuntimeError:
+        return {}
+    activities = (state or {}).get("attributes", {}).get("activity_list") or []
+    return {str(a).strip().lower(): str(a) for a in activities}
+
+
+# Deep links for the big streaming apps. Anything else has to be learned from
+# the TV itself (tv_learn_app) — HA's app list is empty unless a human fills it
+# in, which is why "upali A1 Xplore TV" used to find nothing at all.
+_DEEP_LINKS = {
+    "youtube": "https://www.youtube.com",
+    "netflix": "https://www.netflix.com/title",
+    "hbo": "https://play.hbomax.com",
+    "hbo max": "https://play.hbomax.com",
+    "disney": "https://www.disneyplus.com",
+    "disney+": "https://www.disneyplus.com",
+    "spotify": "spotify://",
+}
+
+
+def _resolve_app(app: str) -> Optional[str]:
+    """Name -> something the TV can launch (deep link, package or activity)."""
+    key = app.strip().lower()
+    learned = {k.lower(): v for k, v in _load_learned_apps().items()}
+    if key in learned:
+        return learned[key]
+    if key in _DEEP_LINKS:
+        return _DEEP_LINKS[key]
+    activities = _ha_activities()
+    if key in activities:
+        return activities[key]
+    # Partial match against learned names ("a1" -> "a1 xplore tv").
+    for name, target in learned.items():
+        if key in name or name in key:
+            return target
+    return None
+
+
 def tv_open_app(app: str) -> dict:
     """Otvori aplikaciju na televizoru.
 
     Args:
-        app: naziv aplikacije — podržano: "youtube", "netflix", "hbo max",
-            "disney", "spotify", ili Android deep-link/URL.
+        app: naziv aplikacije — ugrađeno: "youtube", "netflix", "hbo max",
+            "disney", "spotify"; plus sve što je naučeno preko tv_learn_app
+            (npr. "a1 xplore tv"). Može i package ime ili deep-link URL.
 
     Returns:
-        dict sa "success"/"error".
+        dict sa "success"/"error". Kad aplikacija nije poznata, vraća popis
+        onoga što jest — bez izmišljanja.
     """
-    deep_links = {
-        "youtube": "https://www.youtube.com",
-        "netflix": "https://www.netflix.com/title",
-        "hbo": "https://play.hbomax.com",
-        "hbo max": "https://play.hbomax.com",
-        "disney": "https://www.disneyplus.com",
-        "disney+": "https://www.disneyplus.com",
-        "spotify": "spotify://",
-    }
-    target = deep_links.get(app.strip().lower(), app.strip())
+    raw = app.strip()
+    target = _resolve_app(raw)
+
+    if target is None:
+        # A bare package name or URL is launchable as-is; a plain word is not.
+        if "." in raw or "://" in raw:
+            target = raw
+        else:
+            known = sorted(set(list(_DEEP_LINKS) + list(_load_learned_apps())))
+            return {
+                "error": f"Ne znam aplikaciju '{raw}'.",
+                "poznate_aplikacije": known,
+                "kako_dodati": (
+                    "Otvori tu aplikaciju na TV-u daljinskim, pa reci "
+                    f"'zapamti ovu aplikaciju kao {raw}' — tada je mogu paliti sam."
+                ),
+            }
+
     try:
-        _ha_service(
-            "remote", "turn_on", _tv_remote(),
-            {"activity": target},
-        )
-        return {"success": True, "detail": f"otvaram {app}"}
+        _ha_service("remote", "turn_on", _tv_remote(), {"activity": target})
+        return {"success": True, "detail": f"otvaram {raw}", "launched": target}
     except RuntimeError as e:
         return {"error": str(e)}
 
 
-def tv_play_youtube(query: str) -> dict:
-    """Pokreni YouTube pretragu na televizoru (korisnik bira rezultat daljinskim).
+def tv_list_apps() -> dict:
+    """Prikaži koje aplikacije Jarvis zna upaliti na TV-u.
+
+    Returns:
+        Ugrađene aplikacije, naučene aplikacije i one konfigurirane u Home
+        Assistantu, plus koja je trenutno otvorena.
+    """
+    learned = _load_learned_apps()
+    current = None
+    try:
+        state = _ha_request(f"/api/states/{_tv_media_player()}")
+        current = (state or {}).get("attributes", {}).get("app_id")
+    except RuntimeError:
+        pass
+
+    return {
+        "ugradene": sorted(_DEEP_LINKS),
+        "naucene": learned,
+        "iz_home_assistanta": sorted(_ha_activities().values()),
+        "trenutno_otvorena": current,
+    }
+
+
+def tv_learn_app(name: str) -> dict:
+    """Zapamti aplikaciju koja je TRENUTNO otvorena na TV-u pod zadanim imenom.
+
+    Home Assistant ne zna popis instaliranih aplikacija (lista je prazna dok je
+    čovjek ručno ne popuni), ali TV javlja koja aplikacija je otvorena. Zato:
+    korisnik otvori aplikaciju daljinskim, ovaj alat zapamti njezin package, i
+    od tada je Jarvis može paliti sam.
 
     Args:
-        query: što tražiti (npr. "Radiohead Creep").
+        name: kako će je korisnik zvati, npr. "a1 xplore tv".
 
     Returns:
         dict sa "success"/"error".
+    """
+    label = name.strip()
+    if not label:
+        return {"error": "Trebam ime pod kojim da zapamtim aplikaciju."}
+
+    try:
+        state = _ha_request(f"/api/states/{_tv_media_player()}")
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    package = (state or {}).get("attributes", {}).get("app_id")
+    if not package:
+        return {"error": "TV ne javlja koja je aplikacija otvorena."}
+
+    # Launcher and screensaver are what the TV reports when nothing is really
+    # open; learning either would give the user an "app" that opens the home
+    # screen. Seen live: com.google.android.apps.tv.dreamx (screensaver).
+    not_an_app = ("launcherx", "tvlauncher", "dreamx", "daydream", "backdrop")
+    if any(marker in str(package).lower() for marker in not_an_app):
+        return {
+            "error": "Na TV-u je trenutno početni ekran ili screensaver, ne aplikacija.",
+            "trenutno": package,
+            "kako": f"Otvori '{label}' daljinskim, pa ponovi ovaj zahtjev.",
+        }
+
+    apps = _load_learned_apps()
+    apps[label] = package
+    try:
+        _save_learned_apps(apps)
+    except Exception as e:
+        return {"error": f"Ne mogu spremiti popis aplikacija: {e}"}
+
+    logger.info("Naučena TV aplikacija '%s' -> %s", label, package)
+    return {
+        "success": True,
+        "detail": f"Zapamćeno: '{label}' = {package}",
+        "package": package,
+    }
+
+
+def _youtube_first_result(query: str) -> tuple:
+    """(video_id, title) of the first YouTube hit, or (None, None).
+
+    Opening a search-results page only gets the user a list they still have to
+    click through with the remote — which is why "nađi pjesmu" used to find the
+    song but never play it. Resolving to a watch URL makes the TV autoplay.
     """
     from urllib.parse import quote_plus
 
     url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "hr-HR,hr;q=0.9,en;q=0.8",
+    })
     try:
-        _ha_service("remote", "turn_on", _tv_remote(), {"activity": url})
-        return {"success": True, "detail": f"YouTube pretraga: {query}"}
+        with urllib.request.urlopen(request, timeout=15) as resp:
+            html = resp.read().decode("utf-8", "ignore")
+    except Exception as e:
+        logger.warning("YouTube pretraga nije uspjela: %s", e)
+        return None, None
+
+    ids = re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', html)
+    if not ids:
+        return None, None
+    titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]{1,120})"', html)
+    return ids[0], (titles[0] if titles else None)
+
+
+def tv_play_youtube(query: str, play_first: bool = True) -> dict:
+    """Pusti nešto s YouTubea na televizoru.
+
+    Args:
+        query: što tražiti (npr. "Radiohead Creep").
+        play_first: True (zadano) pušta prvi rezultat; False samo otvori
+            pretragu da korisnik bira daljinskim.
+
+    Returns:
+        dict sa "success"/"error" i naslovom onoga što je pušteno.
+    """
+    from urllib.parse import quote_plus
+
+    video_id = title = None
+    if play_first:
+        video_id, title = _youtube_first_result(query)
+
+    if video_id:
+        target = f"https://www.youtube.com/watch?v={video_id}"
+        detail = f"puštam: {title or query}"
+    else:
+        target = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+        detail = (
+            f"YouTube pretraga: {query}"
+            if not play_first
+            else f"Nisam uspio odabrati snimku za '{query}', otvaram pretragu — izaberi daljinskim."
+        )
+
+    try:
+        _ha_service("remote", "turn_on", _tv_remote(), {"activity": target})
     except RuntimeError as e:
         return {"error": str(e)}
+
+    return {
+        "success": True,
+        "detail": detail,
+        "playing": bool(video_id),
+        "naslov": title,
+        "url": target,
+    }
+
+
+def _channels_file() -> Path:
+    return Path(os.getenv(
+        "TV_CHANNELS_FILE",
+        str(Path(__file__).resolve().parents[2] / "config" / "tv_channels.json"),
+    ))
+
+
+def _load_channels() -> dict:
+    path = _channels_file()
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning("Ne mogu pročitati %s: %s", path, e)
+        return {}
+
+
+def _save_channels(channels: dict) -> None:
+    path = _channels_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(channels, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def tv_learn_channel(name: str, number: int, app: str = "") -> dict:
+    """Zapamti broj kanala pod imenom, da ga poslije možeš tražiti riječima.
+
+    Args:
+        name: kako ga korisnik zove, npr. "HRT 1".
+        number: broj kanala u aplikaciji, npr. 101.
+        app: (neobavezno) aplikacija u kojoj taj broj vrijedi, npr.
+            "a1 xplore tv" — tada je Jarvis prvo otvori ako već nije otvorena.
+
+    Returns:
+        dict sa "success"/"error".
+    """
+    label = name.strip()
+    if not label:
+        return {"error": "Trebam ime kanala."}
+    try:
+        number = int(number)
+    except (TypeError, ValueError):
+        return {"error": f"'{number}' nije broj kanala."}
+    if number <= 0 or number > 9999:
+        return {"error": "Broj kanala mora biti između 1 i 9999."}
+
+    channels = _load_channels()
+    previous = channels.get(label) or {}
+    # Keep the app the catalogue already knows when the user only gives a number.
+    channels[label] = {"number": number, "app": app.strip() or previous.get("app", "")}
+    try:
+        _save_channels(channels)
+    except Exception as e:
+        return {"error": f"Ne mogu spremiti kanale: {e}"}
+
+    logger.info("Naučen kanal '%s' = %s (app=%s)", label, number, app or "-")
+    return {"success": True, "detail": f"Zapamćeno: {label} = {number}"}
+
+
+def tv_list_channels() -> dict:
+    """Prikaži naučene kanale.
+
+    Returns:
+        Mapa ime -> broj kanala i aplikacija u kojoj vrijedi.
+    """
+    channels = _load_channels()
+    return {"kanali": channels, "broj": len(channels)}
+
+
+def tv_channel(name: str) -> dict:
+    """Prebaci na kanal — po naučenom imenu ili izravno po broju.
+
+    Otvara pripadnu aplikaciju ako je zapamćena uz kanal, pa otipka broj na
+    daljinskom. Brojevi se šalju kao niz tipki jer TV nema pojam "kanal X",
+    nego samo tipke.
+
+    Args:
+        name: ime kanala ("HRT 1") ili sam broj ("101").
+
+    Returns:
+        dict sa "success"/"error".
+    """
+    query = name.strip()
+    if not query:
+        return {"error": "Koji kanal?"}
+
+    channels = _load_channels()
+    entry = channels.get(query)
+    if entry is None:
+        lowered = {k.lower(): v for k, v in channels.items()}
+        entry = lowered.get(query.lower())
+    if entry is None:
+        for label, data in channels.items():
+            if query.lower() in label.lower():
+                entry = data
+                break
+
+    if entry is None:
+        if query.isdigit():
+            entry = {"number": int(query), "app": ""}
+        else:
+            return {
+                "error": f"Ne znam kanal '{query}'.",
+                "poznati_kanali": sorted(channels),
+                "kako_dodati": f"Reci mi koji je broj tog kanala, npr. '{query} je 101'.",
+            }
+
+    raw_number = entry.get("number")
+    number = "" if raw_number is None else str(raw_number).strip()
+    if not number.isdigit():
+        # Catalogue entries seeded from the operator's channel list know the
+        # name but not the number — A1's public list does not publish numbers.
+        return {
+            "error": f"Znam kanal '{query}', ali ne znam njegov broj.",
+            "kako_dodati": f"Pogledaj broj u aplikaciji pa mi reci: '{query} je <broj>'.",
+        }
+
+    app = (entry.get("app") or "").strip()
+    opened_app = None
+    if app:
+        try:
+            current = _ha_request(f"/api/states/{_tv_media_player()}")
+            running = str((current or {}).get("attributes", {}).get("app_id", ""))
+        except RuntimeError:
+            running = ""
+        wanted = _resolve_app(app)
+        # Only launch when we are not already inside that app: relaunching
+        # would throw the user back to the app's home screen.
+        if wanted and wanted not in running:
+            result = tv_open_app(app)
+            if "error" in result:
+                return {"error": f"Ne mogu otvoriti '{app}': {result['error']}"}
+            opened_app = app
+            time.sleep(float(os.getenv("TV_CHANNEL_APP_DELAY_SECONDS", "4")))
+
+    try:
+        _ha_service(
+            "remote", "send_command", _tv_remote(),
+            {
+                "command": list(number) + ["DPAD_CENTER"],
+                "delay_secs": float(os.getenv("TV_CHANNEL_KEY_DELAY_SECONDS", "0.4")),
+            },
+        )
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    return {
+        "success": True,
+        "detail": f"kanal {number}" + (f" (otvorio {opened_app})" if opened_app else ""),
+        "broj": number,
+        "napomena": "Poslao sam brojeve na daljinski — ako aplikacija ne prima upis broja, javi pa ćemo drugačije.",
+    }
 
 
 def tv_send_key(key: str) -> dict:
@@ -326,7 +729,12 @@ def get_ha_adk_tools() -> list:
         tv_turn_off,
         tv_volume,
         tv_open_app,
+        tv_list_apps,
+        tv_learn_app,
         tv_play_youtube,
+        tv_channel,
+        tv_learn_channel,
+        tv_list_channels,
         tv_send_key,
         tv_status,
     ]

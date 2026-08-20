@@ -36,8 +36,12 @@ def create_smart_home_agent(
     # kad su HA_URL i HA_TOKEN postavljeni u .env).
     if os.getenv("HA_URL", "").strip() and os.getenv("HA_TOKEN", "").strip():
         from tools.adk_tools.ha_adk_tools import get_ha_adk_tools
-        tools = tools + get_ha_adk_tools()
-        logger.info("Smart Home agent: Home Assistant TV tools enabled")
+        from tools.adk_tools.ha_sensor_tools import get_ha_sensor_tools
+        # Sklopke idu preko MQTT-a, ali mjerenja (temperatura, vlaga, tlak,
+        # kvaliteta zraka, potrošnja) postoje samo u HA — bez ovih read-only
+        # alata agent ih nema odakle pročitati.
+        tools = tools + get_ha_adk_tools() + get_ha_sensor_tools()
+        logger.info("Smart Home agent: Home Assistant TV + sensor tools enabled")
 
     agent = create_adk_agent(
         name="smart_home",
