@@ -8,7 +8,6 @@ Uses Gmail ADK tools for Gmail API operations.
 import logging
 import os
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,9 @@ def create_mailer_agent(
         instruction = f.read()
 
     # Inject current datetime and timezone context (uses centralized helper)
-    instruction = inject_datetime_context(instruction, user_timezone)
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     # Import Gmail ADK tools
     from tools.adk_tools.gmail_adk_tools import (

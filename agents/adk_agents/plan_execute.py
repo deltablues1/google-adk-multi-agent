@@ -35,7 +35,6 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from google.genai import types
 
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 from agents.adk_agents.runner_utils import run_agent_simple
 
 logger = logging.getLogger(__name__)
@@ -83,7 +82,9 @@ def create_workflow_planner(
     instruction = instruction.replace(
         "{AVAILABLE_AGENTS}", _build_available_agents(worker_agents)
     )
-    instruction = inject_datetime_context(instruction, user_timezone=user_timezone)
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     planner = create_adk_agent(
         name="workflow_planner",

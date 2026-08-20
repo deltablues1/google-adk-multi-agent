@@ -19,7 +19,6 @@ if __name__ == "__main__":
 from google.adk.agents import LlmAgent
 
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 from config.deployment_config import is_erp_enabled
 
 logger = logging.getLogger(__name__)
@@ -110,7 +109,9 @@ def create_expense_agent(
             "Use OCR, Drive, Firestore, and Sheets flows only."
         )
 
-    instruction = inject_datetime_context(instruction, user_timezone="Europe/Zagreb")
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     agent = create_adk_agent(
         name="expense",

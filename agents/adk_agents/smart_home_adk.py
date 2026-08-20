@@ -8,7 +8,6 @@ import os
 import logging
 
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,9 @@ def create_smart_home_agent(
     with open(instruction_path, "r", encoding="utf-8") as f:
         instruction = f.read()
 
-    instruction = inject_datetime_context(instruction, user_timezone)
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     # Import tools
     from tools.adk_tools.mqtt_adk_tools import get_mqtt_adk_tools

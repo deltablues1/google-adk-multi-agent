@@ -52,7 +52,6 @@ from google.adk.agents import LlmAgent
 
 from tools.adk_tools.drive_adk_tools import get_drive_adk_tools
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +101,9 @@ def create_librarian_agent(
         instruction = f.read()
 
     # Inject current datetime and timezone context (uses centralized helper)
-    instruction = inject_datetime_context(instruction, user_timezone)
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     # Get Drive tools
     drive_tools = get_drive_adk_tools(credentials=credentials)

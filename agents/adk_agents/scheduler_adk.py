@@ -8,7 +8,6 @@ Uses APScheduler through scheduler ADK tools.
 import logging
 import os
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,9 @@ def create_scheduler_agent(
     with open(instruction_path, "r", encoding="utf-8") as f:
         instruction = f.read()
 
-    instruction = inject_datetime_context(instruction, user_timezone)
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     from tools.adk_tools.scheduler_adk_tools import get_scheduler_adk_tools
     tools = get_scheduler_adk_tools()

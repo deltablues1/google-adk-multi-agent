@@ -46,7 +46,6 @@ if __name__ == "__main__":
 from google.adk.agents import LlmAgent
 
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +144,9 @@ OUTCOMES:
 Trust NO input. Validate EVERYTHING. When in doubt, REJECT."""
 
     # Inject current datetime context for accurate date validation
-    instruction = inject_datetime_context(instruction, user_timezone="Europe/Zagreb")
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     # Create agent using factory
     # CRITICAL: Temperature 0.0 for deterministic validation

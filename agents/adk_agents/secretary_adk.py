@@ -48,7 +48,6 @@ from google.adk.agents import LlmAgent
 
 from tools.adk_tools.calendar_adk_tools import get_calendar_adk_tools
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +120,9 @@ def create_secretary_agent(
         instruction = "You are Secretary, a Google Calendar specialist."
 
     # Inject current datetime and timezone context (uses centralized helper)
-    instruction = inject_datetime_context(instruction, user_timezone)
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     # Create agent using factory
     agent = create_adk_agent(

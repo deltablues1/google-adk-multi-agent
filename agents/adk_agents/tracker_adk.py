@@ -8,7 +8,6 @@ Uses Tasks ADK tools for Google Tasks API operations.
 import logging
 import os
 from agents.adk_agents.adk_agent_factory import create_adk_agent
-from agents.adk_agents.datetime_context import inject_datetime_context
 from config.deployment_config import is_erp_enabled
 
 logger = logging.getLogger(__name__)
@@ -44,7 +43,9 @@ def create_tracker_agent(
         instruction = f.read()
 
     # Inject current datetime context for accurate due date handling
-    instruction = inject_datetime_context(instruction, user_timezone)
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     # Import Tasks ADK tools
     from tools.adk_tools.tasks_adk_tools import (

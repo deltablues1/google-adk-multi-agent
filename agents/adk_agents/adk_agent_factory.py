@@ -385,6 +385,18 @@ def create_adk_agent(
     # Prompt-injection boundary for agents that read external content.
     instruction = _append_untrusted_content_rule(name, instruction)
 
+    # Time-aware instructions must stay time-aware. Agents pass the raw
+    # template; rendering it per invocation keeps a long-running process from
+    # believing it is still whatever time it booted at.
+    from agents.adk_agents.datetime_context import (
+        has_datetime_placeholders,
+        make_datetime_instruction,
+    )
+    if has_datetime_placeholders(instruction):
+        instruction = make_datetime_instruction(
+            instruction, os.getenv("USER_TIMEZONE", "Europe/Zagreb")
+        )
+
     # Default description
     if description is None:
         description = f"{name.capitalize()} agent"

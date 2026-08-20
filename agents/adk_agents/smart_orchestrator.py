@@ -54,7 +54,6 @@ def create_smart_orchestrator(
         Smart Orchestrator LlmAgent instance
     """
     from agents.adk_agents.adk_agent_factory import create_adk_agent
-    from agents.adk_agents.datetime_context import inject_datetime_context
     from agents.adk_agents.control_callbacks import validate_worker_result
 
     # --- Load instructions from file ---
@@ -104,7 +103,9 @@ def create_smart_orchestrator(
     instruction = instruction.replace("{ASK_USER_AGENT}", ask_user_desc)
 
     # Inject current datetime context
-    instruction = inject_datetime_context(instruction, user_timezone="Europe/Zagreb")
+    # Datum/vrijeme se NE ubacuje ovdje: to bi zamrznulo sat na trenutak
+    # kad je agent stvoren. Predaje se predložak, a tvornica ga omota u
+    # ADK instruction provider koji ga renderira pri svakom pozivu.
 
     if not is_erp_enabled():
         instruction += (

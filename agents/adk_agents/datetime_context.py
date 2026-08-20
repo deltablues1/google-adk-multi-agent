@@ -114,6 +114,32 @@ def inject_datetime_context(
     return instruction
 
 
+DATETIME_PLACEHOLDERS = ("{current_datetime}", "{current_date}", "{user_timezone}")
+
+
+def has_datetime_placeholders(instruction: str) -> bool:
+    """True when an instruction still needs its time context filled in."""
+    return any(token in instruction for token in DATETIME_PLACEHOLDERS)
+
+
+def make_datetime_instruction(template: str, user_timezone: str = "Europe/Zagreb"):
+    """Return an ADK instruction provider that re-renders the clock every turn.
+
+    Substituting the time once, at agent creation, freezes it for the life of
+    the process. That is invisible in a CLI run and badly wrong for a bot that
+    stays up for days: on 2026-08-20 the Telegram process started at 20:21, and
+    at 20:29 the scheduler agent turned "za dvije minute" into 20:25 — a time
+    already in the past — because that was two minutes after the *boot* clock.
+
+    ADK accepts a callable for `instruction` and calls it per invocation, so
+    the template is kept and rendered fresh each time.
+    """
+    def provider(_context) -> str:
+        return inject_datetime_context(template, user_timezone, log_injection=False)
+
+    return provider
+
+
 def get_datetime_context_block(user_timezone: str = "Europe/Zagreb") -> str:
     """
     Generate a datetime context block that can be prepended to instructions.
