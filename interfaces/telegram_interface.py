@@ -32,6 +32,11 @@ from telegram.constants import ParseMode, ChatAction
 
 from .base_interface import BaseInterface
 from config.deployment_config import is_telegram_enabled
+from utils.process_guard import (
+    notify_ready,
+    notify_watchdog,
+    watchdog_interval_seconds,
+)
 from services.audio_ingress import (
     AudioIngressError,
     get_audio_ingress_service,
@@ -44,6 +49,10 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
+
+class PollingUnhealthy(RuntimeError):
+    """Raised when the bot is still a process but has stopped being a bot."""
+
 
 # Telegram message limit
 MAX_MESSAGE_LENGTH = 4096
@@ -142,6 +151,16 @@ class TelegramInterface(BaseInterface):
         Returns:
             Session ID string
         """
+        # Every entry point calls this right before handing the message to the
+        # agents, so it is also the one place that knows which chat the next
+        # tool calls belong to. A job scheduled in this turn must answer here,
+        # not in whatever chat TELEGRAM_CHAT_ID happens to point at.
+        try:
+            from tools.adk_tools.scheduler_adk_tools import set_delivery_target
+            set_delivery_target(chat_id)
+        except Exception:  # scheduler tools are optional in some profiles
+            pass
+
         if chat_id not in self.chat_sessions:
             self.chat_sessions[chat_id] = self.generate_session_id(chat_id)
             logger.info(f"Created new session for chat {chat_id}: {self.chat_sessions[chat_id]}")
@@ -848,12 +867,90 @@ Koristi /classroom za ulazak.
         logger.info("Telegram bot is running (polling mode)")
         logger.info("Press Ctrl+C to stop")
 
-        # Keep running until interrupted
+        notify_ready("polling")
+
+        # Keep running until interrupted -- while proving we are still alive.
         try:
-            while True:
-                await asyncio.sleep(1)
+            await self._supervise_polling()
         except asyncio.CancelledError:
             pass
+
+    async def _supervise_polling(self) -> None:
+        """Idle loop that verifies the bot is still actually polling.
+
+        Without this the process can sit in ``await asyncio.sleep(1)`` forever
+        while the updater underneath is dead -- systemd sees a live PID and
+        reports ``active (running)``, so nothing ever restarts it. Raising
+        :class:`PollingUnhealthy` hands control to the entry point, which exits
+        hard so ``Restart=always`` takes over.
+        """
+        enabled = os.getenv("TELEGRAM_HEALTHCHECK_ENABLED", "true").lower() != "false"
+        local_every = float(os.getenv("TELEGRAM_HEALTHCHECK_INTERVAL_SECONDS", "30"))
+        ping_every = float(os.getenv("TELEGRAM_HEALTHCHECK_PING_SECONDS", "300"))
+        max_failures = int(os.getenv("TELEGRAM_HEALTHCHECK_MAX_FAILURES", "3"))
+        heartbeat_every = watchdog_interval_seconds()
+
+        tick = min(
+            [v for v in (local_every, ping_every, heartbeat_every) if v and v > 0]
+            or [30.0]
+        )
+        since_local = since_ping = since_heartbeat = 0.0
+        ping_failures = 0
+
+        while True:
+            await asyncio.sleep(tick)
+            if not enabled:
+                continue
+
+            since_local += tick
+            since_ping += tick
+            since_heartbeat += tick
+
+            healthy = True
+
+            if since_local >= local_every:
+                since_local = 0.0
+                reason = self._polling_stopped_reason()
+                if reason:
+                    raise PollingUnhealthy(reason)
+
+            if ping_every > 0 and since_ping >= ping_every:
+                since_ping = 0.0
+                try:
+                    await asyncio.wait_for(self.application.bot.get_me(), timeout=30)
+                    if ping_failures:
+                        logger.info("Telegram reachable again after %s failed ping(s)", ping_failures)
+                    ping_failures = 0
+                except Exception as exc:
+                    ping_failures += 1
+                    healthy = False
+                    logger.warning(
+                        "Telegram health ping failed (%s/%s): %s",
+                        ping_failures, max_failures, exc,
+                    )
+                    if ping_failures >= max_failures:
+                        raise PollingUnhealthy(
+                            f"getMe failed {ping_failures} times in a row: {exc}"
+                        )
+
+            # Only tell systemd we are fine when we believe it.
+            if heartbeat_every and healthy and since_heartbeat >= heartbeat_every:
+                since_heartbeat = 0.0
+                notify_watchdog("polling")
+
+    def _polling_stopped_reason(self) -> Optional[str]:
+        """Describe why polling is no longer running, or None while healthy."""
+        app = self.application
+        if app is None:
+            return "application is gone"
+        if not getattr(app, "running", False):
+            return "application stopped running"
+        updater = getattr(app, "updater", None)
+        if updater is None:
+            return "updater is gone"
+        if not getattr(updater, "running", False):
+            return "updater stopped polling"
+        return None
 
     async def _start_webhook(self):
         """Start bot in webhook mode (for Cloud Run)."""
@@ -883,15 +980,48 @@ Koristi /classroom za ulazak.
         # externally (e.g., FastAPI, Flask) and call application.process_update()
 
     async def stop(self) -> None:
-        """Stop the Telegram interface."""
+        """Stop the Telegram interface.
+
+        Runs from a ``finally:`` block, so it must never raise: an exception here
+        replaces whatever error actually brought the bot down. On 2026-08-18 a
+        startup ``TimedOut`` was masked by ``RuntimeError: This Updater is not
+        running!`` raised while tearing down an updater that never started.
+        Every step is therefore both state-checked and exception-guarded.
+        """
         logger.info("Stopping Telegram interface...")
 
-        if self.application:
-            await self.application.updater.stop()
-            await self.application.stop()
-            await self.application.shutdown()
+        app = self.application
+        if app is None:
+            logger.info("Telegram interface stopped (nothing to tear down)")
+            return
+
+        updater = getattr(app, "updater", None)
+        if updater is not None and getattr(updater, "running", False):
+            await self._safe_teardown("updater.stop", updater.stop())
+
+        if getattr(app, "running", False):
+            await self._safe_teardown("application.stop", app.stop())
+
+        # shutdown() is idempotent and must run even if the steps above failed,
+        # otherwise the HTTP pool and the bot session leak.
+        await self._safe_teardown("application.shutdown", app.shutdown())
 
         logger.info("Telegram interface stopped")
+
+    @staticmethod
+    async def _safe_teardown(step: str, coro, timeout: float = 15.0) -> None:
+        """Await one shutdown step, bounded in time and never raising.
+
+        The timeout matters as much as the try/except: a wedged updater that
+        blocks here would keep the process alive exactly like the incident we
+        are guarding against.
+        """
+        try:
+            await asyncio.wait_for(coro, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Shutdown step '%s' timed out after %ss (ignored)", step, timeout)
+        except Exception as exc:
+            logger.warning("Shutdown step '%s' failed (ignored): %s", step, exc)
 
     # === Webhook Handler (for Cloud Run) ===
 

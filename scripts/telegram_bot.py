@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 from config.deployment_config import is_telegram_enabled
+from utils.process_guard import hard_exit
 
 
 def check_requirements():
@@ -217,6 +218,12 @@ def main():
     check_requirements()
 
     # Run appropriate mode
+    #
+    # Every exit path below goes through hard_exit() on purpose. sys.exit() only
+    # raises SystemExit and the interpreter then waits for non-daemon threads --
+    # the Cloud Logging handler owns one and can block forever flushing its
+    # backlog. That is how this service survived its own fatal error on
+    # 2026-08-18 and sat there for two days with systemd reporting it healthy.
     try:
         if args.webhook:
             asyncio.run(run_webhook())
@@ -224,11 +231,17 @@ def main():
             asyncio.run(run_polling())
     except KeyboardInterrupt:
         logger.info("\nShutdown complete")
+        hard_exit(0, "interrupted by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
+        hard_exit(1, f"fatal error: {e}")
+    else:
+        # Falling out of the run loop is not normal for a daemon: exit non-zero so
+        # systemd restarts instead of leaving a silent, bot-less process behind.
+        logger.error("Bot run loop returned unexpectedly")
+        hard_exit(1, "run loop returned unexpectedly")
 
 
 if __name__ == "__main__":

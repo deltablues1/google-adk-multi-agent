@@ -39,6 +39,12 @@ load_dotenv()
 os.environ.setdefault('HITL_INTERFACE', 'scheduler')
 
 from interfaces.scheduler_interface import SchedulerInterface
+from utils.process_guard import (
+    hard_exit,
+    notify_ready,
+    notify_watchdog,
+    watchdog_interval_seconds,
+)
 from config.scheduler_config import ScheduledJob, JobTrigger
 from main import sanitize_emojis
 
@@ -236,6 +242,35 @@ async def run_cli(scheduler: SchedulerInterface):
             break
 
 
+async def supervise_scheduler(scheduler) -> None:
+    """Idle loop for daemon mode that also proves the scheduler is still alive.
+
+    A bare `await asyncio.sleep(1)` loop keeps the PID up even after the
+    APScheduler underneath has shut down, which systemd happily reports as
+    "active (running)". Raising here reaches the fatal handler, which exits
+    hard so Restart=always can do its job.
+    """
+    heartbeat_every = watchdog_interval_seconds()
+    check_every = float(os.getenv("SCHEDULER_HEALTHCHECK_INTERVAL_SECONDS", "30"))
+    tick = min([v for v in (check_every, heartbeat_every) if v and v > 0] or [30.0])
+    since_check = since_heartbeat = 0.0
+
+    while True:
+        await asyncio.sleep(tick)
+        since_check += tick
+        since_heartbeat += tick
+
+        if since_check >= check_every:
+            since_check = 0.0
+            ap = getattr(scheduler, "scheduler", None)
+            if ap is not None and not getattr(ap, "running", False):
+                raise RuntimeError("APScheduler stopped running")
+
+        if heartbeat_every and since_heartbeat >= heartbeat_every:
+            since_heartbeat = 0.0
+            notify_watchdog("scheduler running")
+
+
 async def main():
     """Main entry point."""
     print_banner()
@@ -255,8 +290,8 @@ async def main():
 
         if daemon_mode:
             print("\nRunning in daemon mode (no CLI). Press Ctrl+C to stop.")
-            while True:
-                await asyncio.sleep(1)
+            notify_ready("scheduler running")
+            await supervise_scheduler(scheduler)
         else:
             await run_cli(scheduler)
 
@@ -267,8 +302,14 @@ async def main():
         logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc()
-        await scheduler.stop()
-        sys.exit(1)
+        try:
+            await asyncio.wait_for(scheduler.stop(), timeout=15)
+        except Exception as stop_exc:
+            # Never let cleanup replace the error that actually killed us.
+            logger.warning(f"scheduler.stop() failed during shutdown (ignored): {stop_exc}")
+        # hard_exit, not sys.exit: non-daemon threads (Cloud Logging) would
+        # otherwise keep this process alive and systemd would never restart it.
+        hard_exit(1, f"fatal error: {e}")
 
 
 if __name__ == "__main__":
