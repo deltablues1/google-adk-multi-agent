@@ -186,3 +186,80 @@ def test_second_device_keeps_its_own_name_prefix():
     zones = {m["zona"] for m in result["mjerenja"]}
     assert "Kuhinja" in zones     # its own device prefix stripped separately
     assert "Kat" in zones         # the ESPHome node's channel still intact
+
+
+# --- history / statistics -------------------------------------------------
+
+def _hour_rows(values):
+    """Rows as HA's recorder returns them: one min/max/mean triple per hour."""
+    return [{"min": v, "max": v, "mean": v} for v in values]
+
+
+def test_history_answers_min_max_which_current_readings_cannot():
+    with _with_states():
+        with patch.object(hs, "_statistics", return_value={
+            NODE + "kupaona_temperatura": _hour_rows([24.0, 26.5, 28.6]),
+        }):
+            result = hs.home_climate_history("kupaona", days=1)
+
+    reading = result["mjerenja"][0]
+    assert reading["najvisa"] == 28.6
+    assert reading["najniza"] == 24.0
+    assert reading["prosjek"] == 26.4
+
+
+def test_history_skips_the_sensor_glitches_already_in_the_database():
+    """The recorder kept the 188.5 C samples; the answer must not repeat them."""
+    with _with_states():
+        with patch.object(hs, "_statistics", return_value={
+            NODE + "kupaona_temperatura": _hour_rows([24.0, 188.5, 26.5, -57.6, 28.6]),
+        }):
+            result = hs.home_climate_history("kupaona", days=1)
+
+    reading = result["mjerenja"][0]
+    assert reading["najvisa"] == 28.6      # not 188.5
+    assert reading["najniza"] == 24.0      # not -57.6
+    assert reading["odbaceno_neispravnih"] == 4
+    assert "neispravnih očitanja" in reading["napomena"]
+
+
+def test_history_uses_hourly_resolution():
+    """Daily buckets would let one glitch wipe out a whole day's real maximum."""
+    with _with_states():
+        with patch.object(hs, "_statistics", return_value={}) as stats:
+            hs.home_climate_history("kupaona", days=30)
+
+    assert stats.call_args.kwargs.get("period") == "hour"
+
+
+def test_history_says_so_when_there_is_nothing_recorded():
+    with _with_states():
+        with patch.object(hs, "_statistics", return_value={NODE + "kupaona_temperatura": []}):
+            result = hs.home_climate_history("kupaona", days=1)
+
+    assert "nema zabilježene statistike" in result["mjerenja"][0]["napomena"]
+
+
+def test_history_clamps_absurd_ranges():
+    with _with_states():
+        with patch.object(hs, "_statistics", return_value={}) as stats:
+            hs.home_climate_history("kupaona", days=99999)
+    assert stats.call_args.args[1] == 365
+
+    with _with_states():
+        with patch.object(hs, "_statistics", return_value={}) as stats:
+            hs.home_climate_history("kupaona", days=0)
+    assert stats.call_args.args[1] == 1
+
+
+def test_history_reports_unknown_zone_instead_of_all_zones():
+    with _with_states():
+        result = hs.home_climate_history("garaza")
+
+    assert result["mjerenja"] == []
+
+
+def test_history_surfaces_a_statistics_failure():
+    with _with_states():
+        with patch.object(hs, "_statistics", side_effect=RuntimeError("HA nedostupan")):
+            assert "error" in hs.home_climate_history()

@@ -333,11 +333,170 @@ def home_sensor_search(query: str) -> dict:
     return {"mjerenja": hits, "broj": len(hits)}
 
 
+def _statistics(entity_ids: list, days: int, period: str = "day") -> dict:
+    """Long-term statistics from HA's recorder, over its WebSocket API.
+
+    The REST API cannot reach statistics — only the WebSocket one can — so this
+    opens a short-lived socket per call. Worth it: without it the assistant can
+    only ever say what a sensor reads *right now*, and "koja je danas bila
+    najviša temperatura" has no answer at all.
+    """
+    import asyncio
+    import json as _json
+    import socket
+    from datetime import datetime, timedelta, timezone as _tz
+
+    url = os.getenv("HA_URL", "").strip().rstrip("/")
+    token = os.getenv("HA_TOKEN", "").strip()
+    if not url or not token:
+        raise RuntimeError("HA_URL/HA_TOKEN nisu postavljeni u .env")
+
+    try:
+        import websockets
+    except ImportError as e:
+        raise RuntimeError(f"websockets nije instaliran ({e})")
+
+    ws_url = url.replace("https://", "wss://").replace("http://", "ws://") + "/api/websocket"
+    start = (datetime.now(_tz.utc) - timedelta(days=days)).isoformat()
+
+    async def fetch():
+        async with websockets.connect(ws_url, max_size=20_000_000, open_timeout=10) as ws:
+            await ws.recv()
+            await ws.send(_json.dumps({"type": "auth", "access_token": token}))
+            auth = _json.loads(await ws.recv())
+            if auth.get("type") != "auth_ok":
+                raise RuntimeError("Home Assistant je odbio token")
+            await ws.send(_json.dumps({
+                "id": 1, "type": "recorder/statistics_during_period",
+                "start_time": start, "statistic_ids": entity_ids,
+                "period": period, "types": ["min", "max", "mean"],
+            }))
+            while True:
+                message = _json.loads(await ws.recv())
+                if message.get("id") == 1 and message.get("type") == "result":
+                    if not message.get("success"):
+                        raise RuntimeError(str(message.get("error"))[:200])
+                    return message.get("result") or {}
+
+    try:
+        return asyncio.run(asyncio.wait_for(fetch(), timeout=25))
+    except RuntimeError:
+        raise
+    except (OSError, socket.gaierror, asyncio.TimeoutError) as e:
+        raise RuntimeError(f"Home Assistant nedostupan ({e})")
+    except Exception as e:
+        raise RuntimeError(f"Statistika nije dostupna ({e})")
+
+
+def home_climate_history(zone: str = "", days: int = 1) -> dict:
+    """
+    Najviša, najniža i prosječna temperatura kroz vrijeme (iz HA statistike).
+
+    Koristi ovo za pitanja tipa "koja je danas bila najviša temperatura",
+    "kolika je bila najniža u sobi", "kakav je bio tjedan" — trenutna
+    očitanja (home_climate_read) na to ne mogu odgovoriti.
+
+    Args:
+        zone: Zona ("kupaona", "soba", "vanjska"...). Prazno = sve zone.
+        days: Koliko dana unatrag (1 = danas, 7 = tjedan, 30 = mjesec).
+
+    Returns:
+        Po zoni: najviša, najniža i prosječna vrijednost s danima.
+    """
+    try:
+        days = max(1, min(int(days), 365))
+    except (TypeError, ValueError):
+        days = 1
+
+    try:
+        states = _fetch_states()
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    candidates = []
+    for entry in states:
+        entity_id = entry.get("entity_id", "")
+        attrs = entry.get("attributes", {})
+        if entity_id.startswith("sensor.") and str(attrs.get("device_class", "")).lower() == "temperature":
+            candidates.append((entity_id, "temperature", entry))
+
+    prefixes = {}
+    for device, group in _group_by_device(candidates).items():
+        names = [e.get("attributes", {}).get("friendly_name", "") for _, _, e in group]
+        prefixes[device] = len(_common_word_prefix(names))
+
+    wanted = {}
+    zone_filter = zone.strip().lower()
+    for entity_id, _, entry in candidates:
+        name = entry.get("attributes", {}).get("friendly_name", entity_id)
+        zona = _zone_from_name(name, "temperature", prefixes.get(_device_key(entity_id), 0))
+        if zone_filter and not _zone_matches(zone_filter, zona):
+            continue
+        wanted[entity_id] = zona
+
+    if not wanted:
+        return {"mjerenja": [], "napomena": f"nema temperaturnog senzora za zonu '{zone}'"}
+
+    try:
+        # Hourly, not daily: a single bad sample poisons that whole period's
+        # min/max. At day resolution one 188.5 C glitch would wipe out the real
+        # maximum for the entire day; at hour resolution only that hour is lost
+        # and the other 23 still answer the question. HA keeps hourly long-term
+        # statistics indefinitely, so this works for any range.
+        stats = _statistics(list(wanted), days, period="hour")
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    low, high = _PLAUSIBLE_RANGE["temperature"]
+
+    def usable(values):
+        # The recorder already stored the bad samples the ESP32 used to emit
+        # (188.5 / -57.6 and friends). Reporting those back as "najviša danas"
+        # would be worse than useless, so they are dropped here too — the
+        # history is dirty for good, the answer does not have to be.
+        return [v for v in values if v is not None and low <= v <= high]
+
+    results = []
+    for entity_id, zona in wanted.items():
+        rows = stats.get(entity_id) or []
+        raw_max = [r.get("max") for r in rows]
+        raw_min = [r.get("min") for r in rows]
+        values_max = usable(raw_max)
+        values_min = usable(raw_min)
+        values_mean = usable([r.get("mean") for r in rows])
+        discarded = (len([v for v in raw_max if v is not None]) - len(values_max)
+                     + len([v for v in raw_min if v is not None]) - len(values_min))
+
+        if not values_max or not values_min:
+            results.append({"zona": zona, "napomena": "nema zabilježene statistike za to razdoblje"})
+            continue
+
+        entry = {
+            "zona": zona,
+            "najvisa": round(max(values_max), 1),
+            "najniza": round(min(values_min), 1),
+            "prosjek": round(sum(values_mean) / len(values_mean), 1) if values_mean else None,
+            "jedinica": "°C",
+            "sati_podataka": len(rows),
+        }
+        if discarded:
+            entry["odbaceno_neispravnih"] = discarded
+            entry["napomena"] = (
+                "u povijesti ima neispravnih očitanja senzora; preskočena su "
+                "pri računanju"
+            )
+        results.append(entry)
+
+    results.sort(key=lambda r: r["zona"])
+    return {"razdoblje_dana": days, "mjerenja": results, "broj": len(results)}
+
+
 def get_ha_sensor_tools() -> list:
     """Read-only senzorski alati za smart_home agenta."""
     return [
         home_climate_read,
         home_air_quality_read,
         home_power_read,
+        home_climate_history,
         home_sensor_search,
     ]

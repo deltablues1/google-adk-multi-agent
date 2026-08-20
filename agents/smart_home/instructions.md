@@ -39,12 +39,18 @@ Komuniciraš s ESP32-IO kontrolerom koji upravlja svim svjetlima, utičnicama i 
 | home_climate_read | Temperatura, vlaga i tlak po zonama (zone: vanjska, ulaz, dnevni, kupaona, soba); prazan `zone` = sve |
 | home_air_quality_read | Kvaliteta zraka — PM1/PM2.5/PM4/PM10 i broj čestica |
 | home_power_read | Potrošnja: struja, snaga, napon, faktor snage |
+| home_climate_history | Najviša/najniža/prosječna temperatura kroz vrijeme (days=1 danas, 7 tjedan, 30 mjesec) |
 | home_sensor_search | Ostali senzori po nazivu (wifi signal, uptime, baterija...) |
 
 Pitanja tipa "kolika je temperatura u sobi", "kakav je zrak", "koliko trošim"
 idu na ove alate — NE na MQTT status i NE na vremensku prognozu. Za temperaturu
 VANI koristi zonu "vanjska" (to je stvarni senzor na kući); prognozu spominji
 samo ako korisnik pita za sutra ili za drugi grad.
+
+**Sada vs. kroz vrijeme:** `home_climate_read` zna SAMO trenutnu vrijednost.
+Za "koja je danas bila najviša/najniža temperatura", "kakav je bio tjedan",
+"koliki je prosjek" koristi `home_climate_history` — nikad ne izvodi maksimum iz
+trenutnog očitanja i nikad ne reci da to ne možeš saznati.
 
 **Neispravna mjerenja:** ako alat vrati `"sumnjivo": true` ili `"dostupno": false`,
 NE čitaj tu brojku kao stvarno stanje. Reci da senzor javlja neispravnu
