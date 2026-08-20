@@ -339,3 +339,26 @@ def test_learning_a_number_keeps_the_app_from_the_catalogue(ha, channels_file):
 
     stored = json.loads(channels_file.read_text(encoding="utf-8"))
     assert stored["Arena Sport 1 HD"] == {"number": 204, "app": "a1 xplore tv"}
+
+
+@pytest.mark.parametrize("spoken", ["HRT 1", "hrt1", "HRT1", "hrt 1 hd", "HRT 1 HD"])
+def test_channel_name_matches_however_it_is_spelled(ha, channels_file, spoken):
+    channels_file.write_text(
+        json.dumps({"HRT 1 HD": {"number": 1, "app": ""}}), encoding="utf-8"
+    )
+
+    result = tv.tv_channel(spoken)
+
+    assert result["success"] is True
+    assert ha["calls"][-1][1]["command"] == ["1", "DPAD_CENTER"]
+
+
+def test_normalisation_does_not_merge_different_channels(ha, channels_file):
+    channels_file.write_text(json.dumps({
+        "Arena Sport 1 HD": {"number": 201, "app": ""},
+        "Arena Sport 10 HD": {"number": 210, "app": ""},
+    }), encoding="utf-8")
+
+    tv.tv_channel("Arena sport 10")
+
+    assert ha["calls"][-1][1]["command"] == ["2", "1", "0", "DPAD_CENTER"]

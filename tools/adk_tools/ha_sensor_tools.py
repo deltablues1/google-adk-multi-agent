@@ -45,7 +45,10 @@ _POWER_CLASSES = {"power", "current", "voltage", "apparent_power", "power_factor
 # Izvan njih mjerenje je greška očitanja, ne stvarno stanje.
 _PLAUSIBLE_RANGE = {
     "temperature": (-40.0, 85.0),      # BME280 spec
-    "humidity": (0.0, 100.0),
+    # Lower bound is 0.1, not 0: the BME280 reset registers compensate to
+    # exactly 0.0 % (seen 3x in the bathroom), and no real air is ever at 0 %.
+    # 100 % stays valid — outdoors at dawn it is genuine.
+    "humidity": (0.1, 100.0),
     "pressure": (300.0, 1100.0),
     "atmospheric_pressure": (300.0, 1100.0),
     "power_factor": (-1.0, 1.0),

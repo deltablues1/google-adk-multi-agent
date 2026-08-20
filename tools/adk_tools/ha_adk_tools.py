@@ -514,6 +514,12 @@ def tv_play_youtube(query: str, play_first: bool = True) -> dict:
     }
 
 
+def _normalize_channel(name: str) -> str:
+    """Fold a channel name to its comparable core: "HRT 1 HD" -> "hrt1"."""
+    folded = re.sub(r"[^a-z0-9]", "", name.lower())
+    return folded[:-2] if folded.endswith("hd") and len(folded) > 2 else folded
+
+
 def _channels_file() -> Path:
     return Path(os.getenv(
         "TV_CHANNELS_FILE",
@@ -605,8 +611,13 @@ def tv_channel(name: str) -> dict:
     channels = _load_channels()
     entry = channels.get(query)
     if entry is None:
-        lowered = {k.lower(): v for k, v in channels.items()}
-        entry = lowered.get(query.lower())
+        # People say "HRT1" and "hrt 1"; the operator's list says "HRT 1 HD".
+        # Normalising both sides beats maintaining an alias for every spelling.
+        wanted = _normalize_channel(query)
+        for label, data in channels.items():
+            if _normalize_channel(label) == wanted:
+                entry = data
+                break
     if entry is None:
         for label, data in channels.items():
             if query.lower() in label.lower():
