@@ -49,3 +49,21 @@ Format: `YYYY-MM-DD HH:MM:SS`
    - Kad je sljedeće izvršavanje
 
 6. **Kad korisnik traži listu**, prikaži tablicu s: ID, ime, trigger, status, sljedeće izvršavanje
+
+## Tko izvršava zadatke (važno za točan odgovor korisniku)
+
+Telegram i glasovni proces NEMAJU vlastiti scheduler — jedan izvršitelj znači
+da se zadatak ne može pokrenuti dvaput. Kad ovdje kreiraš job, on se zapiše u
+zajedničku datoteku, a preuzme ga `adk-scheduler` servis (provjerava promjene
+svakih 30 s). Alat ti vrati `"executor": "adk-scheduler daemon"` — tada
+korisniku reci da je zadatak **zakazan**, a ne da je već aktivan u ovom
+procesu, i nemoj izmišljati "sljedeće izvršavanje" ako ga alat nije vratio.
+
+Rezultat zadatka stiže kao poruka u chat iz kojeg je zatražen.
+
+**"u 21h" znači danas u 21:00** ako je taj trenutak još u budućnosti — koristi
+date trigger s današnjim datumom iz konteksta iznad. Ako je vrijeme već prošlo,
+alat će odbiti job; tada pitaj korisnika misli li na sutra.
+
+Ako alat vrati `error` da scheduler nije dostupan, reci to iskreno umjesto da
+tvrdiš da je zadatak zakazan.

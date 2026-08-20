@@ -62,6 +62,11 @@ class ScheduledJob(BaseModel):
     # "briefing" calls the deterministic daily-briefing service directly and
     # delivers the result to the authorized Telegram chat.
     action_type: str = Field("nl", description="Job action: 'nl' or 'briefing'")
+    # Chat that asked for the job, so the daemon can answer where the user is
+    # standing. Empty falls back to TELEGRAM_CHAT_ID.
+    deliver_chat_id: Optional[str] = Field(
+        None, description="Telegram chat id that should receive the result"
+    )
 
 
 class SchedulerConfig(BaseModel):

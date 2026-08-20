@@ -83,10 +83,14 @@ class SchedulerInterface(BaseInterface):
         else:
             raise ValueError(f"Unknown trigger type: {trigger.type}")
 
-    async def _deliver_to_telegram(self, text: str) -> bool:
-        """Push a job result to the authorized Telegram chat, if configured."""
+    async def _deliver_to_telegram(self, text: str, chat_id: str = "") -> bool:
+        """Push a job result to a Telegram chat, if configured.
+
+        Defaults to TELEGRAM_CHAT_ID, but a job created from a chat carries the
+        id of that chat so the answer comes back where it was asked for.
+        """
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        chat_id = (chat_id or "").strip() or os.getenv("TELEGRAM_CHAT_ID", "").strip()
         if not token or not chat_id:
             logger.info("[SCHEDULER] No Telegram token/chat configured for delivery")
             return False
@@ -109,7 +113,9 @@ class SchedulerInterface(BaseInterface):
             text = await get_daily_briefing(
                 get_default_user_context(channel="scheduler")
             )
-            delivered = await self._deliver_to_telegram(text)
+            delivered = await self._deliver_to_telegram(
+                text, getattr(job_config, "deliver_chat_id", "") or ""
+            )
             self.job_results[job_id] = {
                 # A briefing nobody received is not a success.
                 "status": "SUCCESS" if delivered else "SUCCESS_NOT_DELIVERED",
@@ -166,7 +172,24 @@ class SchedulerInterface(BaseInterface):
                 result = await helper.run(job_config.agent_request)
                 elapsed = time.time() - start_time
 
+                # A scheduled job whose answer only reaches the log is useless
+                # to the person who asked for it.
+                delivered = False
+                if result:
+                    try:
+                        delivered = await self._deliver_to_telegram(
+                            f"[{job_config.name}]\n{result}",
+                            getattr(job_config, "deliver_chat_id", "") or "",
+                        )
+                    except Exception as delivery_error:
+                        logger.warning(
+                            f"[SCHEDULER] Job '{job_id}' ran but delivery failed: {delivery_error}"
+                        )
+
+                self._forget_one_shot(job_config)
+
                 self.job_results[job_id] = {
+                    "delivered": delivered,
                     "status": "SUCCESS",
                     "result_preview": result[:200] if result else "",
                     "elapsed": round(elapsed, 1),
@@ -200,6 +223,83 @@ class SchedulerInterface(BaseInterface):
                         "attempt": attempt
                     }
 
+    def _schedule(self, job: ScheduledJob) -> None:
+        """Register a job with APScheduler only — no persistence side effects.
+
+        Kept separate from add_job() so the disk-sync path can (re)register jobs
+        written by another process without saving the file back and racing it.
+        """
+        self.scheduler.add_job(
+            self._execute_job,
+            trigger=self._build_trigger(job.trigger),
+            id=job.id,
+            name=job.name,
+            args=[job],
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=300,
+        )
+
+    def _forget_one_shot(self, job: ScheduledJob) -> None:
+        """Drop a fired one-time job from the store.
+
+        APScheduler removes a date job once it runs, but the file would keep it
+        forever and the next sync would try to re-register a run_date in the
+        past — a job that can only misfire.
+        """
+        if getattr(job.trigger, "type", "") != "date":
+            return
+        try:
+            self.config.jobs = [j for j in self.config.jobs if j.id != job.id]
+            save_jobs(self.config)
+            logger.info(f"[SCHEDULER] One-shot job '{job.id}' done and removed from store")
+        except Exception as e:
+            logger.warning(f"[SCHEDULER] Could not remove one-shot job '{job.id}': {e}")
+
+    def sync_from_store(self) -> dict:
+        """Pick up jobs written by another process (Telegram/voice).
+
+        The bot process has no APScheduler on purpose — one executor means no
+        double runs — so it persists jobs and this daemon adopts them.
+        """
+        try:
+            stored = load_jobs()
+        except Exception as e:
+            logger.warning(f"[SCHEDULER] Job store unreadable, keeping current jobs: {e}")
+            return {"added": 0, "removed": 0}
+
+        current = {j.id: j for j in self.config.jobs}
+        incoming = {j.id: j for j in stored.jobs}
+        added = removed = 0
+
+        for job_id, job in incoming.items():
+            if current.get(job_id) == job:
+                continue
+            try:
+                if job.enabled:
+                    self._schedule(job)
+                    added += 1
+                    logger.info(f"[SCHEDULER] Adopted job '{job_id}': {job.name}")
+                else:
+                    self._drop_from_scheduler(job_id)
+            except Exception as e:
+                logger.error(f"[SCHEDULER] Could not adopt job '{job_id}': {e}")
+
+        for job_id in set(current) - set(incoming):
+            self._drop_from_scheduler(job_id)
+            removed += 1
+            logger.info(f"[SCHEDULER] Job '{job_id}' disappeared from store, unscheduled")
+
+        self.config = stored
+        return {"added": added, "removed": removed}
+
+    def _drop_from_scheduler(self, job_id: str) -> None:
+        try:
+            self.scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
     def add_job(self, job: ScheduledJob) -> str:
         """
         Add a scheduled job.
@@ -210,19 +310,7 @@ class SchedulerInterface(BaseInterface):
         Returns:
             Job ID
         """
-        trigger = self._build_trigger(job.trigger)
-
-        self.scheduler.add_job(
-            self._execute_job,
-            trigger=trigger,
-            id=job.id,
-            name=job.name,
-            args=[job],
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=300,
-        )
+        self._schedule(job)
 
         # Save to config
         existing_ids = {j.id for j in self.config.jobs}
@@ -352,7 +440,29 @@ class SchedulerInterface(BaseInterface):
 
         # Start scheduler
         self.scheduler.start()
+
+        # Adopt jobs created by the Telegram/voice processes.
+        sync_seconds = self._sync_interval_seconds()
+        if sync_seconds > 0:
+            self.scheduler.add_job(
+                self.sync_from_store,
+                trigger="interval",
+                seconds=sync_seconds,
+                id="_store_sync",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
+            logger.info(f"[SCHEDULER] Watching job store every {sync_seconds}s")
+
         logger.info(f"[SCHEDULER] Started with {len(self.config.jobs)} jobs")
+
+    @staticmethod
+    def _sync_interval_seconds() -> int:
+        try:
+            return int(os.getenv("SCHEDULER_SYNC_INTERVAL_SECONDS", "30"))
+        except ValueError:
+            return 30
 
     async def stop(self) -> None:
         """Stop the scheduler interface."""

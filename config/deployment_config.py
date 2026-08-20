@@ -107,6 +107,9 @@ RPI_HOME_ALLOWED_AGENTS = {
     "socrates",
     "christian_guide",
     "smart_home",
+    # Lets the user say "napravi X u 21h" from Telegram/voice; the job is
+    # persisted and executed by the adk-scheduler daemon, not in this process.
+    "scheduler",
     # Warehouse voice lane — gets its ERP tools only when ERP_ENABLED=true
     # overrides the rpi-home default; degrades to zero tools otherwise.
     "skladistar",
