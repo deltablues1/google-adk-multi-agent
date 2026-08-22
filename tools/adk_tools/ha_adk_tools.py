@@ -376,7 +376,23 @@ def tv_open_app(app: str) -> dict:
     # app must claim; a bare package name is accepted and silently ignored
     # (measured 2026-08-22: youtube.com opened YouTube, hr.a1.android.tv.xploretv
     # left the TV on its home screen). So watch the TV instead of trusting 200.
-    opened = _wait_for_app_change(before, expected=target if "://" not in target else "")
+    expected = target if "://" not in target else ""
+    if expected and before == expected:
+        # The TV already reports this package, so a launch cannot be told apart
+        # from doing nothing — and that reading goes stale: on 2026-08-22 it sat
+        # on hr.a1.android.tv.xploretv for eight minutes while the screen showed
+        # the home screen, and only reloading the integration corrected it.
+        return {
+            "nepotvrdivo": True,
+            "detail": f"Poslao sam naredbu za '{raw}'.",
+            "napomena": (
+                "TV je i prije naredbe javljao tu aplikaciju, pa ne mogu potvrditi "
+                "da sam je ja otvorio — a taj podatak zna zaostajati. Provjeri ekran."
+            ),
+            "poslano": target,
+        }
+
+    opened = _wait_for_app_change(before, expected=expected)
     if opened is None:
         return {
             "error": (
@@ -411,10 +427,11 @@ def _wait_for_app_change(before: str, expected: str = "", timeout: float = None)
             current = (_ha_request(f"/api/states/{_tv_media_player()}") or {})                 .get("attributes", {}).get("app_id", "")
         except RuntimeError:
             continue
-        if expected:
-            if current == expected:
-                return current
-        elif current and current != before:
+        # A transition is the only honest evidence. Matching `expected` without
+        # a change would also match a stale reading that never moved.
+        if not current or current == before:
+            continue
+        if not expected or current == expected:
             return current
     return None
 

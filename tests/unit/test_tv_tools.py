@@ -138,6 +138,10 @@ def test_learning_an_app_then_launching_it(ha, apps_file):
     assert learned["package"] == "hr.a1.xplore"
     assert json.loads(apps_file.read_text(encoding="utf-8")) == {"A1 Xplore TV": "hr.a1.xplore"}
 
+    # Leave the app before launching it, otherwise there is no transition to
+    # observe and the tool correctly refuses to confirm anything.
+    ha["states"]["media_player.tv"]["attributes"]["app_id"] = "com.google.android.apps.tv.launcherx"
+
     result = tv.tv_open_app("a1 xplore tv")
     assert result["success"] is True
     assert ha["calls"][-1][1]["activity"] == "hr.a1.xplore"
@@ -513,3 +517,30 @@ def test_wait_for_app_change_gives_up_and_says_nothing_happened(monkeypatch):
     monkeypatch.setattr(tv.time, "sleep", lambda _s: None)
 
     assert tv._wait_for_app_change("com.launcher", timeout=2) is None
+
+
+def test_open_app_refuses_to_confirm_when_the_tv_already_reported_that_app(ha, apps_file, monkeypatch):
+    """HA's app_id goes stale — on 2026-08-22 it claimed A1 was open for eight
+    minutes while the screen showed the home screen. Matching the expected
+    package without seeing a transition is therefore not evidence."""
+    apps_file.write_text(json.dumps({"a1": "hr.a1.android.tv.xploretv"}), encoding="utf-8")
+    ha["states"]["media_player.tv"]["attributes"]["app_id"] = "hr.a1.android.tv.xploretv"
+
+    result = tv.tv_open_app("a1")
+
+    assert result.get("nepotvrdivo") is True
+    assert "success" not in result
+    assert "ne mogu potvrditi" in result["napomena"]
+
+
+def test_wait_for_app_change_ignores_a_reading_that_never_moved(monkeypatch):
+    """Stale state stuck on the target package must not read as a launch."""
+    monkeypatch.setattr(tv, "_ha_request",
+                        lambda path, payload=None, timeout=10.0:
+                        {"attributes": {"app_id": "hr.a1.android.tv.xploretv"}})
+    monkeypatch.setattr(tv.time, "sleep", lambda _s: None)
+
+    got = tv._wait_for_app_change("hr.a1.android.tv.xploretv",
+                                  expected="hr.a1.android.tv.xploretv", timeout=2)
+
+    assert got is None

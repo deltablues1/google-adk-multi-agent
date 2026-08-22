@@ -230,6 +230,30 @@ def _tool_loop_key(tool, args, tool_context) -> tuple:
     return (invocation, tool_name, args_key)
 
 
+def _short(value, limit: int = 300) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _log_tool_call(tool=None, args=None, tool_context=None, **_kwargs):
+    """Log every function-tool call a sub-agent makes.
+
+    Only the orchestrator's call into a sub-agent was logged, so whatever the
+    sub-agent did next was invisible: three separate TV bugs had to be diagnosed
+    against Home Assistant instead of the journal, because the log could not say
+    whether tv_open_app had even run.
+    """
+    name = getattr(tool, "name", None) or getattr(tool, "__name__", "?")
+    logger.info("[TOOL] %s(%s)", name, _short(args))
+    return None
+
+
+def _log_tool_result(tool=None, args=None, tool_context=None, tool_response=None, **_kwargs):
+    name = getattr(tool, "name", None) or getattr(tool, "__name__", "?")
+    logger.info("[TOOL=] %s -> %s", name, _short(tool_response))
+    return None
+
+
 def _tool_loop_before(tool=None, args=None, tool_context=None, **_kwargs):
     key = _tool_loop_key(tool, args, tool_context)
     count = _tool_failure_counts.get(key, 0)
@@ -430,12 +454,12 @@ def create_adk_agent(
     # None in the happy path, so caller callbacks still run.
     if tools:
         agent_kwargs["before_tool_callback"] = (
-            [_tool_loop_before, before_tool_callback]
-            if before_tool_callback is not None else [_tool_loop_before]
+            [_log_tool_call, _tool_loop_before, before_tool_callback]
+            if before_tool_callback is not None else [_log_tool_call, _tool_loop_before]
         )
         agent_kwargs["after_tool_callback"] = (
-            [_tool_loop_after, after_tool_callback]
-            if after_tool_callback is not None else [_tool_loop_after]
+            [_tool_loop_after, _log_tool_result, after_tool_callback]
+            if after_tool_callback is not None else [_tool_loop_after, _log_tool_result]
         )
     else:
         if after_tool_callback is not None:
