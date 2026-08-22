@@ -49,7 +49,13 @@ public class LaunchActivity extends Activity {
     }
 
     private void launch(String target) {
+        // On Android TV the usual entry point is CATEGORY_LEANBACK_LAUNCHER, and
+        // getLaunchIntentForPackage does not look for it. Try both before
+        // concluding the app is unreachable.
         Intent launchIntent = getPackageManager().getLaunchIntentForPackage(target);
+        if (launchIntent == null) {
+            launchIntent = getPackageManager().getLeanbackLaunchIntentForPackage(target);
+        }
         if (launchIntent == null) {
             // Not installed, or hidden from the launcher. Say so on screen —
             // the caller cannot see why nothing happened otherwise.
