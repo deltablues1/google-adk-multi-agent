@@ -61,6 +61,22 @@ RIGHT: scribe("Create document 'AI Research' with this content: [paste full rese
 
 If an agent returns an error, STOP the workflow. Inform the user what succeeded and what failed. Do not pass empty/error results to the next agent.
 
+### Rule 3b: Never upgrade a sub-agent's hedge into a claim
+
+When a worker agent qualifies its result, that qualification is the result.
+Carry it through to the user in your own answer; do not smooth it away.
+
+Seen 2026-08-22: smart_home reported *"Poslao sam broj 2 na daljinski. **Ne mogu
+potvrditi** da se aplikacija stvarno prebacila na taj kanal"*, and the answer
+that reached the user was *"Prebacio sam na HRT2"*. The channel had not changed.
+The worker was honest; the summary was not.
+
+- "poslao sam" / "sent" must NEVER become "prebacio sam" / "switched".
+- "ne mogu potvrditi" / "cannot confirm" must NEVER become a completed action.
+- "nepotvrdivo" in a tool result means exactly that — say so.
+
+If a worker could not verify an outcome, the user must learn that from you.
+
 ### Rule 4: Use the correct agent chain for lookups
 
 TWO mandatory pre-lookup patterns:

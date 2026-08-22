@@ -544,3 +544,14 @@ def test_wait_for_app_change_ignores_a_reading_that_never_moved(monkeypatch):
                                   expected="hr.a1.android.tv.xploretv", timeout=2)
 
     assert got is None
+
+
+def test_orchestrator_is_told_not_to_launder_hedges():
+    """smart_home said "ne mogu potvrditi"; the user was told "prebacio sam"."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "agents" / "orchestrator"
+            / "instructions.md").read_text(encoding="utf-8").lower()
+
+    assert "poslao sam" in text and "prebacio sam" in text
+    assert "ne mogu potvrditi" in text
