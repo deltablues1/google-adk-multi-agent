@@ -412,3 +412,44 @@ def test_voice_routing_catches_app_and_channel_requests():
     ):
         matched = any(kw in phrase for kw in SMART_HOME_KEYWORDS) or bool(_TV_WORD_RE.search(phrase))
         assert matched, f"voice routing would miss: {phrase}"
+
+
+def test_status_does_not_let_seeing_an_app_pass_for_remembering_it(ha, apps_file):
+    """On 2026-08-20 the agent read the package from tv_status and told the
+    user the app was remembered. Nothing had been saved."""
+    ha["states"]["media_player.tv"]["attributes"]["app_id"] = "hr.a1.android.tv.xploretv"
+
+    status = tv.tv_status()
+
+    assert status["package"] == "hr.a1.android.tv.xploretv"
+    assert status["aplikacija_zapamcena"] is False
+    assert "NIJE zapamćena" in status["upozorenje"]
+
+
+def test_status_confirms_a_genuinely_learned_app(ha, apps_file):
+    apps_file.write_text(
+        json.dumps({"A1 Xplore TV": "hr.a1.android.tv.xploretv"}), encoding="utf-8"
+    )
+    ha["states"]["media_player.tv"]["attributes"]["app_id"] = "hr.a1.android.tv.xploretv"
+
+    status = tv.tv_status()
+
+    assert status["aplikacija_zapamcena"] is True
+    assert status["zapamcena_kao"] == "A1 Xplore TV"
+    assert "upozorenje" not in status
+
+
+def test_status_does_not_nag_about_the_home_screen(ha, apps_file):
+    status = tv.tv_status()   # fixture has the launcher open
+
+    assert status["aplikacija_zapamcena"] is False
+    assert "upozorenje" not in status
+
+
+def test_learn_app_accepts_an_explicit_package(ha, apps_file):
+    result = tv.tv_learn_app("A1 Xplore TV", package="hr.a1.android.tv.xploretv")
+
+    assert result["success"] is True
+    assert json.loads(apps_file.read_text(encoding="utf-8")) == {
+        "A1 Xplore TV": "hr.a1.android.tv.xploretv"
+    }

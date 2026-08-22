@@ -391,7 +391,7 @@ def tv_list_apps() -> dict:
     }
 
 
-def tv_learn_app(name: str) -> dict:
+def tv_learn_app(name: str, package: str = "") -> dict:
     """Zapamti aplikaciju koja je TRENUTNO otvorena na TV-u pod zadanim imenom.
 
     Home Assistant ne zna popis instaliranih aplikacija (lista je prazna dok je
@@ -401,6 +401,7 @@ def tv_learn_app(name: str) -> dict:
 
     Args:
         name: kako će je korisnik zvati, npr. "a1 xplore tv".
+        package: (neobavezno) package ime ako ga već znaš; inače se čita s TV-a.
 
     Returns:
         dict sa "success"/"error".
@@ -409,20 +410,21 @@ def tv_learn_app(name: str) -> dict:
     if not label:
         return {"error": "Trebam ime pod kojim da zapamtim aplikaciju."}
 
-    try:
-        state = _ha_request(f"/api/states/{_tv_media_player()}")
-    except RuntimeError as e:
-        return {"error": str(e)}
+    package = package.strip()
+    if not package:
+        try:
+            state = _ha_request(f"/api/states/{_tv_media_player()}")
+        except RuntimeError as e:
+            return {"error": str(e)}
+        package = (state or {}).get("attributes", {}).get("app_id") or ""
 
-    package = (state or {}).get("attributes", {}).get("app_id")
     if not package:
         return {"error": "TV ne javlja koja je aplikacija otvorena."}
 
     # Launcher and screensaver are what the TV reports when nothing is really
     # open; learning either would give the user an "app" that opens the home
     # screen. Seen live: com.google.android.apps.tv.dreamx (screensaver).
-    not_an_app = ("launcherx", "tvlauncher", "dreamx", "daydream", "backdrop")
-    if any(marker in str(package).lower() for marker in not_an_app):
+    if any(marker in str(package).lower() for marker in _NOT_AN_APP):
         return {
             "error": "Na TV-u je trenutno početni ekran ili screensaver, ne aplikacija.",
             "trenutno": package,
@@ -512,6 +514,11 @@ def tv_play_youtube(query: str, play_first: bool = True) -> dict:
         "naslov": title,
         "url": target,
     }
+
+
+# What the TV reports when nothing is really open. Learning either would give
+# the user an "app" that opens the home screen.
+_NOT_AN_APP = ("launcherx", "tvlauncher", "dreamx", "daydream", "backdrop")
 
 
 def _normalize_channel(name: str) -> str:
@@ -720,11 +727,27 @@ def tv_status() -> dict:
     if not state:
         return {"error": "TV entitet nije pronađen u Home Assistantu"}
     attrs = state.get("attributes", {})
-    return {
+    package = attrs.get("app_id") or ""
+    known = [label for label, target in _load_learned_apps().items() if target == package]
+
+    result = {
         "state": state.get("state", "unknown"),
-        "app": attrs.get("app_name") or attrs.get("app_id") or "",
+        "app": attrs.get("app_name") or package or "",
+        "package": package,
         "media_title": attrs.get("media_title", ""),
+        "aplikacija_zapamcena": bool(known),
     }
+    if known:
+        result["zapamcena_kao"] = known[0]
+    elif package and not any(m in package.lower() for m in _NOT_AN_APP):
+        # Reading the package is not the same as storing it. Spelling that out
+        # here because on 2026-08-20 the agent read this field and then told the
+        # user the app had been remembered, while nothing was ever saved.
+        result["upozorenje"] = (
+            "Ova aplikacija NIJE zapamćena — sam podatak da je vidim ne znači da "
+            "je spremljena. Za trajno pamćenje pozovi tv_learn_app(ime)."
+        )
+    return result
 
 
 def get_ha_adk_tools() -> list:
