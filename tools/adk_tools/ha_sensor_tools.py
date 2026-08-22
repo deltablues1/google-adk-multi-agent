@@ -49,8 +49,11 @@ _PLAUSIBLE_RANGE = {
     # exactly 0.0 % (seen 3x in the bathroom), and no real air is ever at 0 %.
     # 100 % stays valid — outdoors at dawn it is genuine.
     "humidity": (0.1, 100.0),
-    "pressure": (300.0, 1100.0),
-    "atmospheric_pressure": (300.0, 1100.0),
+    # 300 hPa was far too generous: the BME280's failed reads land at ~496 and
+    # ~519 hPa, well inside it, and were being reported as real. Sea-level
+    # pressure never leaves 950-1050, so this still has a wide margin.
+    "pressure": (850.0, 1085.0),
+    "atmospheric_pressure": (850.0, 1085.0),
     "power_factor": (-1.0, 1.0),
     "voltage": (0.0, 500.0),
     "current": (0.0, 100.0),

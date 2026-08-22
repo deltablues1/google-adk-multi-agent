@@ -263,3 +263,22 @@ def test_history_surfaces_a_statistics_failure():
     with _with_states():
         with patch.object(hs, "_statistics", side_effect=RuntimeError("HA nedostupan")):
             assert "error" in hs.home_climate_history()
+
+
+def test_half_pressure_is_a_failed_read_not_a_storm():
+    """The BME280's reset registers produce ~496 hPa on this node, which the
+    original 300-1100 range happily reported as real (measured 2026-08-22)."""
+    broken = [_state(NODE + "soba_tlak", "496.2", "pressure", "hPa",
+                     "BME280 Mux Node Soba tlak")]
+    with _with_states(broken):
+        result = hs.home_climate_read()
+
+    assert result["mjerenja"][0]["sumnjivo"] is True
+
+
+def test_ordinary_pressure_still_passes():
+    with _with_states():
+        result = hs.home_climate_read("kupaona")
+
+    pressures = [m for m in result["mjerenja"] if m["device_class"] == "pressure"]
+    assert pressures and not any(m.get("sumnjivo") for m in pressures)
