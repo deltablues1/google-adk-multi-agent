@@ -322,6 +322,32 @@ _PROXY_PACKAGE = "hr.jarvis.launcher"
 _PROXY_SCHEME = "jarvis"
 
 
+# When an app was last launched from here. A freshly started app is not ready
+# for key presses: on 2026-08-22 tv_channel fired two seconds after A1 Xplore
+# came up, the arrow and OK landed on a still-loading screen, and the channel
+# digits were then typed at the landing page, which discards them.
+_last_launch_at = 0.0
+
+
+def _app_warmup_seconds() -> float:
+    try:
+        return float(os.getenv("TV_APP_WARMUP_SECONDS", "12"))
+    except ValueError:
+        return 12.0
+
+
+def _await_app_ready() -> float:
+    """Sleep out whatever remains of the warm-up after a recent launch."""
+    if not _last_launch_at:
+        return 0.0
+    waited = time.monotonic() - _last_launch_at
+    remaining = _app_warmup_seconds() - waited
+    if remaining <= 0:
+        return 0.0
+    time.sleep(remaining)
+    return round(remaining, 1)
+
+
 def _proxy_enabled() -> bool:
     return os.getenv("TV_USE_PROXY_LAUNCHER", "true").lower() != "false"
 
@@ -447,6 +473,8 @@ def tv_open_app(app: str) -> dict:
             ),
         }
 
+    global _last_launch_at
+    _last_launch_at = time.monotonic()
     return {"success": True, "detail": f"otvorena {raw}", "launched": activity, "app_id": opened}
 
 
@@ -781,7 +809,11 @@ def tv_channel(name: str, from_app_home: bool = False) -> dict:
             time.sleep(float(os.getenv("TV_CHANNEL_APP_DELAY_SECONDS", "4")))
 
     entered_live = False
+    warmed = 0.0
     if from_app_home:
+        # Give a just-launched app time to finish drawing before aiming keys
+        # at it; otherwise the navigation is sent into a loading screen.
+        warmed = _await_app_ready()
         # The app discards digits on its own landing page; this is the sequence
         # the user verified on the physical remote to reach live TV from there.
         try:
@@ -792,7 +824,7 @@ def tv_channel(name: str, from_app_home: bool = False) -> dict:
                     "delay_secs": float(os.getenv("TV_CHANNEL_KEY_DELAY_SECONDS", "0.4")),
                 },
             )
-            time.sleep(float(os.getenv("TV_CHANNEL_LIVE_DELAY_SECONDS", "3")))
+            time.sleep(float(os.getenv("TV_CHANNEL_LIVE_DELAY_SECONDS", "4")))
             entered_live = True
         except RuntimeError as e:
             return {"error": f"Ne mogu ući u live TV: {e}"}
@@ -813,6 +845,8 @@ def tv_channel(name: str, from_app_home: bool = False) -> dict:
         detail += f" (otvorio {opened_app})"
     if entered_live:
         detail += " (prvo ušao u live TV)"
+    if warmed:
+        detail += f" (čekao {warmed}s da se aplikacija učita)"
 
     return {
         "success": True,

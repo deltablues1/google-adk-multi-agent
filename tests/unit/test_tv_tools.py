@@ -631,3 +631,33 @@ def test_proxy_left_in_the_foreground_is_a_failure_not_a_launch(ha, apps_file, m
     assert "error" in result
     assert "nije uspio pokrenuti" in result["error"]
     assert "success" not in result
+
+
+# --- warm-up after launching an app ---------------------------------------
+
+def test_channel_waits_for_a_freshly_launched_app(ha, channels_file, apps_file, monkeypatch):
+    """Two seconds after A1 Xplore started, its landing page was still drawing
+    and the navigation keys were lost. The tool now sits out the warm-up."""
+    slept = []
+    monkeypatch.setattr(tv.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setenv("TV_APP_WARMUP_SECONDS", "12")
+    apps_file.write_text(json.dumps({"a1": "hr.a1.xplore"}), encoding="utf-8")
+    channels_file.write_text(json.dumps({"HRT 1": {"number": 1, "app": ""}}), encoding="utf-8")
+
+    tv.tv_open_app("a1")            # records the launch moment
+    result = tv.tv_channel("HRT 1", from_app_home=True)
+
+    assert any(s > 10 for s in slept), f"nije čekao zagrijavanje: {slept}"
+    assert "čekao" in result["detail"]
+
+
+def test_no_warm_up_wait_when_nothing_was_just_launched(ha, channels_file, monkeypatch):
+    slept = []
+    monkeypatch.setattr(tv.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(tv, "_last_launch_at", 0.0)
+    channels_file.write_text(json.dumps({"HRT 1": {"number": 1, "app": ""}}), encoding="utf-8")
+
+    result = tv.tv_channel("HRT 1", from_app_home=True)
+
+    assert all(s <= 5 for s in slept), f"nepotrebno dugo čekanje: {slept}"
+    assert "čekao" not in result["detail"]
