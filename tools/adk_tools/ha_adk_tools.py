@@ -324,16 +324,17 @@ _PROXY_SCHEME = "jarvis"
 
 # When an app was last launched from here. A freshly started app is not ready
 # for key presses: on 2026-08-22 tv_channel fired two seconds after A1 Xplore
-# came up, the arrow and OK landed on a still-loading screen, and the channel
-# digits were then typed at the landing page, which discards them.
+# came up and the keys were lost. 12 seconds was still too short; 25 worked in a
+# slow hand-run, so that is the default. The TV reports nothing about what an
+# app is drawing, so this is a measured guess and nothing better is available.
 _last_launch_at = 0.0
 
 
 def _app_warmup_seconds() -> float:
     try:
-        return float(os.getenv("TV_APP_WARMUP_SECONDS", "12"))
+        return float(os.getenv("TV_APP_WARMUP_SECONDS", "25"))
     except ValueError:
-        return 12.0
+        return 25.0
 
 
 def _await_app_ready() -> float:
@@ -808,12 +809,13 @@ def tv_channel(name: str, from_app_home: bool = False) -> dict:
             opened_app = app
             time.sleep(float(os.getenv("TV_CHANNEL_APP_DELAY_SECONDS", "4")))
 
+    # A just-launched app needs time to draw before it will accept a keypress,
+    # whether the next step is navigation or the digits themselves. This applies
+    # to every path, not only the from_app_home one.
+    warmed = _await_app_ready()
+
     entered_live = False
-    warmed = 0.0
     if from_app_home:
-        # Give a just-launched app time to finish drawing before aiming keys
-        # at it; otherwise the navigation is sent into a loading screen.
-        warmed = _await_app_ready()
         # The app discards digits on its own landing page; this is the sequence
         # the user verified on the physical remote to reach live TV from there.
         try:

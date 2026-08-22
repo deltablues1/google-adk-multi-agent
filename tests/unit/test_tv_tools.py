@@ -661,3 +661,21 @@ def test_no_warm_up_wait_when_nothing_was_just_launched(ha, channels_file, monke
 
     assert all(s <= 5 for s in slept), f"nepotrebno dugo čekanje: {slept}"
     assert "čekao" not in result["detail"]
+
+
+def test_warm_up_applies_even_without_the_live_tv_step(ha, channels_file, apps_file, monkeypatch):
+    """If the app is configured to start straight on live TV, the navigation is
+    unnecessary but the wait for it to finish drawing is not."""
+    slept = []
+    monkeypatch.setattr(tv.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setenv("TV_APP_WARMUP_SECONDS", "12")
+    apps_file.write_text(json.dumps({"a1": "hr.a1.xplore"}), encoding="utf-8")
+    channels_file.write_text(json.dumps({"HRT 3": {"number": 7, "app": ""}}), encoding="utf-8")
+
+    tv.tv_open_app("a1")
+    result = tv.tv_channel("HRT 3", from_app_home=False)
+
+    assert any(s > 10 for s in slept), f"nije čekao zagrijavanje: {slept}"
+    assert result["iz_pocetne_stranice"] is False
+    sequences = [p["command"] for path, p in ha["calls"] if "send_command" in path]
+    assert sequences == [["7", "DPAD_CENTER"]]
