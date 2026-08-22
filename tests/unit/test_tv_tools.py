@@ -48,7 +48,13 @@ def ha(monkeypatch):
         # now verifies. Tests that want a TV which ignores commands patch
         # _wait_for_app_change instead.
         if "remote/turn_on" in path and "activity" in payload:
-            states["media_player.tv"]["attributes"]["app_id"] = payload["activity"]
+            activity = payload["activity"]
+            # A jarvis:// link resolves to the package it carries, which is
+            # what the TV then reports as the foreground app.
+            if activity.startswith("jarvis://"):
+                from urllib.parse import parse_qs, urlparse
+                activity = parse_qs(urlparse(activity).query).get("pkg", [""])[0]
+            states["media_player.tv"]["attributes"]["app_id"] = activity
         return []
 
     monkeypatch.setattr(tv, "_ha_request", fake_request)
@@ -144,7 +150,7 @@ def test_learning_an_app_then_launching_it(ha, apps_file):
 
     result = tv.tv_open_app("a1 xplore tv")
     assert result["success"] is True
-    assert ha["calls"][-1][1]["activity"] == "hr.a1.xplore"
+    assert ha["calls"][-1][1]["activity"] == "jarvis://open?pkg=hr.a1.xplore"
 
 
 def test_learned_app_matches_partially(ha, apps_file):
@@ -153,7 +159,7 @@ def test_learned_app_matches_partially(ha, apps_file):
     result = tv.tv_open_app("a1")
 
     assert result["success"] is True
-    assert ha["calls"][-1][1]["activity"] == "hr.a1.xplore"
+    assert ha["calls"][-1][1]["activity"] == "jarvis://open?pkg=hr.a1.xplore"
 
 
 def test_learning_refuses_the_home_screen(ha, apps_file):
@@ -196,7 +202,7 @@ def test_list_apps_reports_all_three_sources(ha, apps_file):
 
 def test_raw_package_or_url_is_launched_as_is(ha, apps_file):
     assert tv.tv_open_app("com.example.app")["success"] is True
-    assert ha["calls"][-1][1]["activity"] == "com.example.app"
+    assert ha["calls"][-1][1]["activity"] == "jarvis://open?pkg=com.example.app"
 
 
 # --- youtube --------------------------------------------------------------
@@ -298,7 +304,7 @@ def test_channel_opens_its_app_when_not_already_there(ha, channels_file, apps_fi
     tv.tv_channel("HRT 1")
 
     launched = [p for path, p in ha["calls"] if "remote/turn_on" in path]
-    assert launched and launched[0]["activity"] == "hr.a1.xplore"
+    assert launched and launched[0]["activity"] == "jarvis://open?pkg=hr.a1.xplore"
 
 
 def test_channel_does_not_relaunch_the_app_it_is_already_in(ha, channels_file, apps_file):
@@ -485,7 +491,7 @@ def test_open_app_reports_failure_when_the_tv_ignores_the_command(ha, apps_file,
 
     assert "error" in result
     assert "ostao na istom ekranu" in result["error"]
-    assert result["poslano"] == "hr.a1.android.tv.xploretv"
+    assert result["poslano"] == "jarvis://open?pkg=hr.a1.android.tv.xploretv"
     assert "success" not in result
 
 
@@ -593,3 +599,35 @@ def test_channel_skips_the_live_tv_step_by_default(ha, channels_file):
     sequences = [p["command"] for path, p in ha["calls"] if "send_command" in path]
     assert sequences == [["1", "DPAD_CENTER"]]
     assert result["iz_pocetne_stranice"] is False
+
+
+# --- proxy launcher -------------------------------------------------------
+
+def test_deep_links_bypass_the_proxy(ha, apps_file):
+    """Netflix claims its own URL; routing it through the proxy would be silly."""
+    tv.tv_open_app("netflix")
+
+    assert ha["calls"][-1][1]["activity"] == "https://www.netflix.com/title"
+
+
+def test_proxy_can_be_switched_off(ha, apps_file, monkeypatch):
+    monkeypatch.setenv("TV_USE_PROXY_LAUNCHER", "false")
+    apps_file.write_text(json.dumps({"a1": "hr.a1.xplore"}), encoding="utf-8")
+
+    tv.tv_open_app("a1")
+
+    assert ha["calls"][-1][1]["activity"] == "hr.a1.xplore"
+
+
+def test_proxy_left_in_the_foreground_is_a_failure_not_a_launch(ha, apps_file, monkeypatch):
+    """The launcher stays on screen with its reason when it cannot resolve the
+    package — that must never read as the app having opened."""
+    apps_file.write_text(json.dumps({"a1": "hr.a1.xplore"}), encoding="utf-8")
+    monkeypatch.setattr(tv, "_wait_for_app_change",
+                        lambda before, expected="", timeout=None: "hr.jarvis.launcher")
+
+    result = tv.tv_open_app("a1")
+
+    assert "error" in result
+    assert "nije uspio pokrenuti" in result["error"]
+    assert "success" not in result

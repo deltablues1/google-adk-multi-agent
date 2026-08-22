@@ -313,6 +313,31 @@ _DEEP_LINKS = {
 }
 
 
+# Jarvis Launcher, sideloaded on the TV (deploy/tv_app_launcher). The TCL only
+# launches an app when handed a URI some installed app claims, and A1 Xplore
+# claims none — so this tiny app claims one and forwards. Set
+# TV_USE_PROXY_LAUNCHER=false to go back to sending bare package names, which
+# this TV silently ignores.
+_PROXY_PACKAGE = "hr.jarvis.launcher"
+_PROXY_SCHEME = "jarvis"
+
+
+def _proxy_enabled() -> bool:
+    return os.getenv("TV_USE_PROXY_LAUNCHER", "true").lower() != "false"
+
+
+def _as_activity(target: str) -> str:
+    """What to actually send to the TV for a resolved target.
+
+    Deep links go as they are. A bare package goes through the proxy, because
+    the television does nothing at all with a package name.
+    """
+    if "://" in target or not _proxy_enabled():
+        return target
+    from urllib.parse import quote
+    return f"{_PROXY_SCHEME}://open?pkg={quote(target)}"
+
+
 def _resolve_app(app: str) -> Optional[str]:
     """Name -> something the TV can launch (deep link, package or activity)."""
     key = app.strip().lower()
@@ -361,13 +386,19 @@ def tv_open_app(app: str) -> dict:
                 ),
             }
 
+    # A deep link goes as-is; a package has to travel through the proxy app.
+    # `expected` stays the package either way — that is what the TV will report
+    # as the foreground app once the launch lands.
+    expected = target if "://" not in target else ""
+    activity = _as_activity(target)
+
     try:
         before = (_ha_request(f"/api/states/{_tv_media_player()}") or {})             .get("attributes", {}).get("app_id", "")
     except RuntimeError:
         before = ""
 
     try:
-        _ha_service("remote", "turn_on", _tv_remote(), {"activity": target})
+        _ha_service("remote", "turn_on", _tv_remote(), {"activity": activity})
     except RuntimeError as e:
         return {"error": str(e)}
 
@@ -376,7 +407,6 @@ def tv_open_app(app: str) -> dict:
     # app must claim; a bare package name is accepted and silently ignored
     # (measured 2026-08-22: youtube.com opened YouTube, hr.a1.android.tv.xploretv
     # left the TV on its home screen). So watch the TV instead of trusting 200.
-    expected = target if "://" not in target else ""
     if expected and before == expected:
         # The TV already reports this package, so a launch cannot be told apart
         # from doing nothing — and that reading goes stale: on 2026-08-22 it sat
@@ -393,13 +423,23 @@ def tv_open_app(app: str) -> dict:
         }
 
     opened = _wait_for_app_change(before, expected=expected)
+
+    if opened == _PROXY_PACKAGE:
+        # The proxy came up and stayed there, which is how it reports that it
+        # could not resolve the package (it shows the reason on screen).
+        return {
+            "error": f"Jarvis Launcher se otvorio ali nije uspio pokrenuti '{raw}'.",
+            "poslano": activity,
+            "zasto": "Aplikacija vjerojatno nije instalirana na TV-u pod tim package imenom.",
+        }
+
     if opened is None:
         return {
             "error": (
                 f"Poslao sam naredbu za '{raw}', ali TV je ostao na istom ekranu — "
                 "nije se otvorila."
             ),
-            "poslano": target,
+            "poslano": activity,
             "tv_pokazuje": before or "nepoznato",
             "zasto": (
                 "Televizor pokreće aplikaciju samo preko poveznice koju ta "
@@ -407,7 +447,7 @@ def tv_open_app(app: str) -> dict:
             ),
         }
 
-    return {"success": True, "detail": f"otvorena {raw}", "launched": target, "app_id": opened}
+    return {"success": True, "detail": f"otvorena {raw}", "launched": activity, "app_id": opened}
 
 
 def _wait_for_app_change(before: str, expected: str = "", timeout: float = None) -> Optional[str]:
