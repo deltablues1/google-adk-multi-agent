@@ -555,3 +555,17 @@ def test_orchestrator_is_told_not_to_launder_hedges():
 
     assert "poslao sam" in text and "prebacio sam" in text
     assert "ne mogu potvrditi" in text
+
+
+def test_channel_result_states_the_live_tv_precondition(ha, channels_file):
+    """Digits only reach A1 Xplore while it is showing a channel; on the app's
+    own home page they are discarded (measured 2026-08-22)."""
+    channels_file.write_text(
+        json.dumps({"Arena Sport 1 HD": {"number": 201, "app": ""}}), encoding="utf-8"
+    )
+
+    result = tv.tv_channel("Arena Sport 1")
+
+    assert result["broj"] == "201"
+    assert "live TV" in result["napomena"]
+    assert "početnoj stranici" in result["napomena"]

@@ -752,7 +752,12 @@ def tv_channel(name: str) -> dict:
         "success": True,
         "detail": f"kanal {number}" + (f" (otvorio {opened_app})" if opened_app else ""),
         "broj": number,
-        "napomena": "Poslao sam brojeve na daljinski — ako aplikacija ne prima upis broja, javi pa ćemo drugačije.",
+        "napomena": (
+            "Poslao sam brojeve na daljinski. Radi samo kad aplikacija već "
+            "prikazuje neki kanal (live TV) — na početnoj stranici aplikacije "
+            "brojevi se ignoriraju. Ne mogu vidjeti na čemu je aplikacija, pa "
+            "provjeri ekran."
+        ),
     }
 
 

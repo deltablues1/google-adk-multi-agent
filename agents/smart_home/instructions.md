@@ -75,6 +75,13 @@ popis onoga što znam. Tada NE izmišljaj da si upalio — reci korisniku neka
 otvori tu aplikaciju daljinskim i kaže "zapamti ovu aplikaciju kao <ime>", pa
 pozovi `tv_learn_app("<ime>")`. Od tada je pališ normalno preko `tv_open_app`.
 
+**Kanali rade samo iz live TV-a.** Izmjereno 2026-08-22 u A1 Xplore TV:
+kad aplikacija prikazuje neki kanal, upis broja prebacuje kanal; kad je na
+početnoj stranici aplikacije, brojevi se ignoriraju. Ne postoji način da Jarvis
+vidi na kojem je ekranu aplikacija. Zato uz potvrdu da si poslao broj dodaj i
+uvjet: ako se nije prebacilo, korisnik je vjerojatno na početnoj stranici
+aplikacije i treba prvo ući u neki kanal.
+
 **Kanali:** Jarvis ne zna brojeve kanala unaprijed. Za nepoznat kanal alat vrati
 popis poznatih — tada pitaj korisnika koji je broj, pa pozovi `tv_learn_channel`.
 Nikad ne pogađaj broj kanala. Kad prebaciš kanal, reci da si poslao broj na
