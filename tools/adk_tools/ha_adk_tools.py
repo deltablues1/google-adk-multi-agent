@@ -666,7 +666,7 @@ def tv_list_channels() -> dict:
     return {"kanali": channels, "broj": len(channels)}
 
 
-def tv_channel(name: str) -> dict:
+def tv_channel(name: str, from_app_home: bool = False) -> dict:
     """Prebaci na kanal — po naučenom imenu ili izravno po broju.
 
     Otvara pripadnu aplikaciju ako je zapamćena uz kanal, pa otipka broj na
@@ -675,6 +675,9 @@ def tv_channel(name: str) -> dict:
 
     Args:
         name: ime kanala ("HRT 1") ili sam broj ("101").
+        from_app_home: True kad je aplikacija tek otvorena i stoji na svojoj
+            početnoj stranici — tada se prvo uđe u live TV (strelica desno pa
+            OK), jer se na početnoj stranici brojevi ignoriraju.
 
     Returns:
         dict sa "success"/"error".
@@ -737,6 +740,23 @@ def tv_channel(name: str) -> dict:
             opened_app = app
             time.sleep(float(os.getenv("TV_CHANNEL_APP_DELAY_SECONDS", "4")))
 
+    entered_live = False
+    if from_app_home:
+        # The app discards digits on its own landing page; this is the sequence
+        # the user verified on the physical remote to reach live TV from there.
+        try:
+            _ha_service(
+                "remote", "send_command", _tv_remote(),
+                {
+                    "command": ["DPAD_RIGHT", "DPAD_CENTER"],
+                    "delay_secs": float(os.getenv("TV_CHANNEL_KEY_DELAY_SECONDS", "0.4")),
+                },
+            )
+            time.sleep(float(os.getenv("TV_CHANNEL_LIVE_DELAY_SECONDS", "3")))
+            entered_live = True
+        except RuntimeError as e:
+            return {"error": f"Ne mogu ući u live TV: {e}"}
+
     try:
         _ha_service(
             "remote", "send_command", _tv_remote(),
@@ -748,10 +768,17 @@ def tv_channel(name: str) -> dict:
     except RuntimeError as e:
         return {"error": str(e)}
 
+    detail = f"kanal {number}"
+    if opened_app:
+        detail += f" (otvorio {opened_app})"
+    if entered_live:
+        detail += " (prvo ušao u live TV)"
+
     return {
         "success": True,
-        "detail": f"kanal {number}" + (f" (otvorio {opened_app})" if opened_app else ""),
+        "detail": detail,
         "broj": number,
+        "iz_pocetne_stranice": entered_live,
         "napomena": (
             "Poslao sam brojeve na daljinski. Radi samo kad aplikacija već "
             "prikazuje neki kanal (live TV) — na početnoj stranici aplikacije "

@@ -569,3 +569,27 @@ def test_channel_result_states_the_live_tv_precondition(ha, channels_file):
     assert result["broj"] == "201"
     assert "live TV" in result["napomena"]
     assert "početnoj stranici" in result["napomena"]
+
+
+def test_channel_can_enter_live_tv_first_when_the_app_just_opened(ha, channels_file, monkeypatch):
+    """A freshly launched A1 Xplore sits on its landing page, where digits are
+    discarded. The user verified right-arrow then OK reaches live TV."""
+    monkeypatch.setenv("TV_CHANNEL_LIVE_DELAY_SECONDS", "0")
+    channels_file.write_text(json.dumps({"HRT 1": {"number": 1, "app": ""}}), encoding="utf-8")
+
+    result = tv.tv_channel("HRT 1", from_app_home=True)
+
+    sequences = [p["command"] for path, p in ha["calls"] if "send_command" in path]
+    assert sequences[0] == ["DPAD_RIGHT", "DPAD_CENTER"]
+    assert sequences[1] == ["1", "DPAD_CENTER"]
+    assert result["iz_pocetne_stranice"] is True
+
+
+def test_channel_skips_the_live_tv_step_by_default(ha, channels_file):
+    channels_file.write_text(json.dumps({"HRT 1": {"number": 1, "app": ""}}), encoding="utf-8")
+
+    result = tv.tv_channel("HRT 1")
+
+    sequences = [p["command"] for path, p in ha["calls"] if "send_command" in path]
+    assert sequences == [["1", "DPAD_CENTER"]]
+    assert result["iz_pocetne_stranice"] is False
