@@ -1,38 +1,48 @@
 #!/usr/bin/env bash
 # Build and sign Jarvis Launcher without Gradle or the Android Studio SDK.
 #
-# Everything used here is in Debian: default-jdk, aapt, dx, zipalign,
-# apksigner. The one piece Debian does not ship is android.jar (the compile
-# stub for the android.* classes), which is fetched once and cached.
+# Debian supplies the JDK, aapt, zipalign and apksigner:
+#   sudo apt install -y default-jdk aapt zipalign apksigner
 #
-#   sudo apt install -y default-jdk aapt dx zipalign apksigner
-#   ./build.sh
+# Two pieces are fetched once and cached next to this script:
+#   android.jar  compile stub for the android.* classes
+#   r8.jar       Google's D8 dex compiler
 #
-# Result: build/jarvis-launcher.apk, ready to sideload.
+# Do NOT install Debian's "dx" for the dex step — that package is IBM OpenDX,
+# a scientific visualisation tool that happens to share the name. D8 is a plain
+# jar, so it runs on the Pi's arm64 just as well as on x86.
+#
+#   ./build.sh   ->   build/jarvis-launcher.apk
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$HERE/build"
 ANDROID_JAR="$HERE/android.jar"
+R8_JAR="$HERE/r8.jar"
 KEYSTORE="$HERE/jarvis-launcher.keystore"
 STOREPASS="${JARVIS_KEYSTORE_PASS:-jarvis-launcher}"
 
-# API 30 stub. Compiling against a newer platform than the TV runs is fine;
+R8_VERSION="${R8_VERSION:-8.7.18}"
+R8_URL="https://maven.google.com/com/android/tools/r8/${R8_VERSION}/r8-${R8_VERSION}.jar"
+# API 30 stub. Compiling against a newer platform than the TV runs is fine:
 # the app only touches APIs that have existed since API 1.
 ANDROID_JAR_URL="https://raw.githubusercontent.com/Sable/android-platforms/master/android-30/android.jar"
 
 need() { command -v "$1" >/dev/null || { echo "nedostaje: $1 (sudo apt install $2)" >&2; exit 1; }; }
 need javac default-jdk
+need java default-jdk
+need keytool default-jdk
 need aapt aapt
 need zipalign zipalign
 need apksigner apksigner
-need keytool default-jdk
-command -v dx >/dev/null || command -v d8 >/dev/null || {
-    echo "nedostaje: dx ili d8 (sudo apt install dx)" >&2; exit 1; }
 
 [ -f "$ANDROID_JAR" ] || {
-    echo "== dohvaćam android.jar (jednokratno)"
+    echo "== dohvacam android.jar (jednokratno)"
     curl -fsSL "$ANDROID_JAR_URL" -o "$ANDROID_JAR"
+}
+[ -f "$R8_JAR" ] || {
+    echo "== dohvacam D8 $R8_VERSION (jednokratno)"
+    curl -fsSL "$R8_URL" -o "$R8_JAR"
 }
 
 rm -rf "$BUILD"
@@ -44,15 +54,12 @@ javac -source 8 -target 8 -nowarn \
       -d "$BUILD/classes" \
       $(find "$HERE/src" -name '*.java')
 
-echo "== dex"
-if command -v d8 >/dev/null; then
-    d8 --lib "$ANDROID_JAR" --output "$BUILD/apk" \
-       $(find "$BUILD/classes" -name '*.class')
-else
-    dx --dex --output="$BUILD/apk/classes.dex" "$BUILD/classes"
-fi
+echo "== dex (D8)"
+java -cp "$R8_JAR" com.android.tools.r8.D8 \
+     --lib "$ANDROID_JAR" --min-api 21 --output "$BUILD/apk" \
+     $(find "$BUILD/classes" -name '*.class')
 
-echo "== aapt: manifest + resources -> unsigned apk"
+echo "== aapt: manifest -> apk"
 aapt package -f -M "$HERE/AndroidManifest.xml" -I "$ANDROID_JAR" \
      -F "$BUILD/unsigned.apk"
 ( cd "$BUILD/apk" && aapt add -f "$BUILD/unsigned.apk" classes.dex >/dev/null )

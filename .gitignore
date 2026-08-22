@@ -165,3 +165,7 @@ tmp_tts_*.wav
 test_results_*.log
 config/tv_apps.json
 config/tv_channels.json
+deploy/tv_app_launcher/build/
+deploy/tv_app_launcher/android.jar
+deploy/tv_app_launcher/r8.jar
+deploy/tv_app_launcher/*.keystore

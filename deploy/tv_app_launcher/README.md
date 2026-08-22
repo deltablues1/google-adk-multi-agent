@@ -35,7 +35,7 @@ Nije vezana za A1 — radi za svaku instaliranu aplikaciju.
 Bez Gradlea i bez Android Studija; sve je u Debianu na Jarvis Pi-u:
 
 ```bash
-sudo apt install -y default-jdk aapt dx zipalign apksigner
+sudo apt install -y default-jdk aapt zipalign apksigner
 cd deploy/tv_app_launcher
 ./build.sh
 ```
