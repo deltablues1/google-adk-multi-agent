@@ -362,10 +362,61 @@ def tv_open_app(app: str) -> dict:
             }
 
     try:
+        before = (_ha_request(f"/api/states/{_tv_media_player()}") or {})             .get("attributes", {}).get("app_id", "")
+    except RuntimeError:
+        before = ""
+
+    try:
         _ha_service("remote", "turn_on", _tv_remote(), {"activity": target})
-        return {"success": True, "detail": f"otvaram {raw}", "launched": target}
     except RuntimeError as e:
         return {"error": str(e)}
+
+    # HTTP 200 means Home Assistant accepted the command, NOT that the TV did
+    # anything. The Android TV launch command carries a URI that some installed
+    # app must claim; a bare package name is accepted and silently ignored
+    # (measured 2026-08-22: youtube.com opened YouTube, hr.a1.android.tv.xploretv
+    # left the TV on its home screen). So watch the TV instead of trusting 200.
+    opened = _wait_for_app_change(before, expected=target if "://" not in target else "")
+    if opened is None:
+        return {
+            "error": (
+                f"Poslao sam naredbu za '{raw}', ali TV je ostao na istom ekranu — "
+                "nije se otvorila."
+            ),
+            "poslano": target,
+            "tv_pokazuje": before or "nepoznato",
+            "zasto": (
+                "Televizor pokreće aplikaciju samo preko poveznice koju ta "
+                "aplikacija registrira; samo package ime nije dovoljno."
+            ),
+        }
+
+    return {"success": True, "detail": f"otvorena {raw}", "launched": target, "app_id": opened}
+
+
+def _wait_for_app_change(before: str, expected: str = "", timeout: float = None) -> Optional[str]:
+    """Poll the TV until the foreground app changes; None if it never does.
+
+    Returns the new app_id. With `expected` set (a package we asked for), only
+    that exact package counts — otherwise any change does, which is the best we
+    can do for deep links whose target package we do not know in advance.
+    """
+    if timeout is None:
+        timeout = float(os.getenv("TV_APP_LAUNCH_TIMEOUT_SECONDS", "8"))
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(1.0)
+        try:
+            current = (_ha_request(f"/api/states/{_tv_media_player()}") or {})                 .get("attributes", {}).get("app_id", "")
+        except RuntimeError:
+            continue
+        if expected:
+            if current == expected:
+                return current
+        elif current and current != before:
+            return current
+    return None
 
 
 def tv_list_apps() -> dict:

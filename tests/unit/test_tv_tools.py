@@ -44,9 +44,17 @@ def ha(monkeypatch):
                 raise RuntimeError(f"nema {entity}")
             return states[entity]
         calls.append((path, payload))
+        # A launch command makes the TV switch app, which is what the tool
+        # now verifies. Tests that want a TV which ignores commands patch
+        # _wait_for_app_change instead.
+        if "remote/turn_on" in path and "activity" in payload:
+            states["media_player.tv"]["attributes"]["app_id"] = payload["activity"]
         return []
 
     monkeypatch.setattr(tv, "_ha_request", fake_request)
+    monkeypatch.setattr(tv, "_wait_for_app_change",
+                        lambda before, expected="", timeout=None:
+                        states["media_player.tv"]["attributes"].get("app_id"))
     return {"calls": calls, "states": states}
 
 
@@ -453,3 +461,55 @@ def test_learn_app_accepts_an_explicit_package(ha, apps_file):
     assert json.loads(apps_file.read_text(encoding="utf-8")) == {
         "A1 Xplore TV": "hr.a1.android.tv.xploretv"
     }
+
+
+# --- launch verification --------------------------------------------------
+
+def test_open_app_reports_failure_when_the_tv_ignores_the_command(ha, apps_file, monkeypatch):
+    """HTTP 200 from Home Assistant says nothing about what the TV did.
+
+    Measured 2026-08-22: youtube.com opened YouTube, while the A1 package name,
+    market://, intent:// and play_media all returned 200 and left the TV on its
+    home screen. Reporting those as success is how "rekao je da je otvorio"
+    happens.
+    """
+    monkeypatch.setattr(tv, "_wait_for_app_change",
+                        lambda before, expected="", timeout=None: None)
+    apps_file.write_text(json.dumps({"a1": "hr.a1.android.tv.xploretv"}), encoding="utf-8")
+
+    result = tv.tv_open_app("a1")
+
+    assert "error" in result
+    assert "ostao na istom ekranu" in result["error"]
+    assert result["poslano"] == "hr.a1.android.tv.xploretv"
+    assert "success" not in result
+
+
+def test_open_app_confirms_a_launch_that_really_happened(ha, apps_file):
+    apps_file.write_text(json.dumps({"a1": "hr.a1.android.tv.xploretv"}), encoding="utf-8")
+
+    result = tv.tv_open_app("a1")
+
+    assert result["success"] is True
+    assert result["app_id"] == "hr.a1.android.tv.xploretv"
+
+
+def test_wait_for_app_change_requires_the_exact_package_when_asked(monkeypatch):
+    seen = iter(["com.launcher", "com.launcher", "hr.a1.android.tv.xploretv"])
+    monkeypatch.setattr(tv, "_ha_request",
+                        lambda path, payload=None, timeout=10.0:
+                        {"attributes": {"app_id": next(seen, "hr.a1.android.tv.xploretv")}})
+    monkeypatch.setattr(tv.time, "sleep", lambda _s: None)
+
+    got = tv._wait_for_app_change("com.launcher", expected="hr.a1.android.tv.xploretv", timeout=5)
+
+    assert got == "hr.a1.android.tv.xploretv"
+
+
+def test_wait_for_app_change_gives_up_and_says_nothing_happened(monkeypatch):
+    monkeypatch.setattr(tv, "_ha_request",
+                        lambda path, payload=None, timeout=10.0:
+                        {"attributes": {"app_id": "com.launcher"}})
+    monkeypatch.setattr(tv.time, "sleep", lambda _s: None)
+
+    assert tv._wait_for_app_change("com.launcher", timeout=2) is None
