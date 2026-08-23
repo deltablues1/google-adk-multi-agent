@@ -1,10 +1,17 @@
-"""Put every entity in the room it is actually in, and switch the useful
-diagnostics back on.
+"""Registry hygiene for the Home Assistant instance: rooms, diagnostics, duplicates.
 
-Everything hangs off two ESPHome devices, so Home Assistant files all of it
-under those devices' areas: every switch under "Kuca" and every sensor under no
-area at all. That is why the Rooms view shows almost nothing per room. Areas set
-on the entity itself override the device, which is what this does.
+Three jobs, all of which have to be repeatable because Home Assistant recreates
+entities whenever an integration is reloaded:
+
+* put entities in the room they are physically in, since everything hangs off
+  two ESPHome devices and would otherwise inherit those devices' areas,
+* switch on the diagnostics Home Assistant ships disabled and the System view
+  needs,
+* silence duplicates. The ESP32 node publishes over both the ESPHome native API
+  and MQTT, so once the MQTT integration was added Home Assistant created a
+  second copy of every switch, suffixed `_2`. Both work; showing both is
+  confusing. The native API copy is kept because it is the one already assigned
+  to rooms and used by everything else.
 """
 
 import asyncio
@@ -16,7 +23,7 @@ import websockets
 
 URL = os.environ["HA_URL"].replace("http://", "ws://") + "/api/websocket"
 TOKEN = os.environ["HA_TOKEN"]
-BACKUP = "/tmp/entity-registry-backup.json"
+BACKUP = os.getenv("REGISTRY_BACKUP", "/tmp/entity-registry-backup.json")
 
 # suffix of the entity_id -> area_id
 ROOM_BY_SUFFIX = {
@@ -76,7 +83,8 @@ ROOM_BY_SUFFIX = {
     "svjetlo_ulaz": "ulaz",
     "svjetlo_vani": "vani",
     "svjetlo_stup": "vani",
-    "svjetlo_hidrofor": "kuca",
+    # The pump switch is by the entrance, not a house-wide thing.
+    "svjetlo_hidrofor": "ulaz",
     # --- sockets ---
     "uticnica_blagavaona": "blagavaona",
     "uticnica_boravak": "living_room",
@@ -90,14 +98,19 @@ ROOM_BY_SUFFIX = {
     "uticnica_terasa": "terasa",
     "uticnica_ulaz": "ulaz",
     "pecnica": "kitchen",
-    "slobodno1": "kuca",
-    "slobodno2": "kuca",
 }
 
 # Whole entity ids that do not follow the suffix pattern.
 ROOM_BY_ENTITY = {
     "media_player.smart_tv_pro": "living_room",
 }
+
+# Relays with nothing wired to them. Hidden rather than deleted: the channel
+# exists on the board and will matter the day something is connected.
+HIDE = [
+    "switch.esp32_io_slobodno1",
+    "switch.esp32_io_slobodno2",
+]
 
 # Diagnostics worth having on the System view. Everything else stays off.
 ENABLE = [
@@ -117,6 +130,8 @@ ENABLE = [
     "binary_sensor.samba_share_running",
     "binary_sensor.advanced_ssh_web_terminal_running",
     "binary_sensor.file_editor_running",
+    "sensor.mobitel_wi_fi_connection",
+    "sensor.mobitel_wi_fi_bssid",
 ]
 
 
@@ -139,6 +154,27 @@ def target_area(entity_id: str) -> str | None:
     return None
 
 
+def mqtt_duplicates(entities: list[dict]) -> list[str]:
+    """MQTT copies of entities the ESPHome integration already provides.
+
+    Matched by the `_2` Home Assistant appends when an id is taken, and only
+    when the original really is an ESPHome entity -- so a genuinely new MQTT
+    entity that happens to end in _2 is left alone.
+    """
+    esphome = {
+        entry["entity_id"]
+        for entry in entities
+        if entry.get("platform") == "esphome"
+    }
+    return [
+        entry["entity_id"]
+        for entry in entities
+        if entry.get("platform") == "mqtt"
+        and entry["entity_id"].endswith("_2")
+        and entry["entity_id"][: -len("_2")] in esphome
+    ]
+
+
 async def main():
     async with websockets.connect(URL, open_timeout=10, max_size=40_000_000) as ws:
         await ws.recv()
@@ -155,6 +191,7 @@ async def main():
                     e["entity_id"]: {
                         "area_id": e.get("area_id"),
                         "disabled_by": e.get("disabled_by"),
+                        "hidden_by": e.get("hidden_by"),
                     }
                     for e in entities
                 },
@@ -164,58 +201,57 @@ async def main():
         print(f"  kopija prije izmjena: {BACKUP} ({len(entities)} entiteta)")
 
         ident = 100
-        moved: dict[str, list[str]] = {}
-        skipped = []
+
+        async def update(entity_id: str, **changes):
+            nonlocal ident
+            ident += 1
+            return await call(
+                ws, ident,
+                {"type": "config/entity_registry/update", "entity_id": entity_id, **changes},
+            )
+
+        moved = 0
         for entity_id, entry in sorted(known.items()):
             area = target_area(entity_id)
-            if area is None or entry.get("area_id") == area:
+            if area is None or entry.get("area_id") == area or entry.get("disabled_by"):
                 continue
-            ident += 1
-            result = await call(
-                ws,
-                ident,
-                {
-                    "type": "config/entity_registry/update",
-                    "entity_id": entity_id,
-                    "area_id": area,
-                },
-            )
-            if "GRESKA" in result:
-                skipped.append((entity_id, result["GRESKA"]))
-            else:
-                moved.setdefault(area, []).append(entity_id)
+            if "GRESKA" not in await update(entity_id, area_id=area):
+                moved += 1
+        print(f"  razmješteno po prostorijama: {moved}")
 
-        print(f"\n  === razmjesteno po prostorijama ({sum(len(v) for v in moved.values())}) ===")
-        for area, ids in sorted(moved.items()):
-            print(f"  {area:14} {len(ids):3}  {', '.join(i.split('.')[-1] for i in ids)[:110]}")
+        hidden = 0
+        for entity_id in HIDE:
+            entry = known.get(entity_id)
+            if entry is None or entry.get("hidden_by"):
+                continue
+            if "GRESKA" not in await update(entity_id, hidden_by="user"):
+                hidden += 1
+        print(f"  sakriveno (ništa spojeno): {hidden}")
 
-        enabled, missing = [], []
+        duplicates = mqtt_duplicates(entities)
+        silenced = 0
+        for entity_id in duplicates:
+            if known[entity_id].get("disabled_by"):
+                continue
+            if "GRESKA" not in await update(entity_id, disabled_by="user"):
+                silenced += 1
+        print(f"  ugašenih MQTT dvojnika: {silenced} (od {len(duplicates)} nađenih)")
+
+        enabled, failed = 0, []
         for entity_id in ENABLE:
             entry = known.get(entity_id)
             if entry is None:
-                missing.append(entity_id)
+                failed.append(entity_id)
                 continue
             if not entry.get("disabled_by"):
                 continue
-            ident += 1
-            result = await call(
-                ws,
-                ident,
-                {
-                    "type": "config/entity_registry/update",
-                    "entity_id": entity_id,
-                    "disabled_by": None,
-                },
-            )
-            (missing if "GRESKA" in result else enabled).append(entity_id)
-
-        print(f"\n  === ukljuceno ({len(enabled)}) ===")
-        for entity_id in enabled:
-            print("   ", entity_id)
-        if missing:
-            print("  nije uspjelo / ne postoji:", missing)
-        if skipped:
-            print("  preskoceno:", skipped)
+            if "GRESKA" in await update(entity_id, disabled_by=None):
+                failed.append(entity_id)
+            else:
+                enabled += 1
+        print(f"  uključena dijagnostika: {enabled}")
+        if failed:
+            print("  nije uspjelo:", failed)
 
 
 if __name__ == "__main__":  # importable, so the pure helpers can be tested

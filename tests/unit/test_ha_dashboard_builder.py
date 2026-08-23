@@ -52,12 +52,12 @@ def _rooms(entities):
     return builder.rooms_view(entities, {"living_room": "Dnevni boravak"})
 
 
-def test_controls_come_before_readings():
-    """Scrolling past thirty sensors to reach a light switch is the old problem."""
+def test_controls_come_first_and_readings_share_one_card():
+    """Controls are what a room is touched for; readings are one glance below."""
     view = _rooms(
         {
             "living_room": [
-                {"entity_id": "sensor.temperatura", "name": "Temperatura"},
+                {"entity_id": "sensor.bme280_mux_node_soba_temperatura", "name": "Temperatura"},
                 {"entity_id": "switch.svjetlo", "name": "Svjetlo"},
                 {"entity_id": "light.fotelja", "name": "Fotelja"},
             ]
@@ -65,27 +65,25 @@ def test_controls_come_before_readings():
     )
     cards = view["sections"][0]["cards"]
 
-    assert cards[0]["type"] == "heading"
-    assert [c["entity"] for c in cards[1:]] == [
-        "light.fotelja",
-        "switch.svjetlo",
-        "sensor.temperatura",
+    assert [c["type"] for c in cards] == ["heading", "tile", "tile", "glance"]
+    assert [c["entity"] for c in cards[1:3]] == ["light.fotelja", "switch.svjetlo"]
+    assert [e["entity"] for e in cards[3]["entities"]] == [
+        "sensor.bme280_mux_node_soba_temperatura"
     ]
 
 
-def test_switches_toggle_and_sensors_open_details():
-    view = _rooms(
-        {
-            "living_room": [
-                {"entity_id": "switch.svjetlo", "name": "Svjetlo"},
-                {"entity_id": "sensor.temperatura", "name": "Temperatura"},
-            ]
-        }
-    )
-    cards = {c.get("entity"): c for c in view["sections"][0]["cards"] if "entity" in c}
+def test_a_room_without_readings_gets_no_empty_glance():
+    view = _rooms({"living_room": [{"entity_id": "switch.svjetlo", "name": "Svjetlo"}]})
 
-    assert cards["switch.svjetlo"]["tap_action"] == {"action": "toggle"}
-    assert cards["sensor.temperatura"]["tap_action"] == {"action": "more-info"}
+    assert [c["type"] for c in view["sections"][0]["cards"]] == ["heading", "tile"]
+
+
+def test_switches_toggle_on_tap():
+    view = _rooms({"living_room": [{"entity_id": "switch.svjetlo", "name": "Svjetlo"}]})
+    card = view["sections"][0]["cards"][1]
+
+    assert card["tap_action"] == {"action": "toggle"}
+    assert card["icon_tap_action"] == {"action": "toggle"}
 
 
 def test_entities_of_one_kind_are_sorted_by_name():
@@ -135,3 +133,51 @@ def test_every_machine_on_the_system_view_reports_availability():
     assert len(markdown) == 4
     assert all("🔴 OFFLINE" in content for content in markdown)
     assert all("🟢 Online" in content for content in markdown)
+
+
+def test_a_reading_is_labelled_by_what_it_measures():
+    """"Dnevni prostor temperatura" under a heading that says the room is noise."""
+    assert (
+        builder.reading_name("sensor.bme280_mux_node_dnevni_prostor_temperatura", "x")
+        == "Temperatura"
+    )
+    assert builder.reading_name("sensor.bme280_mux_node_soba_vlaga", "x") == "Vlaga"
+    assert (
+        builder.reading_name("sensor.bme280_mux_node_kvaliteta_zraka_pm2_5", "x") == "PM2.5"
+    )
+
+
+def test_an_unrecognised_reading_keeps_its_own_name():
+    assert builder.reading_name("sensor.nesto_novo", "Nešto novo") == "Nešto novo"
+
+
+def test_the_wall_buttons_and_spare_relays_stay_out_of_rooms():
+    """They are real entities, and useless when you are looking at a room."""
+    assert not builder.wanted_in_room("binary_sensor.esp32_io_tipkalo_svjetlo_kuhinja")
+    assert not builder.wanted_in_room("switch.esp32_io_slobodno1")
+    assert not builder.wanted_in_room("sensor.bme280_mux_node_bme280_mux_wifi_signal")
+    assert not builder.wanted_in_room("sensor.bme280_mux_node_broj_cestica_pm1")
+    assert builder.wanted_in_room("switch.esp32_io_svjetlo_kuhinja")
+    assert builder.wanted_in_room("sensor.bme280_mux_node_kupaona_temperatura")
+
+
+def test_the_house_is_not_a_room():
+    """Power measurement and node diagnostics belong on the System view."""
+    assert "kuca" not in [area_id for area_id, _ in builder.ROOM_ORDER]
+
+
+def test_every_view_fits_the_seven_inch_panel():
+    """800 px wide takes two columns; three squeezes tiles below a fingertip."""
+    for view in (builder.climate_view(), builder.air_view(), builder.system_view()):
+        assert view["max_columns"] <= 2
+
+
+def test_room_tiles_are_finger_sized():
+    view = builder.rooms_view(
+        {"living_room": [{"entity_id": "switch.svjetlo", "name": "Svjetlo"}]},
+        {"living_room": "Dnevni boravak"},
+    )
+    card = view["sections"][0]["cards"][1]
+
+    assert card["vertical"] is True
+    assert card["grid_options"]["columns"] == builder.TILE_COLUMNS
