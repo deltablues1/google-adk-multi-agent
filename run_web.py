@@ -56,12 +56,22 @@ def main():
     # Create FastAPI app with lifespan-based init
     app = create_app(interface)
 
+    # Report this Pi's own health to Home Assistant. It rides along with the web
+    # service rather than getting its own unit, which also makes the reading
+    # honest: if the API is down, Home Assistant should say Jarvis is down.
+    from services.host_metrics import HostMetricsPublisher
+    metrics = HostMetricsPublisher()
+    metrics.start()
+
     # Run with uvicorn (starts the event loop, triggers lifespan startup)
     import uvicorn
     print(f"Dashboard: http://{args.host}:{args.port}")
     print(f"API Docs:  http://{args.host}:{args.port}/docs")
     print()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    finally:
+        metrics.stop()
 
 
 if __name__ == "__main__":
