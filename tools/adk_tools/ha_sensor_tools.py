@@ -339,16 +339,66 @@ def home_sensor_search(query: str) -> dict:
     return {"mjerenja": hits, "broj": len(hits)}
 
 
+async def _fetch_statistics_ws(ws_url: str, token: str, entity_ids: list,
+                               start: str, period: str) -> dict:
+    """One short-lived WebSocket round trip to HA's recorder."""
+    import json as _json
+
+    import websockets
+
+    async with websockets.connect(ws_url, max_size=20_000_000, open_timeout=10) as ws:
+        await ws.recv()
+        await ws.send(_json.dumps({"type": "auth", "access_token": token}))
+        auth = _json.loads(await ws.recv())
+        if auth.get("type") != "auth_ok":
+            raise RuntimeError("Home Assistant je odbio token")
+        await ws.send(_json.dumps({
+            "id": 1, "type": "recorder/statistics_during_period",
+            "start_time": start, "statistic_ids": entity_ids,
+            "period": period, "types": ["min", "max", "mean"],
+        }))
+        while True:
+            message = _json.loads(await ws.recv())
+            if message.get("id") == 1 and message.get("type") == "result":
+                if not message.get("success"):
+                    raise RuntimeError(str(message.get("error"))[:200])
+                return message.get("result") or {}
+
+
+def _run_coroutine(coro, timeout: float):
+    """Run a coroutine from a synchronous tool, loop or no loop.
+
+    ADK tools are plain functions, but every real caller reaches them from async
+    code — the FastAPI web API, the Telegram handler, the voice loop. There
+    asyncio.run() raises "cannot be called from a running event loop", which is
+    exactly how this tool failed in production while passing when tried by hand
+    from a synchronous script. When a loop is already running, the work goes to a
+    thread that owns its own loop.
+    """
+    import asyncio
+    import concurrent.futures
+
+    def _blocking():
+        return asyncio.run(asyncio.wait_for(coro, timeout))
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _blocking()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_blocking).result(timeout + 5)
+
+
 def _statistics(entity_ids: list, days: int, period: str = "day") -> dict:
     """Long-term statistics from HA's recorder, over its WebSocket API.
 
-    The REST API cannot reach statistics — only the WebSocket one can — so this
+    The REST API cannot reach statistics -- only the WebSocket one can -- so this
     opens a short-lived socket per call. Worth it: without it the assistant can
     only ever say what a sensor reads *right now*, and "koja je danas bila
-    najviša temperatura" has no answer at all.
+    najvisa temperatura" has no answer at all.
     """
     import asyncio
-    import json as _json
     import socket
     from datetime import datetime, timedelta, timezone as _tz
 
@@ -358,34 +408,17 @@ def _statistics(entity_ids: list, days: int, period: str = "day") -> dict:
         raise RuntimeError("HA_URL/HA_TOKEN nisu postavljeni u .env")
 
     try:
-        import websockets
+        import websockets  # noqa: F401  (imported for the clearer error below)
     except ImportError as e:
         raise RuntimeError(f"websockets nije instaliran ({e})")
 
     ws_url = url.replace("https://", "wss://").replace("http://", "ws://") + "/api/websocket"
     start = (datetime.now(_tz.utc) - timedelta(days=days)).isoformat()
 
-    async def fetch():
-        async with websockets.connect(ws_url, max_size=20_000_000, open_timeout=10) as ws:
-            await ws.recv()
-            await ws.send(_json.dumps({"type": "auth", "access_token": token}))
-            auth = _json.loads(await ws.recv())
-            if auth.get("type") != "auth_ok":
-                raise RuntimeError("Home Assistant je odbio token")
-            await ws.send(_json.dumps({
-                "id": 1, "type": "recorder/statistics_during_period",
-                "start_time": start, "statistic_ids": entity_ids,
-                "period": period, "types": ["min", "max", "mean"],
-            }))
-            while True:
-                message = _json.loads(await ws.recv())
-                if message.get("id") == 1 and message.get("type") == "result":
-                    if not message.get("success"):
-                        raise RuntimeError(str(message.get("error"))[:200])
-                    return message.get("result") or {}
-
     try:
-        return asyncio.run(asyncio.wait_for(fetch(), timeout=25))
+        return _run_coroutine(
+            _fetch_statistics_ws(ws_url, token, entity_ids, start, period), 25
+        )
     except RuntimeError:
         raise
     except (OSError, socket.gaierror, asyncio.TimeoutError) as e:

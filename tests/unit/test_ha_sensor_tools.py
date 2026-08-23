@@ -5,6 +5,7 @@ actively misleading: finding the right sensor for a zone, and refusing to read
 out a value the sensor cannot physically have produced.
 """
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -282,3 +283,41 @@ def test_ordinary_pressure_still_passes():
 
     pressures = [m for m in result["mjerenja"] if m["device_class"] == "pressure"]
     assert pressures and not any(m.get("sumnjivo") for m in pressures)
+
+
+def test_history_survives_being_called_from_a_running_event_loop():
+    """The web API, Telegram and the voice loop all reach tools from async code,
+    where asyncio.run() raises "cannot be called from a running event loop".
+
+    Verifying this tool only from a synchronous script is how it shipped broken
+    and answered "došlo je do tehničke greške" to every real question for two
+    days. This test calls it the way production does.
+    """
+    async def fake_ws(*_args, **_kwargs):
+        return {NODE + "vanjska_temperatura": _hour_rows([21.0, 28.4, 24.0])}
+
+    async def scenario():
+        with patch.dict("os.environ", {"HA_URL": "http://ha.test:8123", "HA_TOKEN": "t"}):
+            with _with_states():
+                with patch.object(hs, "_fetch_statistics_ws", fake_ws):
+                    return hs.home_climate_history("vanjska", days=1)
+
+    result = asyncio.run(scenario())
+
+    assert "error" not in result, result.get("error")
+    assert result["mjerenja"][0]["najvisa"] == 28.4
+    assert result["mjerenja"][0]["najniza"] == 21.0
+
+
+def test_history_still_works_without_a_running_loop():
+    """The CLI path has no loop; that branch must keep using asyncio.run."""
+    async def fake_ws(*_args, **_kwargs):
+        return {NODE + "vanjska_temperatura": _hour_rows([19.0, 25.5])}
+
+    with patch.dict("os.environ", {"HA_URL": "http://ha.test:8123", "HA_TOKEN": "t"}):
+        with _with_states():
+            with patch.object(hs, "_fetch_statistics_ws", fake_ws):
+                result = hs.home_climate_history("vanjska", days=1)
+
+    assert "error" not in result, result.get("error")
+    assert result["mjerenja"][0]["najvisa"] == 25.5
