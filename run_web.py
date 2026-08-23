@@ -5,6 +5,9 @@ Usage:
     python run_web.py                    # Start on localhost:8000
     python run_web.py --port 9000        # Custom port
     python run_web.py --host 0.0.0.0     # Bind to all interfaces (for Docker/Cloud Run)
+
+Bind address and port also read WEB_HOST / WEB_PORT from the environment, so a
+deployment can change them in .env without touching the systemd unit.
 """
 
 import os
@@ -28,8 +31,12 @@ os.environ.setdefault('HITL_INTERFACE', 'web')
 
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace ADK Web Dashboard")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000, help="Port to bind to (default: 8000)")
+    # Defaults come from the environment so the bind address can be changed in
+    # .env instead of the systemd unit -- editing a unit needs root, .env does not.
+    parser.add_argument("--host", default=os.getenv("WEB_HOST", "127.0.0.1"),
+                        help="Host to bind to (default: WEB_HOST env, else 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=int(os.getenv("WEB_PORT", "8000")),
+                        help="Port to bind to (default: WEB_PORT env, else 8000)")
     args = parser.parse_args()
 
     print("=" * 60)
