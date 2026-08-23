@@ -6,9 +6,10 @@ dump of entity ids.
 """
 
 import importlib.util
-import sys
-import types
+import os
 from pathlib import Path
+
+import pytest
 
 _TOOL = (
     Path(__file__).resolve().parents[2]
@@ -18,11 +19,10 @@ _TOOL = (
     / "build_dashboard.py"
 )
 
-# The script talks to Home Assistant over a websocket and reads its address from
-# the environment at import time; neither is needed to test the pure helpers.
-sys.modules.setdefault("websockets", types.ModuleType("websockets"))
-import os  # noqa: E402
+pytest.importorskip("websockets", reason="the tool imports websockets at module level")
 
+# The script reads the Home Assistant address at import time. It never connects
+# unless run as a program, but the names have to exist.
 os.environ.setdefault("HA_URL", "http://example.invalid:8123")
 os.environ.setdefault("HA_TOKEN", "token")
 
