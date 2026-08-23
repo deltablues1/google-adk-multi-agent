@@ -160,7 +160,27 @@ SUN_LINE = (
     "{% else %}"
     "{% set s = as_timestamp(states('sensor.sun_next_rising')) - now().timestamp() %}"
     "Sunce izlazi za {{ (s // 3600) | int }} h {{ ((s % 3600) // 60) | int }} min."
-    "{% endif %}"
+    "{% endif %}\n\n"
+    # The phase name comes from Home Assistant's own moon integration, which is
+    # the same answer the sky module computes independently -- worth keeping in
+    # step, so a disagreement is visible rather than hidden.
+    "{% set faze = {"
+    "'new_moon': ['🌑','mlađak'],"
+    "'waxing_crescent': ['🌒','mladi srp'],"
+    "'first_quarter': ['🌓','prva četvrt'],"
+    "'waxing_gibbous': ['🌔','pred uštapom'],"
+    "'full_moon': ['🌕','uštap'],"
+    "'waning_gibbous': ['🌖','nakon uštapa'],"
+    "'last_quarter': ['🌗','zadnja četvrt'],"
+    "'waning_crescent': ['🌘','stari srp']} %}"
+    "{% set f = faze.get(states('sensor.moon_phase'), ['🌙','—']) %}"
+    "{{ f[0] }} {{ f[1] }}"
+    "{% set c = state_attr('weather.forecast_dom','cloud_coverage') %}"
+    "{% if c is not none %} &nbsp;·&nbsp; naoblaka {{ c | round(0) }} %{% endif %}"
+    "{% set w = state_attr('weather.forecast_dom','wind_speed') %}"
+    "{% if w is not none %} &nbsp;·&nbsp; vjetar {{ w | round(0) }} km/h{% endif %}"
+    "{% set uv = state_attr('weather.forecast_dom','uv_index') %}"
+    "{% if uv is not none and uv > 0 %} &nbsp;·&nbsp; UV {{ uv | round(0) }}{% endif %}"
 )
 
 

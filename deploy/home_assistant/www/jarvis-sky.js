@@ -180,14 +180,20 @@
     });
   }
 
-  /** The moon, in tonight's real phase, as an inline SVG layer. */
-  function moonLayer(date, lat, lon) {
+  /** The moon, in tonight's real phase, as an inline SVG layer.
+   *
+   * `alpha` fades the whole thing: a daytime moon is genuinely there, just
+   * pale, so it is drawn faintly rather than hidden. The glow scales with how
+   * much of the disc is lit -- a thin crescent barely lights anything, and a
+   * full moon washes out the stars around it.
+   */
+  function moonLayer(date, lat, lon, alpha) {
     const pos = moonPosition(date, lat, lon);
-    if (pos.altitude < -1) return null;
+    if (pos.altitude < -1 || alpha < 0.04) return null;
 
     const { fraction, waxing } = moonIllumination(date);
     const r = 30;
-    const box = 80;
+    const box = 84;
     const c = box / 2;
     // The terminator is an ellipse; its x-radius is signed, so the same path
     // draws a crescent and a gibbous depending on how much is lit.
@@ -197,21 +203,35 @@
       `M ${c},${c - r} A ${r},${r} 0 0,1 ${c},${c + r} ` +
       `A ${rx},${r} 0 0,${sweep} ${c},${c - r} Z`;
     const flip = waxing ? "" : ` transform="translate(${box},0) scale(-1,1)"`;
+    const a = alpha.toFixed(2);
 
+    // Limb darkening plus two soft grey patches: enough that it reads as the
+    // moon rather than a white circle, without pretending to be a photograph.
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" width="${box}" height="${box}" viewBox="0 0 ${box} ${box}">` +
-      `<defs><radialGradient id="g" cx="50%" cy="50%" r="50%">` +
-      `<stop offset="0%" stop-color="#f4f1e6"/><stop offset="100%" stop-color="#ddd8c8"/>` +
-      `</radialGradient></defs>` +
-      `<g${flip}><path d="${lit}" fill="url(#g)"/></g></svg>`;
+      `<defs>` +
+      `<radialGradient id="d" cx="42%" cy="38%" r="62%">` +
+      `<stop offset="0%" stop-color="#fbf8ef" stop-opacity="${a}"/>` +
+      `<stop offset="72%" stop-color="#e8e3d3" stop-opacity="${a}"/>` +
+      `<stop offset="100%" stop-color="#c9c3b1" stop-opacity="${a}"/>` +
+      `</radialGradient>` +
+      `<clipPath id="c"><path d="${lit}"/></clipPath>` +
+      `</defs>` +
+      `<g${flip}>` +
+      `<path d="${lit}" fill="url(#d)"/>` +
+      `<g clip-path="url(#c)" opacity="${(alpha * 0.5).toFixed(2)}">` +
+      `<ellipse cx="${c - 6}" cy="${c - 7}" rx="9" ry="7" fill="#b9b3a2"/>` +
+      `<ellipse cx="${c + 7}" cy="${c + 6}" rx="7" ry="9" fill="#bdb7a6"/>` +
+      `<ellipse cx="${c - 2}" cy="${c + 11}" rx="5" ry="4" fill="#c2bcab"/>` +
+      `</g></g></svg>`;
 
     const uri = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
     const { x, y } = skyPosition(pos.azimuth, pos.altitude);
-    // Fade the moon out in daylight rather than pasting it on a blue sky.
-    const size = 46;
+    const size = 48;
+    const glowAlpha = (0.20 * fraction * alpha).toFixed(3);
     return {
       layer: `${uri} ${x.toFixed(1)}% ${y.toFixed(1)}% / ${size}px ${size}px no-repeat`,
-      glow: `radial-gradient(circle 130px at ${x.toFixed(1)}% ${y.toFixed(1)}%, rgba(190,205,235,0.14), rgba(190,205,235,0) 70%)`,
+      glow: `radial-gradient(circle ${Math.round(90 + 90 * fraction)}px at ${x.toFixed(1)}% ${y.toFixed(1)}%, rgba(198,212,240,${glowAlpha}), rgba(198,212,240,0) 72%)`,
       fraction,
       waxing,
       altitude: pos.altitude,
@@ -368,9 +388,16 @@
     // Stars fade out as the sun comes up and as cloud thickens.
     const darkness = Math.max(0, Math.min(1, (-2 - elevation) / 10));
     const clearness = 1 - Math.min(1, cover / 100) * 0.92;
-    const moon = moonLayer(now, lat, lon);
-    if (moon && elevation < 2) layers.push(moon.layer, moon.glow);
-    layers.push(...starLayers(darkness * clearness));
+
+    // A daytime moon is real, just pale, and cloud hides it like anything else.
+    const daylight = Math.max(0, Math.min(1, (elevation + 4) / 14));
+    const moonAlpha = (1 - daylight * 0.78) * (1 - Math.min(1, cover / 100) * 0.85);
+    const moon = moonLayer(now, lat, lon, moonAlpha);
+    if (moon) layers.push(moon.layer, moon.glow);
+
+    // A bright moon washes out the faint stars near it, as it does outdoors.
+    const moonWash = moon && moon.altitude > 0 ? 1 - moon.fraction * 0.45 : 1;
+    layers.push(...starLayers(darkness * clearness * moonWash));
 
     const glow = sunGlow(elevation, azimuth);
     if (glow) layers.push(glow);
