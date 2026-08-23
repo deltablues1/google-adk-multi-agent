@@ -196,9 +196,12 @@
     const box = 84;
     const c = box / 2;
     // The terminator is an ellipse; its x-radius is signed, so the same path
-    // draws a crescent and a gibbous depending on how much is lit.
+    // draws a crescent and a gibbous depending on how much is lit. The sweep
+    // flag decides which way that arc bulges, and getting it backwards drew a
+    // 17% crescent where 83% was wanted -- measured, not guessed: filling the
+    // path and counting pixels gives 0.832 for sweep=1 and 0.172 for sweep=0.
     const rx = Math.abs(r * (1 - 2 * fraction)).toFixed(2);
-    const sweep = fraction < 0.5 ? 1 : 0;
+    const sweep = fraction < 0.5 ? 0 : 1;
     const lit =
       `M ${c},${c - r} A ${r},${r} 0 0,1 ${c},${c + r} ` +
       `A ${rx},${r} 0 0,${sweep} ${c},${c - r} Z`;
@@ -218,6 +221,12 @@
       `<clipPath id="c"><path d="${lit}"/></clipPath>` +
       `</defs>` +
       `<g${flip}>` +
+      // Earthshine: on a slim crescent the unlit disc really is faintly
+      // visible, lit by sunlight bouncing off the earth. It fades out as the
+      // moon fills, which is also what happens outside.
+      (fraction < 0.45
+        ? `<circle cx="${c}" cy="${c}" r="${r}" fill="#8e9bb4" opacity="${(alpha * 0.16 * (1 - fraction / 0.45)).toFixed(3)}"/>`
+        : "") +
       `<path d="${lit}" fill="url(#d)"/>` +
       `<g clip-path="url(#c)" opacity="${(alpha * 0.5).toFixed(2)}">` +
       `<ellipse cx="${c - 6}" cy="${c - 7}" rx="9" ry="7" fill="#b9b3a2"/>` +
