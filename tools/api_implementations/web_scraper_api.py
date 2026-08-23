@@ -525,10 +525,41 @@ async def scrape_url_firecrawl(
         logger.warning("FIRECRAWL_API_KEY not set — cannot use Firecrawl scraper")
         return {"error": "FIRECRAWL_API_KEY not set in environment", "url": url, "success": False}
     try:
-        from firecrawl import FirecrawlApp
-        app = FirecrawlApp(api_key=api_key)
-        result = app.scrape_url(url, formats=formats or ["markdown"], onlyMainContent=only_main_content)
-        content = getattr(result, 'markdown', None) or str(result)
+        # firecrawl-py 4.x moved the scraping API onto the v1 compatibility class;
+        # FirecrawlApp there only exposes paper/GitHub search and parse(). Older
+        # 0.x/1.x releases keep scrape_url on FirecrawlApp itself.
+        try:
+            from firecrawl import V1FirecrawlApp as _FirecrawlClient
+        except ImportError:
+            from firecrawl import FirecrawlApp as _FirecrawlClient
+
+        app = _FirecrawlClient(api_key=api_key)
+
+        def _scrape():
+            # 4.x takes only_main_content, older releases took onlyMainContent.
+            try:
+                return app.scrape_url(
+                    url,
+                    formats=formats or ["markdown"],
+                    only_main_content=only_main_content,
+                )
+            except TypeError:
+                return app.scrape_url(
+                    url,
+                    formats=formats or ["markdown"],
+                    onlyMainContent=only_main_content,
+                )
+
+        # scrape_url is blocking. Awaiting it directly would stall the event loop
+        # that also serves Telegram, voice and the Home Assistant agent, for as
+        # long as the remote page takes.
+        result = await asyncio.to_thread(_scrape)
+
+        content = (
+            getattr(result, "markdown", None)
+            or (result.get("markdown") if isinstance(result, dict) else None)
+            or str(result)
+        )
         logger.info(f"Firecrawl scraped {url}: {len(content.split())} words")
         return {
             "url": url,

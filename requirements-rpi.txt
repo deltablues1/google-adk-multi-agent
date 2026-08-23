@@ -86,3 +86,7 @@ numpy>=1.24.0
 # Optional alternative engine — set WAKEWORD_ENGINE=porcupine and provide
 # PICOVOICE_ACCESS_KEY. Freemium (not open-source); install manually if needed:
 # pvporcupine>=3.0.0
+
+# Scraper fallback for pages Jina Reader cannot read (403, JS-rendered).
+# The key is already in .env; without the package the tool fails on every call.
+firecrawl-py>=4.0
