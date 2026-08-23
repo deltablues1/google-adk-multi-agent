@@ -606,6 +606,23 @@ TV_APPS = [
 ]
 
 
+# The remote entity reports a raw package name; nobody wants to read
+# com.google.android.youtube.tv on a wall. Anything unmapped still shows, so a
+# newly installed app is visible rather than swallowed.
+TV_NOW = (
+    "{% set app = state_attr('media_player.tv','app_id') %}"
+    "{% set imena = {"
+    "'com.google.android.youtube.tv': 'YouTube',"
+    "'hr.a1.android.tv.xploretv': 'A1 Xplore TV',"
+    "'com.netflix.ninja': 'Netflix',"
+    "'com.google.android.apps.tv.launcherx': 'početni zaslon',"
+    "'com.google.android.apps.tv.dreamx': 'čuvar zaslona'} %}"
+    "{% if is_state('media_player.tv','off') %}Televizor je ugašen."
+    "{% else %}Uključen &nbsp;·&nbsp; "
+    "{{ imena.get(app, app if app else 'nepoznata aplikacija') }}{% endif %}"
+)
+
+
 def key(name: str, icon: str, command: str, columns: int = 4) -> dict:
     """One remote key. Verified against the TV: send_command moves it."""
     return {
@@ -652,12 +669,19 @@ def tv_view() -> dict:
                 "cards": [
                     {"type": "heading", "heading": "Sada", "heading_style": "title",
                      "icon": "mdi:television-play"},
-                    {"type": "media-control", "entity": TV_PLAYER},
-                    # The cast side is here for one reason: it is the only one
-                    # that takes an absolute volume, so the slider lands where
-                    # you put it instead of stepping towards it.
+                    # The cast side is the one that knows what is playing:
+                    # title, artist, artwork, how far in. The remote side knows
+                    # only a package name -- measured, with Elvis on screen:
+                    # cast said "Elvis Presley - '68 Comeback Special", the
+                    # remote said "com.google.android.youtube.tv". It also
+                    # takes an absolute volume, so its slider lands where you
+                    # put it instead of stepping towards it.
+                    {"type": "media-control", "entity": TV_CAST},
                     {"type": "tile", "entity": TV_CAST, "name": "Glasnoća",
                      "features": [{"type": "media-player-volume-slider"}]},
+                    # Cast falls silent on broadcast channels, so this line is
+                    # what still says the set is on and what it is showing.
+                    {"type": "markdown", "content": TV_NOW},
                 ],
             },
             {
