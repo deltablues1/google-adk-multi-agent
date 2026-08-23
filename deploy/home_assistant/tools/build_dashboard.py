@@ -535,21 +535,31 @@ def system_view() -> dict:
 
 # --- Lights and sockets --------------------------------------------------------------
 
-def switch_view(title: str, path: str, icon: str, entries: list[tuple[str, str]],
-                turn_off_all: list[str] | None = None) -> dict:
-    cards = [{"type": "heading", "heading": title, "heading_style": "title", "icon": icon}]
-    cards += [tile(entity_id, name, toggle=True) for entity_id, name in entries]
-    if turn_off_all:
-        cards.append({
-            "type": "button", "name": "Ugasi sve", "icon": "mdi:power-off",
-            "show_state": False, "grid_options": {"columns": 12},
-            "tap_action": {"action": "perform-action",
-                           "perform_action": "homeassistant.turn_off",
-                           "target": {"entity_id": turn_off_all}},
-        })
+def devices_view(lights: list[tuple[str, str]], sockets: list[tuple[str, str]],
+                 light_ids: list[str]) -> dict:
+    """Lights and appliances on one view -- two tabs to reach them was one too many."""
+    light_cards = [
+        {"type": "heading", "heading": "Svjetla", "heading_style": "title",
+         "icon": "mdi:lightbulb-group"},
+        *[tile(entity_id, name, toggle=True) for entity_id, name in lights],
+        {"type": "button", "name": "Ugasi sva svjetla", "icon": "mdi:lightbulb-off-outline",
+         "show_state": False, "grid_options": {"columns": 12},
+         "tap_action": {"action": "perform-action",
+                        "perform_action": "homeassistant.turn_off",
+                        "target": {"entity_id": light_ids}}},
+    ]
+    socket_cards = [
+        {"type": "heading", "heading": "Trošila", "heading_style": "title",
+         "icon": "mdi:power-socket-eu"},
+        *[tile(entity_id, name, toggle=True) for entity_id, name in sockets],
+    ]
     return {
-        "type": "sections", "max_columns": 2, "title": title, "path": path, "icon": icon,
-        "sections": [{"type": "grid", "cards": cards}],
+        "type": "sections", "max_columns": 2, "title": "Uređaji", "path": "uredaji",
+        "icon": "mdi:toggle-switch-outline",
+        "sections": [
+            {"type": "grid", "cards": light_cards},
+            {"type": "grid", "cards": socket_cards},
+        ],
     }
 
 
@@ -599,6 +609,46 @@ def wanted_in_room(entity_id: str) -> bool:
     return not any(word in entity_id for word in ROOM_EXCLUDE)
 
 
+def count_switch_ons(history: dict, entity_ids: list[str]) -> dict[str, int]:
+    """How many times each switch was actually turned on, from recorded history.
+
+    Only off -> on counts. A node reboot republishes every entity, and counting
+    unavailable -> on made all eleven sockets look equally busy at thirteen
+    switches each -- an artefact, not a habit.
+    """
+    counts = {}
+    for entity_id in entity_ids:
+        previous = None
+        total = 0
+        for item in history.get(entity_id) or []:
+            state = item.get("s", item.get("state"))
+            if state == "on" and previous == "off":
+                total += 1
+            previous = state
+        counts[entity_id] = total
+    return counts
+
+
+async def usage_order(ws, ident: int, entity_ids: list[str], days: int = 14) -> dict[str, int]:
+    """Recent switch counts, or an empty map if the recorder cannot answer."""
+    from datetime import datetime, timedelta, timezone
+
+    end = datetime.now(timezone.utc)
+    try:
+        history = await call(ws, ident, {
+            "type": "history/history_during_period",
+            "start_time": (end - timedelta(days=days)).isoformat(),
+            "end_time": end.isoformat(),
+            "entity_ids": entity_ids,
+            "minimal_response": True,
+            "no_attributes": True,
+        })
+    except SystemExit:
+        print("  (povijest nedostupna — poredak ostaje abecedni)")
+        return {}
+    return count_switch_ons(history, entity_ids)
+
+
 async def main():
     async with websockets.connect(URL, open_timeout=10, max_size=40_000_000) as ws:
         await ws.recv()
@@ -640,21 +690,27 @@ async def main():
             and not entry.get("hidden_by")
             and entry["entity_id"] in states
         ]
-        lights = sorted(
-            ((e, label(e)) for e in switchable if "svjetlo" in e),
-            key=lambda item: item[1].lower(),
-        )
-        sockets = sorted(
-            ((e, label(e)) for e in switchable if "svjetlo" not in e),
-            key=lambda item: item[1].lower(),
-        )
+        # Order by what actually gets touched, so the thumb lands on the bathroom
+        # light rather than on whatever starts with B.
+        used = await usage_order(ws, 7, switchable)
+
+        def by_use(entity_id: str) -> tuple:
+            return (-used.get(entity_id, 0), label(entity_id).lower())
+
+        lights = [(e, label(e)) for e in sorted(
+            (e for e in switchable if "svjetlo" in e), key=by_use)]
+        sockets = [(e, label(e)) for e in sorted(
+            (e for e in switchable if "svjetlo" not in e), key=by_use)]
+        if used:
+            top = ", ".join(f"{label(e)} ({used.get(e, 0)}×)" for e, _ in lights[:4])
+            print(f"  najčešće paljena svjetla u 14 dana: {top}")
         light_ids = [entity_id for entity_id, _ in lights]
 
         print(f"  svjetala: {len(lights)}, utičnica: {len(sockets)}")
         for area_id, _ in ROOM_ORDER:
             print(f"    {area_names.get(area_id, area_id):16} {len(by_area.get(area_id) or [])}")
 
-        cfg = await call(ws, 4, {"type": "lovelace/config", "url_path": BOARD})
+        cfg = await call(ws, 8, {"type": "lovelace/config", "url_path": BOARD})
         with open(BACKUP, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, ensure_ascii=False, indent=2)
         print(f"  kopija prije izmjene: {BACKUP}")
@@ -669,15 +725,14 @@ async def main():
             rooms_view(by_area, area_names),
             climate_view(),
             air_view(),
-            switch_view("Svjetla", "svjetla", "mdi:lightbulb-group", lights, light_ids),
-            switch_view("Utičnice", "uticnice", "mdi:power-socket-eu", sockets),
+            devices_view(lights, sockets, light_ids),
             tv_view,
             system_view(),
             conversation_view(),
         ]
 
-        await call(ws, 5, {"type": "lovelace/config/save", "url_path": BOARD, "config": cfg})
-        after = await call(ws, 6, {"type": "lovelace/config", "url_path": BOARD})
+        await call(ws, 9, {"type": "lovelace/config/save", "url_path": BOARD, "config": cfg})
+        after = await call(ws, 10, {"type": "lovelace/config", "url_path": BOARD})
         print("  prikazi:", [v.get("title") for v in after["views"]])
 
 

@@ -201,3 +201,46 @@ def test_a_switch_is_a_socket_unless_it_is_a_light():
 
     assert sockets == ["switch.esp32_io_uticnica_tv", "switch.esp32_io_pecnica"]
     assert len(lights) + len(sockets) == len(ids)
+
+
+def test_only_a_real_off_to_on_counts_as_using_a_switch():
+    """A node reboot republishes every entity as `on`.
+
+    Counting unavailable -> on made all eleven sockets look equally busy at
+    thirteen switches each, which is a reboot artefact rather than a habit and
+    would have ordered the panel by it.
+    """
+    history = {
+        "switch.a": [
+            {"s": "off"}, {"s": "on"}, {"s": "off"}, {"s": "on"},
+        ],
+        "switch.b": [
+            {"s": "on"}, {"s": "unavailable"}, {"s": "on"},
+            {"s": "unavailable"}, {"s": "on"},
+        ],
+    }
+
+    counts = builder.count_switch_ons(history, ["switch.a", "switch.b"])
+
+    assert counts["switch.a"] == 2
+    assert counts["switch.b"] == 0
+
+
+def test_a_switch_with_no_recorded_history_counts_zero():
+    assert builder.count_switch_ons({}, ["switch.novi"]) == {"switch.novi": 0}
+
+
+def test_lights_and_sockets_share_one_view():
+    """Two tabs to reach a light and a socket was one tab too many on a panel."""
+    view = builder.devices_view(
+        [("switch.svjetlo", "kupaona")],
+        [("switch.pecnica", "Pećnica")],
+        ["switch.svjetlo"],
+    )
+
+    assert view["title"] == "Uređaji"
+    headings = [c["heading"] for s in view["sections"] for c in s["cards"]
+                if c.get("type") == "heading"]
+    assert headings == ["Svjetla", "Trošila"]
+    off_all = [c for s in view["sections"] for c in s["cards"] if c.get("type") == "button"]
+    assert off_all[0]["tap_action"]["target"]["entity_id"] == ["switch.svjetlo"]
