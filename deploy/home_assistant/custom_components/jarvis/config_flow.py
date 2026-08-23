@@ -14,12 +14,14 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_MAX_TURN_SECONDS,
+    CONF_SESSION_GRACE_MINUTES,
     CONF_SILENCE_SECONDS,
     CONF_TIMEOUT,
     CONF_TOKEN,
     CONF_URL,
     CONF_USER_ID,
     DEFAULT_MAX_TURN_SECONDS,
+    DEFAULT_SESSION_GRACE_MINUTES,
     DEFAULT_SILENCE_SECONDS,
     DEFAULT_TIMEOUT,
     DEFAULT_URL,
@@ -117,6 +119,14 @@ class JarvisOptionsFlow(config_entries.OptionsFlow):
                     CONF_TIMEOUT,
                     default=int(current.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)),
                 ): vol.All(vol.Coerce(int), vol.Range(min=10, max=900)),
+                vol.Optional(
+                    CONF_SESSION_GRACE_MINUTES,
+                    default=float(
+                        current.get(
+                            CONF_SESSION_GRACE_MINUTES, DEFAULT_SESSION_GRACE_MINUTES
+                        )
+                    ),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0, max=120)),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

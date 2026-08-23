@@ -5,8 +5,9 @@ the built-in options are OpenAI, Anthropic and Google, and any of those would be
 a different assistant without Jarvis's tools. This integration closes that gap
 by forwarding conversation turns to the Jarvis web API and returning its reply.
 
-It also widens Assist's end-of-speech timing -- see ``assist_patience`` for why
-that cannot be done through a setting.
+Two things around it are handled here because Home Assistant offers no setting
+for either: ``assist_patience`` widens the end-of-speech timing, and ``history``
+keeps the turns that the Assist dialog discards when it closes.
 """
 
 from __future__ import annotations
@@ -22,8 +23,9 @@ from .const import (
     DEFAULT_SILENCE_SECONDS,
     DOMAIN,
 )
+from .history import JarvisHistory
 
-PLATFORMS = ["conversation"]
+PLATFORMS = ["conversation", "sensor"]
 
 # Where the pre-Jarvis Assist timings are kept so unloading can put them back.
 _PATIENCE = "assist_patience"
@@ -38,8 +40,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Jarvis from a config entry."""
     config = dict(entry.data)
     config.update(entry.options)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = config
 
+    history = JarvisHistory(hass)
+    await history.async_load()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "config": config,
+        "history": history,
+    }
     hass.data[DOMAIN][_PATIENCE] = apply_patience(
         _setting(entry, CONF_SILENCE_SECONDS, DEFAULT_SILENCE_SECONDS),
         _setting(entry, CONF_MAX_TURN_SECONDS, DEFAULT_MAX_TURN_SECONDS),

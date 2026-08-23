@@ -33,3 +33,21 @@ DEFAULT_SILENCE_SECONDS = 3.0
 # -- a new cliff right where the long sentences start.
 CONF_MAX_TURN_SECONDS = "max_turn_seconds"
 DEFAULT_MAX_TURN_SECONDS = 30.0
+
+# Reopening the Assist dialog hands us a brand new conversation_id, so without
+# this every turn would start a fresh Jarvis session and "a ugasi i ono drugo"
+# would have nothing to refer back to. Within this window a new conversation
+# continues the last one instead.
+CONF_SESSION_GRACE_MINUTES = "session_grace_minutes"
+DEFAULT_SESSION_GRACE_MINUTES = 10.0
+
+# The Assist dialog forgets everything the moment it closes -- an answer can be
+# gone before it has been read. Turns are kept here so they can be read later
+# from a dashboard, and survive a restart.
+HISTORY_STORED_TURNS = 25
+HISTORY_SHOWN_TURNS = 10
+# Attributes above ~16 kB are refused by the recorder, so long answers are
+# shortened for the entity while the stored copy stays whole.
+HISTORY_ANSWER_CHARS = 1000
+
+SIGNAL_HISTORY_UPDATED = "jarvis_history_updated"

@@ -140,6 +140,36 @@ Provjereno na živom sustavu nakon promjene: pauza od 2,5 s prolazi cijela, pauz
 od 3,5 s i dalje reže (dakle detekcija radi, samo je strpljivija), a 30 s
 neprekinutog govora stigne do kraja.
 
+## Dio 5 — povijest razgovora i nastavak niti
+
+Assist prozor pamti razgovor samo dok je otvoren. Zatvori se — ili ga zatvori
+mobitel umjesto tebe — i nestane oboje: tekst odgovora, koji je znao biti predug
+da se pročita u letu, i sama nit razgovora.
+
+Nit nestaje jer svako otvaranje prozora dobiva **novi `conversation_id`**, pa je
+integracija otvarala novu Jarvisovu sesiju. Sada, ako se vratiš unutar
+**10 minuta**, nastavlja se prethodna sesija. Provjereno: „Zapamti broj
+sedamnaest" u jednom prozoru, „Koji sam ti broj rekao?" u drugom — odgovorio je
+17.
+
+Tekst se čuva u entitetu **`sensor.jarvis_razgovor`**:
+
+| | |
+|---|---|
+| stanje | zadnje postavljeno pitanje (pa HA-ova povijest pokazuje vremensku crtu) |
+| `pitanje`, `odgovor`, `vrijeme` | zadnja izmjena |
+| `povijest` | zadnjih 10 izmjena |
+
+Čuva se i kad Jarvis javi grešku — poruka o isteku vremena tako ostane
+pročitljiva umjesto da nestane s prozorom. Zapisuje se u HA-ovo spremište, pa
+preživljava restart (provjereno). Drži se zadnjih 25 izmjena; starije ispadaju.
+
+Na ploči **Jarvis → Razgovor** stoji prijepis i gumb *Pitaj Jarvisa* koji odmah
+otvara glasovni prozor s tim pipelineom.
+
+Trajanje nastavka niti mijenja se ondje gdje i ostala: **Settings → Devices &
+Services → Jarvis → Configure**. Nula ga isključuje.
+
 ## Kako provjeriti da odgovara baš Jarvis
 
 Pitaj nešto što HA-ov ugrađeni Assist ne može znati:
