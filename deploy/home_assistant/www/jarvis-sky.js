@@ -24,6 +24,7 @@
 (() => {
   "use strict";
 
+  const VERSION = "jarvis-sky v3";
   const TICK_MS = 5 * 60 * 1000;   // the sky does not move faster than this
   const WATCH_MS = 30 * 1000;      // but weather can change between ticks
   const WEATHER = "weather.forecast_dom";
@@ -479,12 +480,34 @@
     }
   }
 
+  /* Say hello in Home Assistant's own log, once per page load.
+   *
+   * There is no other way to find out whether this ran on someone else's
+   * screen. A phone reported "it does nothing" and the possibilities -- the
+   * file never fetched, the shadow-DOM walk finding nothing, the maths
+   * throwing -- are indistinguishable from the outside. One line in the log
+   * separates them, and the absence of a line is itself the answer.
+   */
+  function report() {
+    const hass = getHass();
+    if (!hass?.callService) return;
+    const ua = (navigator.userAgent || "").slice(0, 90);
+    const found = state.target || "NIJE NAĐEN";
+    const layers = state.last ? state.last.layers : "-";
+    hass.callService("system_log", "write", {
+      level: "warning",
+      logger: "jarvis_sky",
+      message: `${VERSION} | element=${found} | slojeva=${layers} | ${ua}`,
+    }).catch(() => {});
+  }
+
   function start() {
     if (!getHass()) {
       setTimeout(start, 1000);
       return;
     }
     paint();
+    setTimeout(report, 1500);
     setInterval(paint, TICK_MS);
     setInterval(watch, WATCH_MS);
     // The view element is rebuilt when the dashboard is re-rendered, which

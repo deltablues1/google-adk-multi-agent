@@ -583,6 +583,139 @@ def devices_view(lights: list[tuple[str, str]], sockets: list[tuple[str, str]],
     }
 
 
+# --- TV ----------------------------------------------------------------------------------
+
+# What the TV is called on each of the two protocols it speaks. The remote can
+# press keys and launch apps; the cast side is the only one that accepts an
+# exact volume. Both are used for what each is good at, and neither is
+# explained on screen -- a paragraph about protocols is not something anyone
+# reads while reaching for the volume.
+TV_REMOTE = "remote.tv"
+TV_PLAYER = "media_player.tv"
+TV_CAST = "media_player.smart_tv_pro"
+
+# How an app is opened matters more than which app it is. A deep link is sent
+# as it is; a bare package name does nothing at all on this television, so it
+# goes through the small launcher app installed on it -- the same route Jarvis
+# uses, and the reason that app exists. Buttons built on raw package names
+# would look right and do nothing.
+TV_APPS = [
+    ("YouTube", "mdi:youtube", "https://www.youtube.com"),
+    ("A1 Xplore", "mdi:television-classic", "jarvis://open?pkg=hr.a1.android.tv.xploretv"),
+    ("Netflix", "mdi:netflix", "https://www.netflix.com/title"),
+]
+
+
+def key(name: str, icon: str, command: str, columns: int = 4) -> dict:
+    """One remote key. Verified against the TV: send_command moves it."""
+    return {
+        "type": "button",
+        "name": name,
+        "icon": icon,
+        "show_state": False,
+        "grid_options": {"columns": columns},
+        "tap_action": {
+            "action": "perform-action",
+            "perform_action": "remote.send_command",
+            "target": {"entity_id": TV_REMOTE},
+            "data": {"command": command},
+        },
+    }
+
+
+def app_button(name: str, icon: str, package: str) -> dict:
+    return {
+        "type": "button",
+        "name": name,
+        "icon": icon,
+        "show_state": False,
+        "grid_options": {"columns": 4},
+        "tap_action": {
+            "action": "perform-action",
+            "perform_action": "remote.turn_on",
+            "target": {"entity_id": TV_REMOTE},
+            "data": {"activity": package},
+        },
+    }
+
+
+def tv_view() -> dict:
+    return {
+        "type": "sections",
+        "max_columns": 2,
+        "title": "TV",
+        "path": "tv",
+        "icon": "mdi:television",
+        "sections": [
+            {
+                "type": "grid",
+                "cards": [
+                    {"type": "heading", "heading": "Sada", "heading_style": "title",
+                     "icon": "mdi:television-play"},
+                    {"type": "media-control", "entity": TV_PLAYER},
+                    # The cast side is here for one reason: it is the only one
+                    # that takes an absolute volume, so the slider lands where
+                    # you put it instead of stepping towards it.
+                    {"type": "tile", "entity": TV_CAST, "name": "Glasnoća",
+                     "features": [{"type": "media-player-volume-slider"}]},
+                ],
+            },
+            {
+                "type": "grid",
+                "cards": [
+                    {"type": "heading", "heading": "Daljinski", "heading_style": "title",
+                     "icon": "mdi:remote-tv"},
+                    key("Natrag", "mdi:arrow-u-left-top", "BACK"),
+                    key("Gore", "mdi:chevron-up", "DPAD_UP"),
+                    key("Početna", "mdi:home", "HOME"),
+                    key("Lijevo", "mdi:chevron-left", "DPAD_LEFT"),
+                    key("OK", "mdi:circle-slice-8", "DPAD_CENTER"),
+                    key("Desno", "mdi:chevron-right", "DPAD_RIGHT"),
+                    key("Izbornik", "mdi:dots-horizontal", "MENU"),
+                    key("Dolje", "mdi:chevron-down", "DPAD_DOWN"),
+                    key("Pauza", "mdi:play-pause", "MEDIA_PLAY_PAUSE"),
+                ],
+            },
+            {
+                "type": "grid",
+                "cards": [
+                    {"type": "heading", "heading": "Glasnoća i kanali",
+                     "heading_style": "title", "icon": "mdi:volume-high"},
+                    key("Tiše", "mdi:volume-minus", "VOLUME_DOWN"),
+                    key("Bez zvuka", "mdi:volume-off", "VOLUME_MUTE"),
+                    key("Glasnije", "mdi:volume-plus", "VOLUME_UP"),
+                    key("Kanal −", "mdi:chevron-double-down", "CHANNEL_DOWN", columns=6),
+                    key("Kanal +", "mdi:chevron-double-up", "CHANNEL_UP", columns=6),
+                ],
+            },
+            {
+                "type": "grid",
+                "cards": [
+                    {"type": "heading", "heading": "Aplikacije", "heading_style": "title",
+                     "icon": "mdi:apps"},
+                    *[app_button(*app) for app in TV_APPS],
+                ],
+            },
+            {
+                "type": "grid",
+                "cards": [
+                    {"type": "heading", "heading": "Napajanje", "heading_style": "title",
+                     "icon": "mdi:power-plug"},
+                    {"type": "tile", "entity": TV_PLAYER, "name": "Televizor",
+                     "vertical": True, "grid_options": {"columns": 4},
+                     "tap_action": {"action": "toggle"}},
+                    {"type": "tile", "entity": "switch.esp32_io_uticnica_tv",
+                     "name": "Utičnica", "vertical": True,
+                     "grid_options": {"columns": 4}, "tap_action": {"action": "toggle"}},
+                    {"type": "tile", "entity": "switch.esp32_io_svjetlo_tv",
+                     "name": "Svjetlo", "vertical": True,
+                     "grid_options": {"columns": 4}, "tap_action": {"action": "toggle"}},
+                ],
+            },
+        ],
+    }
+
+
 # --- Conversation ----------------------------------------------------------------------
 
 RAZGOVOR = (
@@ -735,18 +868,13 @@ async def main():
             json.dump(cfg, fh, ensure_ascii=False, indent=2)
         print(f"  kopija prije izmjene: {BACKUP}")
 
-        # The TV view is hand-written and kept as it is, but it still has to fit
-        # the panel like everything else.
-        tv_view = next(v for v in cfg["views"] if v.get("path") == "tv")
-        tv_view["max_columns"] = 2
-
         cfg["views"] = [
             overview_view([tile(e, n, True) for e, n in lights], light_ids),
             rooms_view(by_area, area_names),
             climate_view(),
             air_view(),
             devices_view(lights, sockets, light_ids),
-            tv_view,
+            tv_view(),
             system_view(),
             conversation_view(),
         ]
