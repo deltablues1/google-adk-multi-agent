@@ -12,7 +12,10 @@ CONF_TIMEOUT = "timeout"
 DEFAULT_URL = "http://192.168.100.105:8000"
 DEFAULT_USER_ID = "ha-assist"
 
-# Jarvis answers simple questions in a few seconds, but a request that makes the
-# orchestrator call tools (calendar, mail, sensor history) can legitimately take
-# half a minute. Cutting that short would look like a broken agent.
-DEFAULT_TIMEOUT = 90
+# Simple questions come back in a few seconds, but a real task can run for
+# minutes: measured 2026-08-23, "research heat pumps, write it up and mail it to
+# me" took ~3 minutes across 12 tool calls and finished successfully -- while a
+# 90 s timeout had already told the user it had failed. The cost of waiting too
+# long is a slow answer; the cost of waiting too little is lying about a task
+# that actually completed.
+DEFAULT_TIMEOUT = 300

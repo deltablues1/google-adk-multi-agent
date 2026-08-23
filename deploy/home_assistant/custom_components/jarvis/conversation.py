@@ -121,12 +121,17 @@ class JarvisConversationEntity(conversation.ConversationEntity):
                 data = await api_response.json()
 
         except TimeoutError:
-            # A long tool chain is a plausible cause, so say that rather than
-            # implying Jarvis is down.
-            _LOGGER.warning("Jarvis did not answer within the timeout")
+            # Giving up on the reply does not cancel the work: Jarvis keeps
+            # running and the task usually completes. Saying "it failed" here
+            # was wrong -- on 2026-08-23 the document was written and the mail
+            # was sent while the user was reading that it had timed out.
+            _LOGGER.warning(
+                "No reply within the timeout; Jarvis is probably still working"
+            )
             response.async_set_error(
                 intent.IntentResponseErrorCode.FAILED_TO_HANDLE,
-                "Jarvisu treba predugo da odgovori.",
+                "Jarvis još radi na tome i ne stigne odgovoriti ovdje. "
+                "Zadatak se vjerojatno ipak dovrši -- provjeri za koju minutu.",
             )
             return conversation.ConversationResult(
                 response=response, conversation_id=conversation_id
