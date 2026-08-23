@@ -625,18 +625,29 @@ async def main():
                                    entity_id),
             })
 
-        def collect(pattern: str) -> list[tuple[str, str]]:
-            found = []
-            for entity_id, state in states.items():
-                if pattern in entity_id and entity_id.split(".")[0] in ("switch", "light"):
-                    found.append((entity_id,
-                                  short_name(state["attributes"].get("friendly_name", ""),
-                                             entity_id).replace("Svjetlo ", "")
-                                  .replace("Utičnica ", "")))
-            return sorted(found, key=lambda item: item[1].lower())
+        def label(entity_id: str) -> str:
+            name = short_name(states[entity_id]["attributes"].get("friendly_name", ""), entity_id)
+            return name.replace("Svjetlo ", "").replace("Utičnica ", "")
 
-        lights = collect("svjetlo")
-        sockets = collect("uticnica")
+        # Everything switchable that is not disabled or hidden. Split by what it
+        # IS, not by what it is called: listing sockets by the word "utičnica"
+        # silently lost the oven, which is a switch by any other name.
+        switchable = [
+            entry["entity_id"]
+            for entry in entities
+            if entry["entity_id"].split(".")[0] in ("switch", "light")
+            and not entry.get("disabled_by")
+            and not entry.get("hidden_by")
+            and entry["entity_id"] in states
+        ]
+        lights = sorted(
+            ((e, label(e)) for e in switchable if "svjetlo" in e),
+            key=lambda item: item[1].lower(),
+        )
+        sockets = sorted(
+            ((e, label(e)) for e in switchable if "svjetlo" not in e),
+            key=lambda item: item[1].lower(),
+        )
         light_ids = [entity_id for entity_id, _ in lights]
 
         print(f"  svjetala: {len(lights)}, utičnica: {len(sockets)}")

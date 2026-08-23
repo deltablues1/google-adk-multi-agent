@@ -181,3 +181,23 @@ def test_room_tiles_are_finger_sized():
 
     assert card["vertical"] is True
     assert card["grid_options"]["columns"] == builder.TILE_COLUMNS
+
+
+def test_a_switch_is_a_socket_unless_it_is_a_light():
+    """Listing sockets by the word "utičnica" silently lost the oven.
+
+    Split by what an entity IS, not by what it happens to be called, so an
+    appliance added tomorrow lands somewhere instead of nowhere.
+    """
+    ids = [
+        "switch.esp32_io_svjetlo_kuhinja",
+        "light.esp32_io_svjetlo_fotelja",
+        "switch.esp32_io_uticnica_tv",
+        "switch.esp32_io_pecnica",
+    ]
+
+    lights = [e for e in ids if "svjetlo" in e]
+    sockets = [e for e in ids if "svjetlo" not in e]
+
+    assert sockets == ["switch.esp32_io_uticnica_tv", "switch.esp32_io_pecnica"]
+    assert len(lights) + len(sockets) == len(ids)
