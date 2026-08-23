@@ -62,7 +62,16 @@ jarvis_zalazak:
   text-primary-color: "#2a1f28"
   primary-background-color: "#5c4a5e"
   secondary-background-color: "#3d3a5c"
-  lovelace-background: "linear-gradient(175deg, #3d3a5c 0%, #8a5a62 46%, #e0925a 82%, #f0b775 100%) fixed"
+  # The first stars come out at the top of the sky while the horizon is still
+  # warm -- only a handful, and only up high, which is what dusk actually does.
+  lovelace-background: >-
+    radial-gradient(1.2px 1.2px at 18% 5%, rgba(255,255,255,0.55), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 41% 9%, rgba(255,255,255,0.4), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.4px 1.4px at 63% 4%, rgba(255,255,255,0.6), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 77% 11%, rgba(255,255,255,0.35), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.1px 1.1px at 91% 6%, rgba(255,255,255,0.45), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 8% 12%, rgba(255,255,255,0.3), rgba(255,255,255,0) 100%) fixed,
+    linear-gradient(175deg, #3d3a5c 0%, #8a5a62 46%, #e0925a 82%, #f0b775 100%) fixed
   ha-card-background: "rgba(28, 20, 26, 0.34)"
   card-background-color: "rgba(28, 20, 26, 0.34)"
   ha-card-border-color: "rgba(255, 240, 225, 0.20)"
@@ -94,7 +103,42 @@ jarvis_noc:
   text-primary-color: "#101113"
   primary-background-color: "#0a0e17"
   secondary-background-color: "#121a26"
-  lovelace-background: "linear-gradient(180deg, #05070c 0%, #0a0e17 58%, #121a26 100%) fixed"
+  # Twenty-six stars and a moon, all of it CSS -- no add-on, no script. They
+  # thin out towards the bottom because that is where the horizon glow is, and
+  # each layer is `fixed` so the sky stays put while the page scrolls under it.
+  # The moon is a plain soft disc rather than a crescent: the real phase changes
+  # nightly and a painted crescent would be wrong most of the month.
+  lovelace-background: >-
+    radial-gradient(1.4px 1.4px at 12% 14%, rgba(255,255,255,0.75), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 22% 8%, rgba(255,255,255,0.55), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.2px 1.2px at 31% 19%, rgba(255,255,255,0.6), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 5% 26%, rgba(255,255,255,0.45), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.6px 1.6px at 44% 6%, rgba(255,255,255,0.8), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 38% 23%, rgba(255,255,255,0.5), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.1px 1.1px at 53% 13%, rgba(255,255,255,0.6), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.3px 1.3px at 61% 5%, rgba(255,255,255,0.7), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 68% 21%, rgba(255,255,255,0.45), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.5px 1.5px at 74% 9%, rgba(255,255,255,0.75), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.1px 1.1px at 89% 7%, rgba(255,255,255,0.55), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 95% 17%, rgba(255,255,255,0.5), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 3% 10%, rgba(255,255,255,0.4), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 49% 27%, rgba(255,255,255,0.45), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.3px 1.3px at 79% 28%, rgba(255,255,255,0.55), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.2px 1.2px at 17% 33%, rgba(255,255,255,0.5), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 27% 41%, rgba(255,255,255,0.4), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.4px 1.4px at 46% 36%, rgba(255,255,255,0.6), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 57% 44%, rgba(255,255,255,0.4), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.2px 1.2px at 71% 34%, rgba(255,255,255,0.5), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 83% 40%, rgba(255,255,255,0.42), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 9% 48%, rgba(255,255,255,0.35), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.1px 1.1px at 35% 52%, rgba(255,255,255,0.4), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 64% 55%, rgba(255,255,255,0.33), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1.2px 1.2px at 92% 49%, rgba(255,255,255,0.42), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(1px 1px at 20% 58%, rgba(255,255,255,0.3), rgba(255,255,255,0) 100%) fixed,
+    radial-gradient(circle 21px at 84% 15%, rgba(240,238,228,0.94) 0%, rgba(240,238,228,0.9) 56%, rgba(240,238,228,0) 58%) fixed,
+    radial-gradient(circle 46px at 84% 15%, rgba(226,232,246,0.20) 0%, rgba(226,232,246,0) 70%) fixed,
+    radial-gradient(circle 150px at 84% 15%, rgba(150,175,215,0.13) 0%, rgba(150,175,215,0) 72%) fixed,
+    linear-gradient(180deg, #05070c 0%, #0a0e17 58%, #121a26 100%) fixed
   ha-card-background: "rgba(255, 255, 255, 0.045)"
   card-background-color: "rgba(255, 255, 255, 0.045)"
   ha-card-border-color: "rgba(255, 255, 255, 0.10)"
