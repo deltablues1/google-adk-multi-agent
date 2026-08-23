@@ -104,6 +104,42 @@ Jedan unos donosi dva entiteta: `stt.jarvis_stt` i `tts.jarvis_tts`.
 Označi ga kao zadani. Na mobitelu: Companion app → Settings → Companion app →
 Assist → odaberi taj pipeline.
 
+## Dio 4 — koliko Assist čeka da završiš rečenicu
+
+Home Assistant prekida snimanje nakon **0,7 s** tišine i reže cijeli izgovor na
+**15 s**. Prvo je premalo za normalan govor: izmjereno 2026-08-23, snimka
+„Upali svjetlo u dnevnoj sobi" + pauza 1 s + „i pojačaj grijanje na dvadeset dva
+stupnja" vratila je samo prvu polovicu. Pi čeka 1,2 s
+(`WAKEWORD_SILENCE_SECONDS`) i taj problem nema.
+
+Ta se postavka **ne može promijeniti** kroz sučelje ni kroz API: WebSocket
+naredba `assist_pipeline/run` prima `noise_suppression_level`, `auto_gain_dbfs`,
+`volume_multiplier` i `no_vad`, ali ne i `silence_seconds`; sam zapis pipelinea
+takvo polje nema; entitet za osjetljivost VAD-a dobivaju samo *assist
+sateliti*, a mobitel to nije.
+
+Zato integracija pomiče same zadane vrijednosti (`assist_patience.py`), oprezno:
+polje traži po imenu u potpisu, provjeri je li promjena stvarno primljena, pamti
+staru vrijednost i vraća je kad se Jarvis ukloni. Ako se HA iznutra promijeni,
+zapiše upozorenje i ne dira ništa — najgori ishod je stari kratki prekid, ne
+pokvarena instalacija.
+
+**Settings → Devices & Services → Jarvis → Configure:**
+
+| | zadano | HA bez ovoga |
+|---|---|---|
+| Pauza prije kraja izgovora | 3 s | 0,7 s |
+| Najdulje trajanje izgovora | 30 s | 15 s |
+| Čekanje na Jarvisov odgovor | 300 s | — |
+
+Cijena je poštena: odgovor kreće tri sekunde kasnije, jer se pauza ne može
+razlikovati od kraja rečenice dok ne potraje dovoljno dugo. Tko voli brže,
+spusti na 1,2 s kao na Pi-u.
+
+Provjereno na živom sustavu nakon promjene: pauza od 2,5 s prolazi cijela, pauza
+od 3,5 s i dalje reže (dakle detekcija radi, samo je strpljivija), a 30 s
+neprekinutog govora stigne do kraja.
+
 ## Kako provjeriti da odgovara baš Jarvis
 
 Pitaj nešto što HA-ov ugrađeni Assist ne može znati:

@@ -4,6 +4,9 @@ Home Assistant cannot point its Assist pipeline at an arbitrary HTTP service:
 the built-in options are OpenAI, Anthropic and Google, and any of those would be
 a different assistant without Jarvis's tools. This integration closes that gap
 by forwarding conversation turns to the Jarvis web API and returning its reply.
+
+It also widens Assist's end-of-speech timing -- see ``assist_patience`` for why
+that cannot be done through a setting.
 """
 
 from __future__ import annotations
@@ -11,24 +14,49 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .assist_patience import apply_patience, restore_patience
+from .const import (
+    CONF_MAX_TURN_SECONDS,
+    CONF_SILENCE_SECONDS,
+    DEFAULT_MAX_TURN_SECONDS,
+    DEFAULT_SILENCE_SECONDS,
+    DOMAIN,
+)
 
 PLATFORMS = ["conversation"]
+
+# Where the pre-Jarvis Assist timings are kept so unloading can put them back.
+_PATIENCE = "assist_patience"
+
+
+def _setting(entry: ConfigEntry, key: str, default: float) -> float:
+    """Options win over the values given when the entry was created."""
+    return float(entry.options.get(key, entry.data.get(key, default)))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Jarvis from a config entry."""
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = dict(entry.data)
+    config = dict(entry.data)
+    config.update(entry.options)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = config
+
+    hass.data[DOMAIN][_PATIENCE] = apply_patience(
+        _setting(entry, CONF_SILENCE_SECONDS, DEFAULT_SILENCE_SECONDS),
+        _setting(entry, CONF_MAX_TURN_SECONDS, DEFAULT_MAX_TURN_SECONDS),
+    )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry and hand Assist's own timings back."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        data = hass.data.get(DOMAIN, {})
+        data.pop(entry.entry_id, None)
+        restore_patience(data.pop(_PATIENCE, {}))
     return unloaded
 
 

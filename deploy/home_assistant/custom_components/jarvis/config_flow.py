@@ -8,14 +8,19 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    CONF_MAX_TURN_SECONDS,
+    CONF_SILENCE_SECONDS,
     CONF_TIMEOUT,
     CONF_TOKEN,
     CONF_URL,
     CONF_USER_ID,
+    DEFAULT_MAX_TURN_SECONDS,
+    DEFAULT_SILENCE_SECONDS,
     DEFAULT_TIMEOUT,
     DEFAULT_URL,
     DEFAULT_USER_ID,
@@ -74,3 +79,44 @@ class JarvisConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
         )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Voice timings are worth tuning by ear, so keep them out of a file."""
+        return JarvisOptionsFlow()
+
+
+class JarvisOptionsFlow(config_entries.OptionsFlow):
+    """Adjust how long Jarvis waits -- for a sentence, and for an answer."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        current = {**self.config_entry.data, **self.config_entry.options}
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_SILENCE_SECONDS,
+                    default=float(
+                        current.get(CONF_SILENCE_SECONDS, DEFAULT_SILENCE_SECONDS)
+                    ),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.3, max=10)),
+                vol.Optional(
+                    CONF_MAX_TURN_SECONDS,
+                    default=float(
+                        current.get(CONF_MAX_TURN_SECONDS, DEFAULT_MAX_TURN_SECONDS)
+                    ),
+                ): vol.All(vol.Coerce(float), vol.Range(min=5, max=120)),
+                vol.Optional(
+                    CONF_TIMEOUT,
+                    default=int(current.get(CONF_TIMEOUT, DEFAULT_TIMEOUT)),
+                ): vol.All(vol.Coerce(int), vol.Range(min=10, max=900)),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
