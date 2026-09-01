@@ -136,3 +136,75 @@ def test_set_voice_mode_updates_ha_bridge(monkeypatch):
 
     assert result["mode"] == "live"
     assert seen["mode"] == "live"
+
+
+# --- the microphone switch --------------------------------------------------
+
+
+def _listening_interface(monkeypatch, **env):
+    reset_deployment_config_cache()
+    monkeypatch.setenv("WAKE_WORD_ENABLED", "true")
+    monkeypatch.setenv("DEPLOYMENT_PROFILE", "rpi-home")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return WakeWordInterface()
+
+
+def test_listening_is_off_until_someone_asks_for_it(monkeypatch):
+    """The expensive failure mode must need a deliberate act, not a default."""
+    interface = _listening_interface(monkeypatch)
+
+    assert interface.listening_enabled is False
+
+
+def test_listen_on_start_can_be_opted_into(monkeypatch):
+    interface = _listening_interface(monkeypatch, WAKEWORD_LISTEN_ON_START="true")
+
+    assert interface.listening_enabled is True
+
+
+def test_auto_off_fires_once_the_idle_window_passes(monkeypatch):
+    import time
+
+    interface = _listening_interface(monkeypatch, WAKEWORD_AUTO_OFF_MINUTES="30")
+    now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    interface.set_listening(True)
+    now[0] += 29 * 60
+    assert interface.check_listening_auto_off() is False
+    assert interface.listening_enabled is True
+
+    now[0] += 2 * 60
+    assert interface.check_listening_auto_off() is True
+    assert interface.listening_enabled is False
+
+
+def test_activity_pushes_the_auto_off_deadline_back(monkeypatch):
+    import time
+
+    interface = _listening_interface(monkeypatch, WAKEWORD_AUTO_OFF_MINUTES="30")
+    now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    interface.set_listening(True)
+    now[0] += 29 * 60
+    interface.note_listening_activity()
+    now[0] += 29 * 60
+
+    assert interface.check_listening_auto_off() is False
+    assert interface.listening_enabled is True
+
+
+def test_auto_off_can_be_disabled_with_zero(monkeypatch):
+    import time
+
+    interface = _listening_interface(monkeypatch, WAKEWORD_AUTO_OFF_MINUTES="0")
+    now = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    interface.set_listening(True)
+    now[0] += 10 * 60 * 60
+
+    assert interface.check_listening_auto_off() is False
+    assert interface.listening_enabled is True

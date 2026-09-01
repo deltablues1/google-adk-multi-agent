@@ -320,6 +320,13 @@ class PorcupineWakeWordRunner:
         self.follow_up_max_turns = int(os.getenv("VOICE_FOLLOW_UP_MAX_TURNS", "4"))
         self.follow_up_prompt = os.getenv("VOICE_FOLLOW_UP_PROMPT_TEXT", "Treba li jos nesto?").strip()
         self.wake_prompt = os.getenv("VOICE_WAKE_PROMPT_TEXT", "").strip()
+        # Spoken once as the microphone opens. Doubles as an amplifier warm-up:
+        # the wm8960 powers its amp down when idle and swallows the first word
+        # of whatever plays next, so the cue takes that hit instead of the
+        # first real answer.
+        self.listen_on_cue = os.getenv("VOICE_LISTEN_ON_TEXT", "Reci?").strip()
+        # How often the idle loop re-checks the switch while the mic is closed.
+        self.listening_poll_seconds = float(os.getenv("WAKEWORD_IDLE_POLL_SECONDS", "0.5"))
         # Open-mic echo guard: this hardware has no acoustic echo cancellation,
         # so right after the assistant speaks, the mic still holds the tail of
         # its own TTS. Before each follow-up capture we settle briefly and flush
@@ -367,30 +374,63 @@ class PorcupineWakeWordRunner:
         )
 
         try:
-            with sd.RawInputStream(
-                samplerate=sample_rate,
-                blocksize=frame_length,
-                dtype="int16",
-                channels=1,
-                device=self.input_device,
-            ) as stream:
-                while True:
-                    pcm_frame, _overflowed = stream.read(frame_length)
-                    frame_bytes = bytes(pcm_frame)
-                    samples = array("h")
-                    samples.frombytes(frame_bytes)
-                    if sys.byteorder != "little":
-                        samples.byteswap()
+            while True:
+                if not self.interface.listening_enabled:
+                    # Idle with the capture device CLOSED, not merely ignoring
+                    # frames: `arecord -l` shows the subdevice free and nothing
+                    # downstream (STT, agent, TTS) is reachable at all. "Off"
+                    # has to mean the microphone is not open, or the switch is
+                    # only a promise.
+                    time.sleep(self.listening_poll_seconds)
+                    continue
 
-                    keyword_index = porcupine.process(samples)
-                    if keyword_index < 0:
-                        continue
+                self._announce_listening()
+                with sd.RawInputStream(
+                    samplerate=sample_rate,
+                    blocksize=frame_length,
+                    dtype="int16",
+                    channels=1,
+                    device=self.input_device,
+                ) as stream:
+                    logger.info("Microphone open — wake-word listening is ON")
+                    while self.interface.listening_enabled:
+                        pcm_frame, _overflowed = stream.read(frame_length)
+                        frame_bytes = bytes(pcm_frame)
+                        samples = array("h")
+                        samples.frombytes(frame_bytes)
+                        if sys.byteorder != "little":
+                            samples.byteswap()
 
-                    keyword = self.keywords[keyword_index] if keyword_index < len(self.keywords) else str(keyword_index)
-                    logger.info("Wake word detected: %s", keyword)
-                    self._process_wake_event(stream, sample_rate, frame_length)
+                        keyword_index = porcupine.process(samples)
+                        if keyword_index < 0:
+                            self.interface.check_listening_auto_off()
+                            continue
+
+                        keyword = self.keywords[keyword_index] if keyword_index < len(self.keywords) else str(keyword_index)
+                        logger.info("Wake word detected: %s", keyword)
+                        self.interface.note_listening_activity()
+                        self._process_wake_event(stream, sample_rate, frame_length)
+                        # Refreshed again after the turn: a long orchestration
+                        # must not count as idle time toward the auto-off.
+                        self.interface.note_listening_activity()
+                logger.info("Microphone released — wake-word listening is OFF")
         finally:
             porcupine.delete()
+
+    def _announce_listening(self) -> None:
+        """Play the listening cue as the mic opens, and warm the amplifier.
+
+        Failure here is cosmetic — never let a silent speaker stop the assistant
+        from listening.
+        """
+        if not (self.listen_on_cue and self.tts_enabled):
+            return
+        try:
+            self._speak_response(self.listen_on_cue)
+        except Exception as exc:  # noqa: BLE001 - a missing cue is not fatal
+            logger.warning(
+                "Could not play the listening cue: %s: %s", type(exc).__name__, exc
+            )
 
     def _process_wake_event(self, stream, sample_rate: int, frame_length: int) -> None:
         """Shared post-detection flow used by every wake-word engine:
@@ -695,52 +735,66 @@ class OpenWakeWordRunner(PorcupineWakeWordRunner):
 
         consecutive_hits = 0
         last_level_log = time.monotonic()
-        with sd.RawInputStream(
-            samplerate=sample_rate,
-            blocksize=frame_length,
-            dtype="int16",
-            channels=1,
-            device=self.input_device,
-        ) as stream:
-            while True:
-                pcm_frame, _overflowed = stream.read(frame_length)
-                samples = np.frombuffer(bytes(pcm_frame), dtype=np.int16)
+        while True:
+            if not self.interface.listening_enabled:
+                # Same contract as the Porcupine runner: while the switch
+                # is off the capture device is closed, not merely ignored.
+                time.sleep(self.listening_poll_seconds)
+                continue
 
-                scores = model.predict(samples)
-                top = max(scores.values()) if scores else 0.0
+            self._announce_listening()
+            consecutive_hits = 0
+            with sd.RawInputStream(
+                samplerate=sample_rate,
+                blocksize=frame_length,
+                dtype="int16",
+                channels=1,
+                device=self.input_device,
+            ) as stream:
+                logger.info("Microphone open — wake-word listening is ON")
+                while self.interface.listening_enabled:
+                    pcm_frame, _overflowed = stream.read(frame_length)
+                    samples = np.frombuffer(bytes(pcm_frame), dtype=np.int16)
 
-                # Periodic heartbeat: distinguishes "mic captures silence"
-                # (hardware/routing problem) from "mic hears audio but the
-                # wake-word model just isn't triggering" (tuning/acoustic
-                # problem) - neither shows up otherwise since scores below
-                # threshold were previously discarded with no logging at all.
-                now = time.monotonic()
-                if now - last_level_log >= 15:
-                    peak = int(np.abs(samples).max()) if samples.size else 0
-                    logger.info(
-                        "Wakeword heartbeat: mic_peak=%d/32768 last_frame_score=%.3f threshold=%.2f",
-                        peak, top, self.threshold,
-                    )
-                    last_level_log = now
+                    scores = model.predict(samples)
+                    top = max(scores.values()) if scores else 0.0
 
-                if top < self.threshold:
-                    if top >= self.threshold - 0.15:
+                    # Periodic heartbeat: distinguishes "mic captures silence"
+                    # (hardware/routing problem) from "mic hears audio but the
+                    # wake-word model just isn't triggering" (tuning/acoustic
+                    # problem) - neither shows up otherwise since scores below
+                    # threshold were previously discarded with no logging at all.
+                    now = time.monotonic()
+                    if now - last_level_log >= 15:
+                        peak = int(np.abs(samples).max()) if samples.size else 0
                         logger.info(
-                            "Wake word near-miss: %s (score=%.2f, threshold=%.2f)",
-                            self.model_name, top, self.threshold,
+                            "Wakeword heartbeat: mic_peak=%d/32768 last_frame_score=%.3f threshold=%.2f",
+                            peak, top, self.threshold,
                         )
+                        last_level_log = now
+                        self.interface.check_listening_auto_off()
+
+                    if top < self.threshold:
+                        if top >= self.threshold - 0.15:
+                            logger.info(
+                                "Wake word near-miss: %s (score=%.2f, threshold=%.2f)",
+                                self.model_name, top, self.threshold,
+                            )
+                        consecutive_hits = 0
+                        continue
+
+                    consecutive_hits += 1
+                    if consecutive_hits < self.min_consecutive_frames:
+                        continue
                     consecutive_hits = 0
-                    continue
 
-                consecutive_hits += 1
-                if consecutive_hits < self.min_consecutive_frames:
-                    continue
-                consecutive_hits = 0
-
-                logger.info("Wake word detected: %s (score=%.2f)", self.model_name, top)
-                self._process_wake_event(stream, sample_rate, frame_length)
-                # Reset model state so the speech tail doesn't immediately retrigger.
-                model.reset()
+                    logger.info("Wake word detected: %s (score=%.2f)", self.model_name, top)
+                    self.interface.note_listening_activity()
+                    self._process_wake_event(stream, sample_rate, frame_length)
+                    self.interface.note_listening_activity()
+                    # Reset model state so the speech tail doesn't immediately retrigger.
+                    model.reset()
+            logger.info("Microphone released — wake-word listening is OFF")
 
 
 def _make_wakeword_runner(interface, loop):

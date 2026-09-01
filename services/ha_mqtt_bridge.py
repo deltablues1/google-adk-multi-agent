@@ -32,6 +32,7 @@ class HomeAssistantMqttBridge:
         api_base_url: str,
         voice_assistant_name: str,
         mode_command_callback: Optional[Callable[[str], None]] = None,
+        listening_command_callback: Optional[Callable[[bool], None]] = None,
     ) -> None:
         self.enabled = _env_flag("HA_MQTT_DISCOVERY_ENABLED", True)
         self.broker = os.getenv("MQTT_BROKER", "").strip()
@@ -51,6 +52,7 @@ class HomeAssistantMqttBridge:
         self.model = os.getenv("HA_MQTT_DEVICE_MODEL", "Raspberry Pi Voice Gateway").strip() or "Raspberry Pi Voice Gateway"
         self.api_base_url = api_base_url.rstrip("/")
         self.mode_command_callback = mode_command_callback
+        self.listening_command_callback = listening_command_callback
         self.client = None
         self._last_states: dict[str, str] = {}
 
@@ -65,6 +67,14 @@ class HomeAssistantMqttBridge:
     @property
     def voice_mode_command_topic(self) -> str:
         return f"{self.state_prefix}/voice_mode/set"
+
+    @property
+    def listening_state_topic(self) -> str:
+        return f"{self.state_prefix}/listening/state"
+
+    @property
+    def listening_command_topic(self) -> str:
+        return f"{self.state_prefix}/listening/set"
 
     @property
     def last_transcript_topic(self) -> str:
@@ -119,6 +129,20 @@ class HomeAssistantMqttBridge:
                 },
             ),
             (
+                f"{prefix}/switch/{object_base}_listening/config",
+                {
+                    "name": "Slušanje",
+                    "unique_id": f"{self.device_id}_listening",
+                    "state_topic": self.listening_state_topic,
+                    "command_topic": self.listening_command_topic,
+                    "payload_on": "ON",
+                    "payload_off": "OFF",
+                    "icon": "mdi:microphone",
+                    "availability_topic": self.availability_topic,
+                    "device": device,
+                },
+            ),
+            (
                 f"{prefix}/sensor/{object_base}_last_transcript/config",
                 {
                     "name": "Last transcript",
@@ -142,7 +166,7 @@ class HomeAssistantMqttBridge:
             ),
         ]
 
-    def start(self, initial_voice_mode: str) -> None:
+    def start(self, initial_voice_mode: str, initial_listening: bool = False) -> None:
         if not self.is_available():
             if self.enabled and not self.broker:
                 logger.info("HA MQTT discovery enabled, but MQTT_BROKER is not configured")
@@ -162,11 +186,22 @@ class HomeAssistantMqttBridge:
         self.client.will_set(self.availability_topic, payload="offline", qos=1, retain=True)
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
-        self.client.connect(self.broker, self.port, keepalive=30)
-        self.client.loop_start()
-        self.publish_discovery()
+        try:
+            # connect_async hands the retrying to paho's network thread. The
+            # blocking connect() that stood here raised OSError when this Pi
+            # booted before the Home Assistant machine answered, and that
+            # exception travelled all the way up and left the wake-word service
+            # running with no bridge at all.
+            self.client.connect_async(self.broker, self.port, keepalive=30)
+            self.client.loop_start()
+        except Exception as err:  # noqa: BLE001 - the assistant matters more
+            logger.warning("HA MQTT bridge could not start its client: %s", err)
+            self.client = None
+            return
+        # Recorded now, put on the wire by _on_connect once the broker answers.
         self.update_online(True)
         self.update_voice_mode(initial_voice_mode)
+        self.update_listening(initial_listening)
 
     def stop(self) -> None:
         if not self.client:
@@ -177,6 +212,14 @@ class HomeAssistantMqttBridge:
             self.client.disconnect()
         finally:
             self.client = None
+
+    def _republish_all(self) -> None:
+        """Discovery plus every state we hold, as if the bridge had just started."""
+        self.publish_discovery()
+        transcript_topics = {self.last_transcript_topic, self.last_response_topic}
+        for topic, state in list(self._last_states.items()):
+            retain = self.retain_transcripts if topic in transcript_topics else True
+            self._publish_state(topic, state, retain=retain)
 
     def publish_discovery(self) -> None:
         if not self.client:
@@ -189,6 +232,15 @@ class HomeAssistantMqttBridge:
 
     def update_voice_mode(self, mode: str) -> None:
         self._publish_state(self.voice_mode_state_topic, mode)
+
+    def update_listening(self, listening: bool) -> None:
+        """Mirror the wake-word listening switch to HA.
+
+        Retained on purpose: HA must know, right after its own restart, whether
+        the microphone is live. The service always republishes the real state on
+        startup, so a stale retained ON can never outlive the process.
+        """
+        self._publish_state(self.listening_state_topic, "ON" if listening else "OFF")
 
     def update_last_transcript(self, text: str) -> None:
         self._publish_state(
@@ -213,16 +265,25 @@ class HomeAssistantMqttBridge:
             logger.warning("HA MQTT bridge connect failed: %s", reason_code)
             return
         client.subscribe(self.voice_mode_command_topic, qos=1)
+        client.subscribe(self.listening_command_topic, qos=1)
         client.subscribe(f"{self.discovery_prefix}/status", qos=1)
+        # Every connect is a first impression: after a broker restart, or a
+        # boot where the broker was not up yet, nothing of ours is on the wire.
+        self._republish_all()
 
     def _on_message(self, _client, _userdata, msg) -> None:
         payload = msg.payload.decode("utf-8", errors="ignore").strip()
         if msg.topic == f"{self.discovery_prefix}/status" and payload.lower() == "online":
-            self.publish_discovery()
-            transcript_topics = {self.last_transcript_topic, self.last_response_topic}
-            for topic, state in list(self._last_states.items()):
-                retain = self.retain_transcripts if topic in transcript_topics else True
-                self._publish_state(topic, state, retain=retain)
+            self._republish_all()
+            return
+
+        if msg.topic == self.listening_command_topic:
+            requested = payload.upper()
+            if requested not in {"ON", "OFF"}:
+                logger.warning("Ignoring unsupported HA listening command: %s", payload)
+                return
+            if self.listening_command_callback:
+                self.listening_command_callback(requested == "ON")
             return
 
         if msg.topic != self.voice_mode_command_topic:

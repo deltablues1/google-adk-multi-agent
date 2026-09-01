@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Optional
 
 from config.deployment_config import get_deployment_config, is_wake_word_enabled
@@ -64,6 +65,23 @@ class WakeWordInterface(BaseInterface):
         self.session_id = self.generate_session_id(self.user_id)
         self.ha_mqtt_bridge: Optional[HomeAssistantMqttBridge] = None
 
+        # The microphone is opt-in. An always-listening mic on a shared room
+        # device turned music playing on a nearby speaker into wake events that
+        # ran a full agent turn each -- unnoticed for two days, because the
+        # wm8960 amplifier had gone to sleep and nobody heard the answers.
+        # Default OFF means the expensive failure mode needs a deliberate act.
+        self.listening_enabled = os.getenv(
+            "WAKEWORD_LISTEN_ON_START", "false"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            auto_off_minutes = float(os.getenv("WAKEWORD_AUTO_OFF_MINUTES", "30"))
+        except ValueError:
+            auto_off_minutes = 30.0
+        # 0 disables the timer -- for the case where someone genuinely wants an
+        # always-on room mic and is choosing that with their eyes open.
+        self.listening_auto_off_seconds = max(0.0, auto_off_minutes) * 60.0
+        self._listening_deadline: Optional[float] = None
+
     def format_response(self, response: str) -> str:
         return response
 
@@ -73,9 +91,20 @@ class WakeWordInterface(BaseInterface):
             api_base_url=self.api_base_url,
             voice_assistant_name=get_voice_assistant_name(),
             mode_command_callback=self._handle_external_voice_mode_command,
+            listening_command_callback=self._handle_external_listening_command,
         )
-        self.ha_mqtt_bridge.start(initial_voice_mode=self.voice_mode)
-        logger.info("WakeWordInterface initialized in %s mode", self.voice_mode)
+        self.ha_mqtt_bridge.start(
+            initial_voice_mode=self.voice_mode,
+            initial_listening=self.listening_enabled,
+        )
+        if self.listening_enabled:
+            self._arm_auto_off()
+        logger.info(
+            "WakeWordInterface initialized in %s mode (listening=%s, auto-off=%.0fmin)",
+            self.voice_mode,
+            "on" if self.listening_enabled else "off",
+            self.listening_auto_off_seconds / 60.0,
+        )
 
     async def stop(self) -> None:
         if self.ha_mqtt_bridge:
@@ -131,6 +160,65 @@ class WakeWordInterface(BaseInterface):
             "mode": self.voice_mode,
             "response": f"Prebacen sam u {self.voice_mode} mod.",
         }
+
+    def set_listening(self, listening: bool) -> dict:
+        """Turn the wake-word microphone on or off.
+
+        The wake loop watches this flag and releases the audio device entirely
+        while it is False, so "off" means the mic is not open -- not merely
+        that detections are discarded.
+        """
+        changed = listening != self.listening_enabled
+        self.listening_enabled = listening
+        self._arm_auto_off() if listening else self._disarm_auto_off()
+        if self.ha_mqtt_bridge:
+            self.ha_mqtt_bridge.update_listening(listening)
+        if changed:
+            logger.info("Wake-word listening %s", "enabled" if listening else "disabled")
+        return {
+            "listening": self.listening_enabled,
+            "response": "Slušam." if listening else "Mikrofon je ugašen.",
+        }
+
+    def _arm_auto_off(self) -> None:
+        self._listening_deadline = (
+            time.monotonic() + self.listening_auto_off_seconds
+            if self.listening_auto_off_seconds > 0
+            else None
+        )
+
+    def _disarm_auto_off(self) -> None:
+        self._listening_deadline = None
+
+    def note_listening_activity(self) -> None:
+        """Push the auto-off deadline back; called on every wake event."""
+        if self.listening_enabled:
+            self._arm_auto_off()
+
+    def check_listening_auto_off(self) -> bool:
+        """Turn listening off after a quiet spell. Returns True if it fired.
+
+        The safety net for the real failure: a switch flipped on and forgotten.
+        Lives here rather than in a Home Assistant automation so it still works
+        when HA is down -- which is exactly when nobody is watching.
+        """
+        if not self.listening_enabled or self._listening_deadline is None:
+            return False
+        if time.monotonic() < self._listening_deadline:
+            return False
+        logger.info(
+            "Wake-word listening auto-off after %.0f min idle",
+            self.listening_auto_off_seconds / 60.0,
+        )
+        self.set_listening(False)
+        return True
+
+    def _handle_external_listening_command(self, listening: bool) -> None:
+        try:
+            self.set_listening(listening)
+            logger.info("Listening changed from HA MQTT command: %s", listening)
+        except Exception:
+            logger.exception("Failed to apply HA MQTT listening command: %s", listening)
 
     def _handle_external_voice_mode_command(self, mode: str) -> None:
         try:

@@ -141,6 +141,13 @@ VOICE_ROUTING_USER_PREFIXES = (
     "telegram-voice",
 )
 
+# Channels whose replies get READ ALOUD. Deliberately wider than the routing
+# prefixes above and used only to choose the failure wording: Home Assistant
+# Assist speaks whatever comes back, and it spent a day reading raw
+# "litellm.BadRequestError: AnthropicException - {...}" JSON out loud. Routing
+# behaviour is unaffected by this tuple.
+SPOKEN_CHANNEL_USER_PREFIXES = VOICE_ROUTING_USER_PREFIXES + ("ha-assist",)
+
 LOCAL_VOICE_ROUTE = "local_voice_response"
 WEATHER_VOICE_ROUTE = "local_weather_response"
 BRIEFING_VOICE_ROUTE = "local_briefing_response"
@@ -316,6 +323,11 @@ class BaseInterface(ABC):
             return "Nisam uspio — ne mogu se spojiti na servis. Provjeri internet vezu."
         if "quota" in low:
             return "Nisam uspio — potrošena je kvota prema servisu za danas ili ovu minutu."
+        if "credit balance" in low or "billing" in low or "purchase credits" in low:
+            return (
+                "Nisam uspio — potrošen je kredit na računu za umjetnu "
+                "inteligenciju. Treba ga nadoplatiti."
+            )
         return (
             "Nisam uspio izvršiti zadatak zbog tehničke greške. "
             "Detalji su zapisani u logu."
@@ -796,7 +808,7 @@ class BaseInterface(ABC):
             logger.error(f"Error processing message: {e}")
             # Voice users get a short spoken-Croatian failure with the rough
             # cause; other channels keep the raw error for debugging.
-            if self._should_use_voice_direct_routing(user_id):
+            if user_id.startswith(SPOKEN_CHANNEL_USER_PREFIXES):
                 return self._voice_friendly_error(e)
             return f"Error processing request: {str(e)}"
         finally:

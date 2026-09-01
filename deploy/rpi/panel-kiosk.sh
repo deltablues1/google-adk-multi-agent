@@ -9,6 +9,12 @@
 # any browsing done on this Pi by hand.
 
 URL="${PANEL_URL:-http://192.168.100.200:8123/jarvis-dom/pregled}"
+# Chromium only grants getUserMedia in a secure context, and the panel loads
+# Home Assistant over plain HTTP on a LAN address. Without this the dashboard's
+# "Pitaj Jarvisa" button opens Assist with a microphone that can never start.
+# Scoped to this one origin, and it needs the --user-data-dir set below to
+# persist. Derived from URL so changing PANEL_URL keeps the two in step.
+ORIGIN="$(printf '%s' "$URL" | cut -d/ -f1-3)"
 PROFILE="$HOME/.config/chromium-panel"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -30,6 +36,7 @@ exec /usr/bin/chromium \
     --enable-wayland-ime \
     --kiosk \
     --user-data-dir="$PROFILE" \
+    --unsafely-treat-insecure-origin-as-secure="$ORIGIN" \
     --password-store=basic \
     --noerrdialogs \
     --disable-infobars \
