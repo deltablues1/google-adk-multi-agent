@@ -34,7 +34,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from google.genai import types
 
-from agents.adk_agents.adk_agent_factory import create_adk_agent
+from agents.adk_agents.adk_agent_factory import (
+    claude_safe_generation_kwargs,
+    create_adk_agent,
+)
 from agents.adk_agents.runner_utils import run_agent_simple
 
 logger = logging.getLogger(__name__)
@@ -94,8 +97,12 @@ def create_workflow_planner(
         load_instruction_from_file=False,
     )
     planner.generate_content_config = types.GenerateContentConfig(
-        temperature=0.0,  # deterministic planning
-        max_output_tokens=2048,
+        **claude_safe_generation_kwargs(
+            "workflow_planner",
+            model,
+            temperature=0.0,  # deterministic planning
+            max_output_tokens=2048,
+        )
     )
     return planner
 
@@ -127,8 +134,12 @@ def create_workflow_summarizer(model: str = FLASH_MODEL):
         load_instruction_from_file=False,
     )
     summarizer.generate_content_config = types.GenerateContentConfig(
-        temperature=0.4,
-        max_output_tokens=4096,
+        **claude_safe_generation_kwargs(
+            "workflow_summarizer",
+            model,
+            temperature=0.4,
+            max_output_tokens=4096,
+        )
     )
     return summarizer
 

@@ -13,6 +13,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from services.host_metrics import (  # noqa: E402
+    STATE_PREFIX,
+    HostMetricsPublisher,
     MetricsReader,
     build_discovery,
     parse_cpu_times,
@@ -139,3 +141,39 @@ def test_the_boot_time_is_a_timestamp_so_home_assistant_can_age_it():
 
     assert payloads["jarvis_pi_host_boot"]["device_class"] == "timestamp"
     assert "state_class" not in payloads["jarvis_pi_host_boot"]
+
+
+# --- staying reachable ------------------------------------------------------
+
+
+class _RecordingClient:
+    """Just enough of a paho client to see what would go on the wire."""
+
+    def __init__(self):
+        self.published = []
+
+    def publish(self, topic, payload=None, retain=False):
+        self.published.append((topic, payload, retain))
+
+
+def test_every_connect_re_announces_the_device(monkeypatch):
+    """A reconnect must undo our own last will, or the sensors stay offline."""
+    monkeypatch.setenv("MQTT_BROKER", "127.0.0.1")
+    publisher = HostMetricsPublisher()
+    client = _RecordingClient()
+
+    publisher._on_connect(client, None, None, 0)
+
+    topics = [topic for topic, _, _ in client.published]
+    assert any(topic.endswith("/config") for topic in topics)
+    assert (f"{STATE_PREFIX}/availability", "online", True) in client.published
+
+
+def test_a_refused_connection_announces_nothing(monkeypatch):
+    monkeypatch.setenv("MQTT_BROKER", "127.0.0.1")
+    publisher = HostMetricsPublisher()
+    client = _RecordingClient()
+
+    publisher._on_connect(client, None, None, 5)  # 5 = not authorised
+
+    assert client.published == []

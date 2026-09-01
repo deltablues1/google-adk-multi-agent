@@ -53,7 +53,10 @@ def create_smart_orchestrator(
     Returns:
         Smart Orchestrator LlmAgent instance
     """
-    from agents.adk_agents.adk_agent_factory import create_adk_agent
+    from agents.adk_agents.adk_agent_factory import (
+        claude_safe_generation_kwargs,
+        create_adk_agent,
+    )
     from agents.adk_agents.control_callbacks import validate_worker_result
 
     # --- Load instructions from file ---
@@ -129,8 +132,12 @@ def create_smart_orchestrator(
 
     # Set generation config properly (not via _config which has no effect)
     orchestrator.generate_content_config = types.GenerateContentConfig(
-        temperature=0.2,  # Low for deterministic routing decisions
-        max_output_tokens=8192,
+        **claude_safe_generation_kwargs(
+            "smart_orchestrator",
+            model,
+            temperature=0.2,  # Low for deterministic routing decisions
+            max_output_tokens=8192,
+        )
     )
 
     logger.info(

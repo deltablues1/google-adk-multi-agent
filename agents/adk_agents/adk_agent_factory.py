@@ -97,6 +97,38 @@ def _use_anthropic(agent_name: Optional[str]) -> bool:
     return (agent_name or "").lower() not in _gemini_pinned_agents()
 
 
+def claude_safe_generation_kwargs(
+    agent_name: Optional[str],
+    model: Optional[str] = None,
+    *,
+    temperature: Optional[float] = None,
+    max_output_tokens: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Generation kwargs an agent can actually send to the model behind it.
+
+    Agents that assign generate_content_config by hand after create_adk_agent
+    overwrite what the factory decided, and so lose both rules below. The
+    planner, the summarizer and the orchestrator all did, which is why every
+    request through them died on `temperature is deprecated for this model`
+    the moment their tier resolved to Sonnet 5.
+    """
+    no_sampling = _use_anthropic(agent_name) and _claude_rejects_sampling(
+        _claude_model_for(model, agent_name)
+    )
+    kwargs: Dict[str, Any] = {}
+    if temperature is not None and not no_sampling:
+        kwargs["temperature"] = temperature
+    if max_output_tokens is not None:
+        # Thinking tokens come out of the same budget, so a cap sized for a
+        # plain answer can truncate one mid-JSON.
+        if no_sampling:
+            max_output_tokens = max(
+                max_output_tokens, _CLAUDE_THINKING_MIN_OUTPUT_TOKENS
+            )
+        kwargs["max_output_tokens"] = max_output_tokens
+    return kwargs
+
+
 def _claude_retries() -> int:
     """LiteLLM num_retries — retries Anthropic 429/5xx with exponential backoff
     (honors the retry-after header). Helps burst rate-limits self-heal."""

@@ -258,6 +258,24 @@ class HostMetricsPublisher:
             except Exception:  # noqa: BLE001 - shutting down anyway
                 pass
 
+    def _on_connect(self, client, _userdata, _flags, reason_code, _properties=None) -> None:
+        """Announce ourselves on every connect, not only the first one.
+
+        Discovery and availability are both retained, but our own last will may
+        have marked us offline while we were away, so the broker needs to hear
+        that we are back before Home Assistant will believe any number we send.
+        """
+        if getattr(reason_code, "value", reason_code) != 0:
+            logger.warning("Host metrics rejected by the MQTT broker: %s", reason_code)
+            return
+        for topic, payload in build_discovery(self.device_name, self.api_url):
+            client.publish(topic, json.dumps(payload), retain=True)
+        client.publish(f"{STATE_PREFIX}/availability", "online", retain=True)
+        logger.info(
+            "Host metrics connected to %s:%s, publishing every %.0fs",
+            self.broker, self.port, self.interval,
+        )
+
     def _run(self) -> None:
         try:
             import paho.mqtt.client as mqtt
@@ -266,25 +284,26 @@ class HostMetricsPublisher:
             return
 
         try:
-            client = mqtt.Client(client_id=f"{DEVICE_ID}_publisher")
+            client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
+                client_id=f"{DEVICE_ID}_publisher",
+            )
             if self.username:
                 client.username_pw_set(self.username, self.password)
             # The broker announces our death even when we cannot.
             client.will_set(f"{STATE_PREFIX}/availability", "offline", retain=True)
-            client.connect(self.broker, self.port, keepalive=60)
+            client.on_connect = self._on_connect
+            # connect_async never raises when the broker is unreachable and the
+            # network thread keeps retrying. This Pi boots faster than the Home
+            # Assistant machine, and a plain connect() there used to time out
+            # once and leave the metrics thread dead until someone noticed the
+            # sensors had been unknown for hours.
+            client.connect_async(self.broker, self.port, keepalive=60)
             client.loop_start()
             self._client = client
         except Exception as err:  # noqa: BLE001 - metrics must never break the app
-            logger.warning("Host metrics could not reach the MQTT broker: %s", err)
+            logger.warning("Host metrics could not start the MQTT client: %s", err)
             return
-
-        for topic, payload in build_discovery(self.device_name, self.api_url):
-            client.publish(topic, json.dumps(payload), retain=True)
-        client.publish(f"{STATE_PREFIX}/availability", "online", retain=True)
-        logger.info(
-            "Publishing host metrics to %s:%s every %.0fs",
-            self.broker, self.port, self.interval,
-        )
 
         # The first CPU reading needs a previous sample to compare against.
         self._reader.collect()
@@ -292,6 +311,11 @@ class HostMetricsPublisher:
         while not self._stop.wait(self.interval):
             try:
                 metrics = self._reader.collect()
-                client.publish(f"{STATE_PREFIX}/state", json.dumps(metrics))
+                # Retained: after a Home Assistant restart the sensors are
+                # populated the moment it subscribes, instead of reading
+                # "unknown" until the next interval elapses -- which the wall
+                # panel rendered as a red OFFLINE. Staleness is still covered,
+                # by the availability topic and its last will.
+                client.publish(f"{STATE_PREFIX}/state", json.dumps(metrics), retain=True)
             except Exception as err:  # noqa: BLE001
                 logger.warning("Could not publish host metrics: %s", err)
