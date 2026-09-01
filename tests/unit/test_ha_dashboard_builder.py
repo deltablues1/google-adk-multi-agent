@@ -167,9 +167,14 @@ def test_the_house_is_not_a_room():
 
 
 def test_every_view_fits_the_seven_inch_panel():
-    """800 px wide takes two columns; three squeezes tiles below a fingertip."""
+    """The panel is 1024x600 — measured on it, not the 800x480 long assumed.
+
+    Three columns is what that width actually affords, and the extra column is
+    the cheapest height there is: the same cards, a third fewer rows. A fourth
+    would take tiles below a fingertip, so three is the ceiling.
+    """
     for view in (builder.climate_view(), builder.air_view(), builder.system_view()):
-        assert view["max_columns"] <= 2
+        assert view["max_columns"] <= 3
 
 
 def test_room_tiles_are_finger_sized():

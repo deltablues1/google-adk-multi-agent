@@ -2,10 +2,15 @@
 
 Two things drive every choice here.
 
-First, the panel is 800x480. That is narrower than a phone in landscape, so
-views are two columns wide, tiles are square and finger-sized rather than full
-width rows, and prose is kept off the screen -- a paragraph of explanation is
-unreadable at arm's length and steals room from the controls.
+First, the panel is 1024x600 -- measured with grim on the panel itself, after
+this file spent a long time assuming 800x480 and laying out for a screen that
+was never there. Views are three columns wide, tiles are square and
+finger-sized rather than full width rows, and prose is kept off the screen -- a
+paragraph of explanation is unreadable at arm's length and steals room from the
+controls. Height is the scarce axis: about 544px survives the header, roughly
+eight grid rows, and a column taller than that has to be scrolled with a
+fingertip. Hence three columns rather than two, and hence the lights living on
+their own view instead of stacking sixteen tiles onto the overview.
 
 Second, the room views are generated from the entity registry rather than
 written by hand, so a room shows what is actually in it and a newly added
@@ -75,6 +80,14 @@ HUMIDITIES = [
     ("sensor.bme280_mux_node_ulaz_vlaga", "Ulaz"),
 ]
 
+PRESSURES = [
+    ("sensor.bme280_mux_node_vanjski_tlak", "Vani"),
+    ("sensor.bme280_mux_node_dnevni_prostor_tlak", "Boravak"),
+    ("sensor.bme280_mux_node_soba_tlak", "Soba"),
+    ("sensor.bme280_mux_node_kupaona_tlak", "Kupaona"),
+    ("sensor.bme280_mux_node_ulaz_tlak", "Ulaz"),
+]
+
 DEVICE_PREFIXES = ("ESP32 IO ", "BME280 Mux Node ", "Bme280 Mux Node ")
 
 # A finger needs about a centimetre; a third of a 800 px view is about right.
@@ -120,13 +133,13 @@ def room_name(name: str, area_label: str) -> str:
     return (trimmed[:1].upper() + trimmed[1:]) if trimmed else name
 
 
-def tile(entity_id: str, name: str, toggle: bool) -> dict:
+def tile(entity_id: str, name: str, toggle: bool, columns: int = TILE_COLUMNS) -> dict:
     card = {
         "type": "tile",
         "entity": entity_id,
         "name": name,
         "vertical": True,
-        "grid_options": {"columns": TILE_COLUMNS},
+        "grid_options": {"columns": columns},
         "tap_action": {"action": "toggle"} if toggle else {"action": "more-info"},
     }
     if toggle:
@@ -184,14 +197,41 @@ SUN_LINE = (
 )
 
 
-def overview_view(lights: list[dict], all_light_ids: list[str]) -> dict:
+def overview_view(all_light_ids: list[str]) -> dict:
     return {
         "type": "sections",
-        "max_columns": 2,
+        "max_columns": 3,
         "title": "Pregled",
         "path": "pregled",
         "icon": "mdi:view-dashboard",
         "sections": [
+            {
+                "type": "grid",
+                "cards": [
+                    {"type": "heading", "heading": "Svjetla", "heading_style": "title",
+                     "icon": "mdi:lightbulb-group"},
+                    {
+                        "type": "button", "name": "Upravljanje svjetlima",
+                        "icon": "mdi:lightbulb-group", "show_state": False,
+                        "grid_options": {"columns": 6},
+                        "tap_action": {"action": "navigate",
+                                       "navigation_path": f"/{BOARD}/svjetla"},
+                    },
+                    {
+                        "type": "button", "name": "Ugasi sva svjetla",
+                        "icon": "mdi:lightbulb-off-outline", "show_state": False,
+                        "grid_options": {"columns": 6},
+                        "tap_action": {
+                            "action": "perform-action",
+                            "perform_action": "homeassistant.turn_off",
+                            "target": {"entity_id": all_light_ids},
+                        },
+                    },
+                    {"type": "heading", "heading": "Temperature", "heading_style": "title",
+                     "icon": "mdi:thermometer"},
+                    glance(TEMPERATURES),
+                ],
+            },
             {
                 "type": "grid",
                 "cards": [
@@ -201,38 +241,14 @@ def overview_view(lights: list[dict], all_light_ids: list[str]) -> dict:
                         "time_zone": "Europe/Zagreb",
                         "grid_options": {"columns": 12, "rows": 2},
                     },
-                    {"type": "markdown", "content": SUN_LINE},
+                    {"type": "markdown", "content": SUN_LINE,
+                     "grid_options": {"columns": 12, "rows": 3}},
                     {
                         "type": "weather-forecast", "entity": "weather.forecast_dom",
                         "forecast_type": "daily", "show_current": True,
                         "show_forecast": True,
+                        "grid_options": {"columns": 12, "rows": 4},
                     },
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {"type": "heading", "heading": "Svjetla", "heading_style": "title",
-                     "icon": "mdi:lightbulb-group"},
-                    *lights,
-                    {
-                        "type": "button", "name": "Ugasi sva svjetla",
-                        "icon": "mdi:lightbulb-off-outline", "show_state": False,
-                        "grid_options": {"columns": 12},
-                        "tap_action": {
-                            "action": "perform-action",
-                            "perform_action": "homeassistant.turn_off",
-                            "target": {"entity_id": all_light_ids},
-                        },
-                    },
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {"type": "heading", "heading": "Temperature", "heading_style": "title",
-                     "icon": "mdi:thermometer"},
-                    glance(TEMPERATURES),
                 ],
             },
             {
@@ -242,14 +258,14 @@ def overview_view(lights: list[dict], all_light_ids: list[str]) -> dict:
                      "icon": "mdi:home-heart"},
                     {"type": "gauge", "entity": "sensor.bme280_mux_node_kvaliteta_zraka_pm2_5",
                      "name": "PM2.5", "min": 0, "max": 250, "needle": True,
-                     "grid_options": {"columns": 6},
+                     "grid_options": {"columns": 12, "rows": 2},
                      "severity": {"green": 0, "yellow": 35, "red": 100}},
                     {"type": "tile", "entity": "media_player.tv", "name": "TV",
-                     "vertical": True, "grid_options": {"columns": 6}},
+                     "vertical": True, "grid_options": {"columns": 4}},
                     {"type": "tile", "entity": "person.tomislav", "name": "Tomislav",
-                     "vertical": True, "grid_options": {"columns": 6}},
+                     "vertical": True, "grid_options": {"columns": 4}},
                     {"type": "tile", "entity": "todo.shopping_list", "name": "Kupovina",
-                     "vertical": True, "grid_options": {"columns": 6}},
+                     "vertical": True, "grid_options": {"columns": 4}},
                     {"type": "button", "name": "Pitaj Jarvisa", "icon": "mdi:microphone",
                      "show_state": False, "grid_options": {"columns": 12},
                      "tap_action": {"action": "assist", "pipeline_id": PIPELINE,
@@ -259,6 +275,32 @@ def overview_view(lights: list[dict], all_light_ids: list[str]) -> dict:
                      "grid_options": {"columns": 12}},
                 ],
             },
+        ],
+    }
+
+
+def lights_view(light_tiles: list[dict]) -> dict:
+    """Every light, two across, split into thirds.
+
+    One long section would stack in a single column and scroll; three sections
+    let the view use all three columns, which is what keeps it on one screen.
+    """
+    per = -(-len(light_tiles) // 3) or 1
+    chunks = [light_tiles[i:i + per] for i in range(0, len(light_tiles), per)]
+    return {
+        "type": "sections",
+        "max_columns": 3,
+        "title": "Svjetla",
+        "path": "svjetla",
+        "icon": "mdi:lightbulb-group",
+        "sections": [
+            {
+                "type": "grid",
+                "cards": ([{"type": "heading", "heading": "Svjetla",
+                            "heading_style": "title", "icon": "mdi:lightbulb-group"}]
+                          if i == 0 else []) + chunk,
+            }
+            for i, chunk in enumerate(chunks)
         ],
     }
 
@@ -290,7 +332,7 @@ def rooms_view(by_area: dict, area_names: dict) -> dict:
 
     return {
         "type": "sections",
-        "max_columns": 2,
+        "max_columns": 3,
         "title": "Sobe",
         "path": "sobe",
         "icon": "mdi:floor-plan",
@@ -303,7 +345,7 @@ def rooms_view(by_area: dict, area_names: dict) -> dict:
 def climate_view() -> dict:
     return {
         "type": "sections",
-        "max_columns": 2,
+        "max_columns": 3,
         "title": "Klima",
         "path": "klima",
         "icon": "mdi:thermometer",
@@ -315,6 +357,7 @@ def climate_view() -> dict:
                      "icon": "mdi:thermometer"},
                     glance(TEMPERATURES),
                     {"type": "history-graph", "hours_to_show": 24,
+                     "grid_options": {"rows": 4},
                      "entities": [{"entity": e, "name": n} for e, n in TEMPERATURES]},
                 ],
             },
@@ -350,6 +393,7 @@ def climate_view() -> dict:
                      "icon": "mdi:water-percent"},
                     glance(HUMIDITIES),
                     {"type": "history-graph", "hours_to_show": 24,
+                     "grid_options": {"rows": 4},
                      "entities": [{"entity": e, "name": n} for e, n in HUMIDITIES]},
                 ],
             },
@@ -358,14 +402,10 @@ def climate_view() -> dict:
                 "cards": [
                     {"type": "heading", "heading": "Tlak", "heading_style": "title",
                      "icon": "mdi:gauge"},
-                    glance([
-                        ("sensor.bme280_mux_node_vanjski_tlak", "Vani"),
-                        ("sensor.bme280_mux_node_dnevni_prostor_tlak", "Boravak"),
-                        ("sensor.bme280_mux_node_soba_tlak", "Soba"),
-                    ]),
+                    glance(PRESSURES),
                     {"type": "history-graph", "hours_to_show": 48,
-                     "entities": [{"entity": "sensor.bme280_mux_node_vanjski_tlak",
-                                   "name": "Vani"}]},
+                     "grid_options": {"rows": 4},
+                     "entities": [{"entity": e, "name": n} for e, n in PRESSURES]},
                 ],
             },
         ],
@@ -377,7 +417,7 @@ def climate_view() -> dict:
 def air_view() -> dict:
     return {
         "type": "sections",
-        "max_columns": 2,
+        "max_columns": 3,
         "title": "Zrak",
         "path": "zrak",
         "icon": "mdi:air-filter",
@@ -513,7 +553,7 @@ BME_CARD = (
 def system_view() -> dict:
     return {
         "type": "sections",
-        "max_columns": 2,
+        "max_columns": 3,
         "title": "Sustav",
         "path": "sustav",
         "icon": "mdi:heart-pulse",
@@ -577,7 +617,7 @@ def devices_view(lights: list[tuple[str, str]], sockets: list[tuple[str, str]],
         *[tile(entity_id, name, toggle=True) for entity_id, name in sockets],
     ]
     return {
-        "type": "sections", "max_columns": 2, "title": "Uređaji", "path": "uredaji",
+        "type": "sections", "max_columns": 3, "title": "Uređaji", "path": "uredaji",
         "icon": "mdi:toggle-switch-outline",
         "sections": [
             {"type": "grid", "cards": light_cards},
@@ -662,7 +702,7 @@ def app_button(name: str, icon: str, package: str) -> dict:
 def tv_view() -> dict:
     return {
         "type": "sections",
-        "max_columns": 2,
+        "max_columns": 3,
         "title": "TV",
         "path": "tv",
         "icon": "mdi:television",
@@ -899,7 +939,8 @@ async def main():
         print(f"  kopija prije izmjene: {BACKUP}")
 
         cfg["views"] = [
-            overview_view([tile(e, n, True) for e, n in lights], light_ids),
+            overview_view(light_ids),
+            lights_view([tile(e, n, True, columns=6) for e, n in lights]),
             rooms_view(by_area, area_names),
             climate_view(),
             air_view(),

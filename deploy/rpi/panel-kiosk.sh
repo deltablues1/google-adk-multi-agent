@@ -15,6 +15,12 @@ URL="${PANEL_URL:-http://192.168.100.200:8123/jarvis-dom/pregled}"
 # Scoped to this one origin, and it needs the --user-data-dir set below to
 # persist. Derived from URL so changing PANEL_URL keeps the two in step.
 ORIGIN="$(printf '%s' "$URL" | cut -d/ -f1-3)"
+# The panel is 1024x600, and Home Assistant's section columns have a minimum
+# width that lets only two of them fit at 1:1 -- which leaves a third of the
+# screen empty and pushes the rest below the fold. Scaling down gives the page
+# a 1280x750 viewport: three columns, and a quarter more height. Text stays
+# legible at arm's length; raise PANEL_SCALE toward 1 if it does not.
+SCALE="${PANEL_SCALE:-0.8}"
 PROFILE="$HOME/.config/chromium-panel"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -37,6 +43,7 @@ exec /usr/bin/chromium \
     --kiosk \
     --user-data-dir="$PROFILE" \
     --unsafely-treat-insecure-origin-as-secure="$ORIGIN" \
+    --force-device-scale-factor="$SCALE" \
     --password-store=basic \
     --noerrdialogs \
     --disable-infobars \
