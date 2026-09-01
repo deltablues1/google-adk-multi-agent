@@ -307,6 +307,70 @@ def lights_view(light_tiles: list[dict]) -> dict:
 
 # --- Rooms ----------------------------------------------------------------------
 
+def estimated_rows(cards: list[dict]) -> int:
+    """Height of a card list in grid rows, packing the 12-column grid as HA does.
+
+    Approximate by design: it only has to be good enough to balance columns.
+    """
+    default_rows = {"heading": 1, "tile": 1, "button": 2, "glance": 3, "gauge": 3,
+                    "markdown": 3, "clock": 2, "weather-forecast": 5,
+                    "history-graph": 5, "statistic": 2, "media-control": 4}
+    full_width = {"heading", "glance", "history-graph", "markdown",
+                  "weather-forecast", "media-control"}
+    total = used = tallest = 0
+    for card in cards:
+        options = card.get("grid_options") or {}
+        columns = options.get("columns") or (12 if card.get("type") in full_width else 4)
+        rows = options.get("rows") or default_rows.get(card.get("type"), 2)
+        if used + columns > 12:
+            total += tallest
+            used = tallest = 0
+        used += columns
+        tallest = max(tallest, rows)
+    return total + tallest
+
+
+def pack_into_columns(groups: list[list[dict]], columns: int) -> list[dict]:
+    """Merge card groups into `columns` sections of roughly equal height.
+
+    Sections lay out in rows and a row is as tall as its tallest section, so
+    fewer, balanced sections beat many uneven ones: one section row means the
+    view is exactly as tall as its fullest column and nothing lands below the
+    fold. Groups keep their given order within a column, which matters because
+    the first card of each is its room heading.
+    """
+    if len(groups) <= columns:
+        return [{"type": "grid", "cards": cards} for cards in groups]
+
+    # Contiguous split, not the cheapest bin packing. Balancing by height alone
+    # would scatter the rooms and leave the panel reading kitchen, hallway,
+    # bedroom in whatever order the arithmetic liked; ROOM_ORDER exists because
+    # somebody decided how this house should be read. So: keep the order, and
+    # pick the two cut points that give the shortest tallest column.
+    sizes = [estimated_rows(cards) for cards in groups]
+    best, best_cuts = None, None
+    for cuts in _cut_points(len(groups), columns):
+        bounds = (0, *cuts, len(groups))
+        tallest = max(sum(sizes[a:b]) for a, b in zip(bounds, bounds[1:]))
+        if best is None or tallest < best:
+            best, best_cuts = tallest, bounds
+    return [
+        {"type": "grid", "cards": [card for cards in groups[a:b] for card in cards]}
+        for a, b in zip(best_cuts, best_cuts[1:])
+        if b > a
+    ]
+
+
+def _cut_points(count: int, columns: int):
+    """Every way to cut `count` ordered groups into `columns` runs."""
+    if columns <= 1:
+        yield ()
+        return
+    for first in range(1, count - columns + 2):
+        for rest in _cut_points(count - first, columns - 1):
+            yield (first, *(first + r for r in rest))
+
+
 def rooms_view(by_area: dict, area_names: dict) -> dict:
     sections = []
     for area_id, icon in ROOM_ORDER:
@@ -327,8 +391,15 @@ def rooms_view(by_area: dict, area_names: dict) -> dict:
         for domain, entity_id, name in sorted(controls, key=lambda c: (c[0], c[2].lower())):
             cards.append(tile(entity_id, name, toggle=domain in ("light", "switch")))
         if readings:
-            cards.append(glance(sorted(readings, key=lambda r: r[1].lower())))
-        sections.append({"type": "grid", "cards": cards})
+            sorted_readings = sorted(readings, key=lambda r: r[1].lower())
+            reading_card = glance(sorted_readings)
+            # glance wraps at three per row, and pinning every room to two rows
+            # clipped the fourth reading in the rooms that have one.
+            reading_card["grid_options"] = {
+                "columns": 12, "rows": 2 if len(sorted_readings) <= 3 else 3,
+            }
+            cards.append(reading_card)
+        sections.append(cards)
 
     return {
         "type": "sections",
@@ -336,7 +407,7 @@ def rooms_view(by_area: dict, area_names: dict) -> dict:
         "title": "Sobe",
         "path": "sobe",
         "icon": "mdi:floor-plan",
-        "sections": sections,
+        "sections": pack_into_columns(sections, 3),
     }
 
 
@@ -357,33 +428,17 @@ def climate_view() -> dict:
                      "icon": "mdi:thermometer"},
                     glance(TEMPERATURES),
                     {"type": "history-graph", "hours_to_show": 24,
-                     "grid_options": {"rows": 4},
+                     "grid_options": {"rows": 3},
                      "entities": [{"entity": e, "name": n} for e, n in TEMPERATURES]},
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {"type": "heading", "heading": "Danas", "heading_style": "title",
-                     "icon": "mdi:calendar-today"},
-                    {"type": "statistic", "entity": "sensor.bme280_mux_node_vanjska_temperatura",
-                     "name": "Vani najviša", "stat_type": "max",
-                     "grid_options": {"columns": 6},
-                     "period": {"calendar": {"period": "day"}}},
-                    {"type": "statistic", "entity": "sensor.bme280_mux_node_vanjska_temperatura",
-                     "name": "Vani najniža", "stat_type": "min",
-                     "grid_options": {"columns": 6},
-                     "period": {"calendar": {"period": "day"}}},
-                    {"type": "statistic",
-                     "entity": "sensor.bme280_mux_node_dnevni_prostor_temperatura",
-                     "name": "Boravak najviša", "stat_type": "max",
-                     "grid_options": {"columns": 6},
-                     "period": {"calendar": {"period": "day"}}},
-                    {"type": "statistic",
-                     "entity": "sensor.bme280_mux_node_dnevni_prostor_temperatura",
-                     "name": "Boravak najniža", "stat_type": "min",
-                     "grid_options": {"columns": 6},
-                     "period": {"calendar": {"period": "day"}}},
+                    *[{"type": "statistic", "entity": ent, "name": label,
+                       "stat_type": stat, "grid_options": {"columns": 6, "rows": 1},
+                       "period": {"calendar": {"period": "day"}}}
+                      for ent, label, stat in (
+                          ("sensor.bme280_mux_node_vanjska_temperatura", "Vani max", "max"),
+                          ("sensor.bme280_mux_node_vanjska_temperatura", "Vani min", "min"),
+                          ("sensor.bme280_mux_node_dnevni_prostor_temperatura", "Boravak max", "max"),
+                          ("sensor.bme280_mux_node_dnevni_prostor_temperatura", "Boravak min", "min"),
+                      )],
                 ],
             },
             {
@@ -393,7 +448,7 @@ def climate_view() -> dict:
                      "icon": "mdi:water-percent"},
                     glance(HUMIDITIES),
                     {"type": "history-graph", "hours_to_show": 24,
-                     "grid_options": {"rows": 4},
+                     "grid_options": {"rows": 3},
                      "entities": [{"entity": e, "name": n} for e, n in HUMIDITIES]},
                 ],
             },
@@ -404,7 +459,7 @@ def climate_view() -> dict:
                      "icon": "mdi:gauge"},
                     glance(PRESSURES),
                     {"type": "history-graph", "hours_to_show": 48,
-                     "grid_options": {"rows": 4},
+                     "grid_options": {"rows": 3},
                      "entities": [{"entity": e, "name": n} for e, n in PRESSURES]},
                 ],
             },
@@ -700,13 +755,7 @@ def app_button(name: str, icon: str, package: str) -> dict:
 
 
 def tv_view() -> dict:
-    return {
-        "type": "sections",
-        "max_columns": 3,
-        "title": "TV",
-        "path": "tv",
-        "icon": "mdi:television",
-        "sections": [
+    groups = [
             {
                 "type": "grid",
                 "cards": [
@@ -779,7 +828,17 @@ def tv_view() -> dict:
                      "grid_options": {"columns": 4}, "tap_action": {"action": "toggle"}},
                 ],
             },
-        ],
+    ]
+    return {
+        "type": "sections",
+        "max_columns": 3,
+        "title": "TV",
+        "path": "tv",
+        "icon": "mdi:television",
+        # Five sections is two section rows, and the second starts below the
+        # tallest of the first three -- the apps and the power tiles ended up
+        # off the bottom of the panel. Balanced into three, it is one row.
+        "sections": pack_into_columns([g["cards"] for g in groups], 3),
     }
 
 

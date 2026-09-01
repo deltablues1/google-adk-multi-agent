@@ -115,7 +115,14 @@ def test_rooms_keep_the_configured_order():
     names = {area_id: area_id for area_id, _ in builder.ROOM_ORDER}
 
     view = builder.rooms_view(entities, names)
-    headings = [s["cards"][0]["heading"] for s in view["sections"]]
+    # Rooms are packed into a few balanced sections rather than one apiece, so
+    # read every heading across the view: the order is what matters.
+    headings = [
+        card["heading"]
+        for section in view["sections"]
+        for card in section["cards"]
+        if card.get("type") == "heading"
+    ]
 
     assert headings == [area_id for area_id, _ in builder.ROOM_ORDER]
 
