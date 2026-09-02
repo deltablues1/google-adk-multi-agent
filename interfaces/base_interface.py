@@ -139,14 +139,22 @@ VOICE_ROUTING_USER_PREFIXES = (
     "rpi-voice",
     "live-voice",
     "telegram-voice",
+    # Home Assistant Assist (the phone, the wall panel) is a spoken channel like
+    # the others and gets the same lanes. Without this every question asked
+    # through Assist went to the 16-tool orchestrator: slow enough that the
+    # answer often arrived after the user had given up, ~7k tokens instead of
+    # ~1.5k, no deterministic smart-home fast path, and — measured 2026-09-02 —
+    # a single philosophy question flipped the whole process into CLASSROOM
+    # mode, where every later turn on every channel went to Socrates.
+    "ha-assist",
 )
 
-# Channels whose replies get READ ALOUD. Deliberately wider than the routing
-# prefixes above and used only to choose the failure wording: Home Assistant
-# Assist speaks whatever comes back, and it spent a day reading raw
-# "litellm.BadRequestError: AnthropicException - {...}" JSON out loud. Routing
-# behaviour is unaffected by this tuple.
-SPOKEN_CHANNEL_USER_PREFIXES = VOICE_ROUTING_USER_PREFIXES + ("ha-assist",)
+# Channels whose replies get READ ALOUD; used only to choose the failure
+# wording, because Home Assistant Assist speaks whatever comes back and it
+# spent a day reading raw "litellm.BadRequestError: AnthropicException - {...}"
+# JSON out loud. Same members as the routing tuple today, kept separate because
+# the two answer different questions: how to route, and whether anyone hears it.
+SPOKEN_CHANNEL_USER_PREFIXES = VOICE_ROUTING_USER_PREFIXES
 
 LOCAL_VOICE_ROUTE = "local_voice_response"
 WEATHER_VOICE_ROUTE = "local_weather_response"
