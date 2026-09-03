@@ -11,7 +11,7 @@ and delegates to the appropriate ERP service.
 
 import logging
 import os
-from typing import Optional
+from typing import Dict, Optional
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
@@ -399,6 +399,49 @@ async def erp_list_open_invoices(
         return {"success": False, "error": str(e), "invoices": []}
 
 
+# --- Write-once helpers -----------------------------------------------------
+# Two different problems, two different mechanisms.
+#
+# Payments have real server-side deduplication (payment_repo.key_exists), so
+# they need a key that is stable across retries — derived from the payment, not
+# minted fresh each call.
+#
+# Stock adjustments have none: product_service.adjust_stock takes an absolute
+# quantity computed here from a read, so replaying a call applies the delta
+# twice. Until the repo grows a key, the guard is here: an identical write
+# inside a short window returns the first result instead of applying again.
+
+_RECENT_WRITES: Dict[str, tuple] = {}
+_REPLAY_WINDOW_SECONDS = 90.0
+
+
+def _derive_idempotency_key(kind: str, **parts) -> str:
+    import hashlib as _hashlib
+    import json as _json
+
+    payload = _json.dumps(parts, sort_keys=True, default=str, ensure_ascii=False)
+    return f"{kind}-{_hashlib.sha256(payload.encode('utf-8')).hexdigest()[:32]}"
+
+
+def _replay_of(kind: str, **parts):
+    """Return the earlier result of this exact write, if it just happened."""
+    import time as _time
+
+    key = _derive_idempotency_key(kind, **parts)
+    now = _time.monotonic()
+    for stale, (created, _) in list(_RECENT_WRITES.items()):
+        if now - created > _REPLAY_WINDOW_SECONDS:
+            del _RECENT_WRITES[stale]
+    entry = _RECENT_WRITES.get(key)
+    return key, (entry[1] if entry else None)
+
+
+def _remember_write(key: str, result: dict) -> None:
+    import time as _time
+
+    _RECENT_WRITES[key] = (_time.monotonic(), result)
+
+
 async def erp_record_payment(
     invoice_type: str,
     invoice_id: str,
@@ -435,7 +478,18 @@ async def erp_record_payment(
         from services.erp.invoice_service import get_invoice_service
         from services.erp.repositories.base import InvoiceReference
         if not idempotency_key:
-            idempotency_key = str(uuid4())
+            # A fresh uuid4 per call defeats the whole mechanism: the repo
+            # dedups on this key (payment_repo.key_exists), so minting a new
+            # one on every retry guarantees the retry is never recognised as a
+            # duplicate. Derive it from what makes the payment the same payment.
+            idempotency_key = _derive_idempotency_key(
+                "payment",
+                invoice_id=invoice_id,
+                amount=amount,
+                payment_date=payment_date,
+                payment_method=payment_method,
+                reference=reference,
+            )
         ctx = _build_ctx(role="accountant", user_id="tracker-agent")
         invoice_ref = InvoiceReference(
             invoice_id=invoice_id,
@@ -785,6 +839,14 @@ async def erp_adjust_stock(product_id: str, quantity_delta: float, reason: str =
     try:
         from decimal import Decimal
         from services.erp.product_service import get_product_service
+
+        replay_key, earlier = _replay_of(
+            "stock", product_id=product_id, delta=quantity_delta
+        )
+        if earlier is not None:
+            logger.info("erp_adjust_stock replay suppressed for %s", product_id)
+            return earlier
+
         ctx = _build_ctx(role="employee", user_id="skladistar-agent")
         svc = get_product_service()
         product = await svc.get_product(product_id, ctx)
@@ -805,7 +867,7 @@ async def erp_adjust_stock(product_id: str, quantity_delta: float, reason: str =
             (reason or "").strip() or "Glasovna korekcija zaliha (Jarvis)",
             ctx,
         )
-        return {
+        response = {
             "success": True,
             **result,
             "message": (
@@ -813,6 +875,8 @@ async def erp_adjust_stock(product_id: str, quantity_delta: float, reason: str =
                 f"novo stanje {result['new_quantity']:g}."
             ),
         }
+        _remember_write(replay_key, response)
+        return response
     except Exception as e:
         logger.error(f"erp_adjust_stock failed: {e}")
         return {"success": False, "error": str(e), "message": str(e)}
@@ -853,6 +917,14 @@ async def erp_create_product(
         import re
         from decimal import Decimal
         from services.erp.product_service import get_product_service
+
+        # The auto-generated SKU carries a random suffix, so a retry does not
+        # collide with the first product — it creates a second one.
+        replay_key, earlier = _replay_of("product", name=name, sku=sku)
+        if earlier is not None:
+            logger.info("erp_create_product replay suppressed for %r", name)
+            return earlier
+
         ctx = _build_ctx(role="accountant", user_id="skladistar-agent")
         svc = get_product_service()
         clean_sku = (sku or "").strip()
@@ -879,7 +951,7 @@ async def erp_create_product(
                 ctx,
             )
             stock_quantity = float(adjusted["new_quantity"])
-        return {
+        response = {
             "success": True,
             "product_id": doc["_id"],
             "sku": clean_sku,
@@ -890,6 +962,8 @@ async def erp_create_product(
                 f"stanje {stock_quantity:g} {unit or 'kom'}."
             ),
         }
+        _remember_write(replay_key, response)
+        return response
     except Exception as e:
         logger.error(f"erp_create_product failed: {e}")
         return {"success": False, "error": str(e), "message": str(e)}

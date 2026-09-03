@@ -44,8 +44,21 @@ VALID_SWITCHES = VALID_LIGHTS + VALID_OUTLETS
 # Code-level guards (the agent prompt alone is not enforcement):
 # - fridge/boiler OFF spoils food / kills hot water -> require explicit confirm
 # - oven ON while nobody is watching is a fire risk -> require explicit confirm
-PROTECTED_OFF_DEVICES = {"uticnica_frizider", "uticnica_bojler"}
-PROTECTED_ON_DEVICES = {"pecnica"}
+#
+# Env-driven so plugging something that must not lose power into a new outlet
+# is a config change, not a commit and a redeploy. Defaults are the devices
+# that were hardcoded here, so an unset variable protects what it always did.
+def _protected_from_env(var: str, default: set) -> set:
+    raw = os.getenv(var)
+    if raw is None:
+        return set(default)
+    return {name.strip() for name in raw.split(",") if name.strip()}
+
+
+PROTECTED_OFF_DEVICES = _protected_from_env(
+    "SMART_HOME_PROTECTED_OFF", {"uticnica_frizider", "uticnica_bojler"}
+)
+PROTECTED_ON_DEVICES = _protected_from_env("SMART_HOME_PROTECTED_ON", {"pecnica"})
 
 # --- Turn-gated approvals for protected actions -----------------------------
 # The mechanism lives in services/approvals.py now; these are the names the
