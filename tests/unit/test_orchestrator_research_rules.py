@@ -67,3 +67,16 @@ class TestVoiceMarkerContract:
     def test_orchestrator_receives_it_on_the_voice_path(self):
         # This is exactly what base_interface hands the orchestrator for voice.
         assert VOICE_MARKER in wrap_agent_voice_message("istraži cijene dizalica")
+
+
+class TestRule10DoesNotLeakOntoTextChannels:
+    """Reaching for scribe on a typed question discarded a finished 13-minute run."""
+
+    def test_it_says_only_on_the_voice_channel(self):
+        rule = _rule("10", "## Agent Routing Guide")
+        assert "only" in rule.lower()
+        assert "text channel" in rule.lower()
+
+    def test_it_names_the_request_argument(self):
+        rule = _rule("10", "## Agent Routing Guide")
+        assert "request=" in rule, "an argument-less worker call crashes the run"

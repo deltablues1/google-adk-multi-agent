@@ -311,6 +311,46 @@ def _tool_loop_before(tool=None, args=None, tool_context=None, **_kwargs):
     return None
 
 
+def _is_agent_tool(tool) -> bool:
+    """True for a sub-agent exposed as a tool (ADK AgentTool)."""
+    try:
+        from google.adk.tools.agent_tool import AgentTool
+
+        if isinstance(tool, AgentTool):
+            return True
+    except Exception:
+        pass
+    # Duck-typed fallback: an AgentTool wraps an agent and nothing else does.
+    return hasattr(tool, "agent") and hasattr(tool, "name")
+
+
+def _agent_tool_args_guard(tool=None, args=None, tool_context=None, **_kwargs):
+    """A sub-agent call with no request must not take the whole run down.
+
+    google.adk.tools.agent_tool reads args['request'] directly, with no default,
+    so a model emitting `scribe({})` raises KeyError out of the runner. On
+    2026-09-03 that discarded thirteen minutes of finished research after the
+    researcher had already returned its report. The loop guard only catches the
+    second identical failure; this catches the first and hands the model
+    something it can act on.
+    """
+    if not _is_agent_tool(tool):
+        return None
+    request = (args or {}).get("request")
+    if isinstance(request, str) and request.strip():
+        return None
+    name = getattr(tool, "name", "?")
+    logger.warning("Agent tool '%s' called without a request — returning a correction", name)
+    return {
+        "error": (
+            f"MISSING ARGUMENT: '{name}' was called with no 'request'. Call it "
+            "again with request=\"...\" containing the full text that agent "
+            "needs — it has no memory of this conversation and cannot see any "
+            "earlier result."
+        )
+    }
+
+
 def _tool_loop_after(tool=None, args=None, tool_context=None, tool_response=None, **_kwargs):
     key = _tool_loop_key(tool, args, tool_context)
     failed = isinstance(tool_response, dict) and "error" in tool_response
@@ -505,9 +545,11 @@ def create_adk_agent(
         from services.approval_gate import approval_before_tool
 
         agent_kwargs["before_tool_callback"] = (
-            [_log_tool_call, _tool_loop_before, approval_before_tool, before_tool_callback]
+            [_log_tool_call, _agent_tool_args_guard, _tool_loop_before,
+             approval_before_tool, before_tool_callback]
             if before_tool_callback is not None
-            else [_log_tool_call, _tool_loop_before, approval_before_tool]
+            else [_log_tool_call, _agent_tool_args_guard, _tool_loop_before,
+                  approval_before_tool]
         )
         agent_kwargs["after_tool_callback"] = (
             [_tool_loop_after, _log_tool_result, after_tool_callback]

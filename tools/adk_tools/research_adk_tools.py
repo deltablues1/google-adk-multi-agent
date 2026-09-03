@@ -11,6 +11,7 @@ Uses Vertex AI credentials from environment.
 """
 
 import logging
+import os
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -153,10 +154,47 @@ async def scrape_url(
             extract_type=extract_type,
             return_html=return_html
         )
-        return result
+        return _cap_scraped(result)
     except Exception as e:
         logger.error(f"URL scraping failed for {url}: {e}")
         return {"error": str(e), "url": url}
+
+
+# --- Keep scraped pages from eating the context -----------------------------
+# Every scrape result stays in the ReAct history and is resent on every
+# subsequent call. Measured 2026-09-03: one research turn sent 1.18M input
+# tokens across eight calls, mostly full page text repeated. A price or a spec
+# is in the first few thousand characters; the rest is navigation and footer.
+
+_SCRAPE_TEXT_FIELDS = ("content", "text", "markdown")
+
+
+def _scrape_char_limit() -> int:
+    try:
+        return max(1000, int(os.getenv("SCRAPE_MAX_CHARS", "12000")))
+    except ValueError:
+        return 12000
+
+
+def _cap_scraped(result: dict, limit: int = None) -> dict:
+    """Truncate page text in place, and say so, so the model does not assume
+    it read the whole page."""
+    if not isinstance(result, dict):
+        return result
+    limit = _scrape_char_limit() if limit is None else limit
+    for field in _SCRAPE_TEXT_FIELDS:
+        value = result.get(field)
+        if isinstance(value, str) and len(value) > limit:
+            result[field] = value[:limit].rstrip()
+            result["truncated"] = True
+            result["original_length"] = len(value)
+            result["truncation_note"] = (
+                f"Prikazano prvih {limit} znakova od {len(value)}. Ako traženi "
+                "podatak nije ovdje, suzi upit ili otvori konkretniju podstranicu."
+            )
+    for nested in result.get("results") or []:
+        _cap_scraped(nested, limit)
+    return result
 
 
 async def scrape_url_advanced(
@@ -187,13 +225,13 @@ async def scrape_url_advanced(
         # 1. Try Jina Reader first (free, no API key)
         result = await scrape_url_jina(None, url)
         if result.get("success"):
-            return result
+            return _cap_scraped(result)
 
         logger.info(f"Jina Reader failed for {url}, trying Firecrawl: {result.get('error')}")
 
         # 2. Fall back to Firecrawl
         result = await scrape_url_firecrawl(None, url, only_main_content=only_main_content)
-        return result
+        return _cap_scraped(result)
 
     except Exception as e:
         logger.error(f"Advanced URL scraping failed for {url}: {e}")
@@ -246,7 +284,9 @@ async def scrape_multiple_urls(
             f"{result.get('successful', 0)} successful, "
             f"{result.get('validated', 0)} skipped (invalid)"
         )
-        return result
+        # A batch of pages multiplies the problem, so each page gets a
+        # tighter slice than a single deliberate scrape.
+        return _cap_scraped(result, limit=max(1000, _scrape_char_limit() // 3))
     except Exception as e:
         logger.error(f"Multiple URL scraping failed: {e}")
         return {"error": str(e), "urls": urls}

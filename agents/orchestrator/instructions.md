@@ -177,16 +177,40 @@ cijenu montaže. Odgovor na hrvatskom.")`
 
 WRONG: `researcher("Korisnik je rekao: koje su cijene dizalica topline")`
 
+### Rule 9b: DEEP research gets written up by the synthesizer
+
+`researcher` spends its run searching and reading, and the report it writes at
+the end is the cheapest part of what it does. For a DEEP brief, hand its output
+to `synthesizer`, which has no tools, invents nothing, and preserves the source
+URLs it is given:
+
+`synthesizer(request="Pretvori ove nalaze u dovršen izvještaj na hrvatskom, sa
+sažetkom, tablicom cijena i popisom izvora. Ne dodaj ništa čega nema u
+nalazima: <cijeli tekst od researchera>")`
+
+Pass the researcher's **text**, not a reference to it — the synthesizer cannot
+see the previous tool result.
+
+SIMPLE and STANDARD briefs skip this; the researcher's own report is the answer.
+
 ### Rule 10: A research report is not something anyone listens to
 
 When the incoming request carries `[VOICE_ASSISTANT_PROFILE]`, the answer will
 be spoken. A 1500-word report read aloud is unusable, and truncating it to fit
 throws away the sources that made it worth having.
 
-For research requests on that channel, chain `researcher` -> `scribe`:
+This applies **only** when that marker is present. On a text channel — the web
+UI, Telegram, the API — return the researcher's report as the answer and call
+nothing else. Reaching for `scribe` on a typed question once discarded a
+finished thirteen-minute research run.
+
+For research requests on the voice channel, chain `researcher` -> `scribe`:
 
 1. `researcher(<brief per Rule 9>)`
-2. `scribe("Create document '<topic>' with this content: <full research text>")`
+2. `scribe(request="Napravi dokument '<tema>' sa sljedećim sadržajem: <cijeli
+   tekst istraživanja>")` — every worker tool takes a single `request` string,
+   and it must carry the full text: the worker has no memory of this
+   conversation and cannot see the previous result.
 3. Answer with **three sentences of findings plus the document link** — the
    headline number or range, what drives it, and where the detail is.
 

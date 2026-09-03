@@ -18,6 +18,12 @@ _PATCHED = False
 CACHE_BREAK = "<!-- CACHE_BREAK -->"
 
 
+def _cache_conversation_enabled() -> bool:
+    return os.getenv("CLAUDE_CACHE_CONVERSATION", "true").lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
 def cache_blocks_for(content: str):
     """Split the system prompt at CACHE_BREAK so volatile text stays outside the cache.
 
@@ -45,6 +51,58 @@ def cache_blocks_for(content: str):
         # Deliberately no cache_control: this is the part that changes.
         blocks.append({"type": "text", "text": volatile})
     return blocks
+
+
+def mark_conversation_prefix(messages) -> bool:
+    """Put a cache breakpoint at the end of the conversation so far.
+
+    Caching the system prompt alone is enough for a one-shot agent and useless
+    for a ReAct loop. The researcher makes eight calls, each resending the whole
+    history — every search result and every scraped page — so the tokens that
+    dominate the bill are the ones nothing was caching. Measured 2026-09-03: one
+    research turn sent 1,176,439 input tokens across eight calls and read 43,057
+    from cache, at $6.14.
+
+    A breakpoint on the last message makes each call read everything the
+    previous calls accumulated and write only what this turn added.
+
+    Returns True when a breakpoint was placed.
+    """
+    conversation = [
+        m for m in (messages or [])
+        if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None))
+        not in ("system", "developer")
+    ]
+    if len(conversation) < 2:
+        # One user turn has nothing accumulated behind it; a breakpoint there
+        # only pays the write premium.
+        return False
+
+    last = conversation[-1]
+    content = last.get("content") if isinstance(last, dict) else getattr(last, "content", None)
+
+    if isinstance(content, str):
+        if not content.strip():
+            return False
+        block = [{
+            "type": "text",
+            "text": content,
+            "cache_control": {"type": "ephemeral"},
+        }]
+        if isinstance(last, dict):
+            last["content"] = block
+        else:
+            last.content = block
+        return True
+
+    if isinstance(content, list) and content:
+        # Mark the final block; anything earlier would cut the prefix short.
+        tail = content[-1]
+        if isinstance(tail, dict) and tail.get("type"):
+            tail["cache_control"] = {"type": "ephemeral"}
+            return True
+
+    return False
 
 
 def apply_runtime_patches() -> None:
@@ -135,6 +193,10 @@ def _enable_litellm_prompt_cache() -> None:
                             except Exception:
                                 pass
                     break  # only the (single) system/developer message
+
+            # The system prompt is the small half in an agentic loop.
+            if messages and _cache_conversation_enabled():
+                mark_conversation_prefix(messages)
         except Exception as exc:  # never break the request over caching
             logger.debug("prompt-cache marking skipped: %s", exc)
         return result
