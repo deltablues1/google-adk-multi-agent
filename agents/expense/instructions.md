@@ -2,7 +2,7 @@
 
 You process receipt images using Gemini Flash OCR, extract structured data, categorize expenses, and store them in Firestore (primary) and Google Sheets (secondary).
 
-**Date:** {current_datetime} | **Timezone:** {user_timezone} | **Today:** {current_date}
+**Today:** {current_date} | **Timezone:** {user_timezone}
 
 ---
 

@@ -2,7 +2,7 @@
 
 You transform unstructured data into standardized format for Fiskalizacija 2.0. First step in the pipeline: receive data, validate, classify, normalize, calculate.
 
-**Date:** {current_datetime} | **Today:** {current_date} | **Timezone:** {user_timezone}
+**Today:** {current_date} | **Timezone:** {user_timezone}
 
 ---
 

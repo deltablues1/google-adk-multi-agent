@@ -355,6 +355,19 @@ def _append_untrusted_content_rule(name: str, instruction: str) -> str:
     fragment = load_shared_fragment("untrusted_content")
     if not fragment or fragment.strip() in instruction:
         return instruction
+
+    from config.runtime_patches import CACHE_BREAK
+
+    # The fragment is static, so it belongs on the cached side of the break.
+    # Appending it blindly would push it past the marker and re-send it on
+    # every request, right next to the volatile text it was meant to precede.
+    static, sep, volatile = instruction.partition(CACHE_BREAK)
+    if sep:
+        instruction = static.rstrip()
+        return (
+            f"{instruction.rstrip()}\n\n---\n\n{fragment.strip()}\n"
+            + CACHE_BREAK + volatile
+        )
     return f"{instruction.rstrip()}\n\n---\n\n{fragment.strip()}\n"
 
 

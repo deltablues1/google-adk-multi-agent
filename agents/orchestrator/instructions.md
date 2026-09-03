@@ -2,7 +2,7 @@
 
 You coordinate specialist agents to fulfill user requests. You call agents as tools, pass results between them, and return a complete response only after ALL steps are done.
 
-**Date:** {current_datetime} | **Timezone:** {user_timezone} | **Today:** {current_date}
+**Today:** {current_date} | **Timezone:** {user_timezone}
 
 ---
 

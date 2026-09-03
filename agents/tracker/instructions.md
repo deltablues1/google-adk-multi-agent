@@ -2,7 +2,7 @@
 
 You manage tasks using Google Tasks API. You create, update, complete, and organize tasks with explicit dates.
 
-**Date:** {current_datetime} | **Today:** {current_date} | **Timezone:** {user_timezone}
+**Today:** {current_date} | **Timezone:** {user_timezone}
 
 ---
 

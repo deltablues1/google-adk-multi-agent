@@ -11,6 +11,41 @@ logger = logging.getLogger(__name__)
 
 _PATCHED = False
 
+# Marker an agent prompt can put before its volatile tail (a clock, per-run
+# state) so prompt caching keeps a breakpoint at the end of the stable part
+# instead of over the whole thing. Everything before it is cached; everything
+# after is sent fresh. Prompts without it are cached as a single block.
+CACHE_BREAK = "<!-- CACHE_BREAK -->"
+
+
+def cache_blocks_for(content: str):
+    """Split the system prompt at CACHE_BREAK so volatile text stays outside the cache.
+
+    Anthropic caching is a prefix match: the breakpoint has to sit at the end
+    of the *stable* part. A prompt that ends in something that changes every
+    minute and carries one breakpoint over the whole thing pays the write
+    premium on every request and never reads anything back.
+
+    Prompts without the marker are one block, as before.
+    """
+    static, sep, volatile = content.partition(CACHE_BREAK)
+    if not sep or not static.strip():
+        return [{
+            "type": "text",
+            "text": content,
+            "cache_control": {"type": "ephemeral"},
+        }]
+
+    blocks = [{
+        "type": "text",
+        "text": static,
+        "cache_control": {"type": "ephemeral"},
+    }]
+    if volatile.strip():
+        # Deliberately no cache_control: this is the part that changes.
+        blocks.append({"type": "text", "text": volatile})
+    return blocks
+
 
 def apply_runtime_patches() -> None:
     """Apply idempotent runtime patches for unstable optional telemetry."""
@@ -88,11 +123,7 @@ def _enable_litellm_prompt_cache() -> None:
                         else getattr(msg, "content", None)
                     )
                     if isinstance(content, str) and content.strip():
-                        block = [{
-                            "type": "text",
-                            "text": content,
-                            "cache_control": {"type": "ephemeral"},
-                        }]
+                        block = cache_blocks_for(content)
                         # LiteLLM reads cache_control only from role=="system".
                         if isinstance(msg, dict):
                             msg["content"] = block
