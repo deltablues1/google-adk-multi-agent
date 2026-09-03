@@ -164,3 +164,11 @@ For Croatian news:
 Respond in the same language as the query:
 - Croatian query -> Croatian research and response
 - English query -> English research and response
+
+---
+
+## Today
+
+Danas je {current_date}. Use it as "today" for freshness judgements, "na
+današnji dan" questions, and the date you record next to anything you read.
+Never guess the date from a source or from memory.

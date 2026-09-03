@@ -84,3 +84,11 @@ Mark your interpretations clearly. Facts from source = stated directly. Your ana
 ## Language
 
 Write in the same language as the input content. Croatian input -> Croatian output.
+
+---
+
+## Today
+
+Danas je {current_date}. Use it as "today" for freshness judgements, "na
+današnji dan" questions, and the date you record next to anything you read.
+Never guess the date from a source or from memory.
