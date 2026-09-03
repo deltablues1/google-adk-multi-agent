@@ -268,15 +268,19 @@ async def calendar_delete_event(
 
 
 # --- Meeting proposal gate ---------------------------------------------------
-# "Wait for the user's choice" must not live only in the prompt: without a
-# gate the model can create a meeting immediately (or twice). Slots become
-# redeemable only after the NEXT user turn arrives (arm_pending_proposals is
-# called from BaseInterface.process_message) — proposing and creating in the
-# SAME model turn is therefore impossible. Consume-on-use prevents double
-# creates. Custom (user-dictated) times go through the same turn gate via
-# needs_confirmation -> user reply -> user_confirmed_custom_time=True.
-_PROPOSED_SLOTS: Dict[tuple, dict] = {}  # (start_utc, end_utc) -> {created_at, armed}
-_PROPOSAL_TTL_SECONDS = 600.0
+# "Wait for the user's choice" must not live only in the prompt: without a gate
+# the model can create a meeting immediately, or twice. A slot becomes
+# redeemable only after the NEXT user turn arrives, so proposing and creating in
+# the SAME model turn is impossible, and consume-on-use prevents double creates.
+#
+# The mechanism is services/approvals.py in NEXT_TURN mode: choosing among
+# proposed slots IS the confirmation, so any next turn arms them — unlike a
+# yes/no approval, which needs an actual yes. It is also session-scoped now;
+# the local version armed every pending slot in the process, so a turn in one
+# conversation could unlock a proposal made in another.
+from services import approvals as _approvals
+
+_PROPOSAL_LANE = "secretary"
 
 
 def _norm_slot_time(value: str) -> str:
@@ -289,13 +293,22 @@ def _norm_slot_time(value: str) -> str:
     return dt.astimezone(_tz.utc).isoformat(timespec="seconds")
 
 
-def _register_slot(start_iso: str, end_iso: str) -> None:
-    import time as _time
+def _slot_action_id(start_iso: str, end_iso: str) -> str:
+    return _approvals.fingerprint(
+        "calendar_create_meeting",
+        start=_norm_slot_time(start_iso),
+        end=_norm_slot_time(end_iso),
+    )
 
-    _PROPOSED_SLOTS[(_norm_slot_time(start_iso), _norm_slot_time(end_iso))] = {
-        "created_at": _time.monotonic(),
-        "armed": False,
-    }
+
+def _register_slot(start_iso: str, end_iso: str) -> None:
+    _approvals.register(
+        _slot_action_id(start_iso, end_iso),
+        question=f"{start_iso} - {end_iso}",
+        arm_mode=_approvals.NEXT_TURN,
+        ttl=_approvals.PROPOSAL_TTL_SECONDS,
+        lane=_PROPOSAL_LANE,
+    )
 
 
 def _register_proposed_slots(slots) -> None:
@@ -303,36 +316,22 @@ def _register_proposed_slots(slots) -> None:
         _register_slot(start.isoformat(), end.isoformat())
 
 
-def arm_pending_proposals() -> None:
-    """A new user turn arrived: purge expired slots, arm the rest."""
-    import time as _time
-
-    now = _time.monotonic()
-    for key in list(_PROPOSED_SLOTS):
-        entry = _PROPOSED_SLOTS[key]
-        if now - entry["created_at"] > _PROPOSAL_TTL_SECONDS:
-            del _PROPOSED_SLOTS[key]
-        else:
-            entry["armed"] = True
+def arm_pending_proposals(session_id=None) -> None:
+    """A new user turn arrived: arm that session's proposed slots."""
+    _approvals.on_user_turn(
+        session_id if session_id is not None else _approvals.current_session(),
+        affirmative=False,
+    )
 
 
 def _consume_proposed_slot(start_time: str, end_time: str) -> bool:
     """Consume an ARMED slot (proposed/registered in an earlier turn)."""
-    import time as _time
-
-    now = _time.monotonic()
-    for key in list(_PROPOSED_SLOTS):
-        if now - _PROPOSED_SLOTS[key]["created_at"] > _PROPOSAL_TTL_SECONDS:
-            del _PROPOSED_SLOTS[key]
     try:
-        key = (_norm_slot_time(start_time), _norm_slot_time(end_time))
+        action_id = _slot_action_id(start_time, end_time)
     except ValueError:
         return False
-    entry = _PROPOSED_SLOTS.get(key)
-    if not entry or not entry["armed"]:
-        return False
-    del _PROPOSED_SLOTS[key]
-    return True
+    return _approvals.redeem(action_id)
+
 
 
 async def calendar_check_freebusy(

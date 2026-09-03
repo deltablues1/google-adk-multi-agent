@@ -531,52 +531,77 @@ class BaseInterface(ABC):
         "tako je", "tocno", "svakako",
     )
 
-    def _process_turn_approvals(self, session_id: str, message: str) -> None:
-        from tools.adk_tools.mqtt_adk_tools import (
-            arm_pending_approvals,
-            cancel_pending_approvals,
-            has_pending_approval,
-            set_approval_session,
-        )
+    # A sentence that starts with "da" is not consent if it goes on to take it
+    # back. "da, ali nemoj" and "da ne gasi bojler" both armed the old check:
+    # first token "da", six words or fewer, no look at the rest.
+    _APPROVAL_NEGATION_WORDS = frozenset({
+        "ne", "nemoj", "nemojte", "necu", "nece", "ali", "ipak", "osim",
+        "stani", "cekaj", "prekini", "odustani", "nikako", "nista",
+    })
 
-        # Bind this turn's tool calls (register/redeem) to the session.
-        set_approval_session(session_id)
+    @classmethod
+    def _is_affirmative_reply(cls, normalized: str) -> bool:
+        """Is this reply an unqualified yes?
 
-        # Arm meeting-slot proposals on any new user turn (same-turn
-        # propose+create stays impossible; the slot match is the gate).
-        try:
-            from tools.adk_tools.calendar_adk_tools import arm_pending_proposals
-            arm_pending_proposals()
-        except Exception:
-            pass
-
-        if not has_pending_approval(session_id):
-            return
-
-        # A pending approval means the smart_home agent just asked a
-        # question — route this short reply back to it (one-shot pin).
-        # Pinning every smart-home turn was too broad: an unrelated short
-        # question minutes after "upali svjetlo" landed in the wrong agent.
-        self._voice_pinned_lane[session_id] = (
-            "smart_home", time.time() + VOICE_LANE_PIN_TTL_SECONDS
-        )
-
-        normalized = self._normalize_voice_text(message).strip(" ?!.,")
+        Anything else — a no, a hedge, an unrelated request — cancels, so the
+        safe direction is the default: a reply we cannot read as plain consent
+        does not authorise anything.
+        """
         tokens = normalized.split()
-        is_positive = normalized in self._APPROVAL_POSITIVE_WORDS or (
+        if any(token in cls._APPROVAL_NEGATION_WORDS for token in tokens):
+            return False
+        if normalized in cls._APPROVAL_POSITIVE_WORDS:
+            return True
+        return (
             bool(tokens)
             and tokens[0] in ("da", "moze", "potvrdujem")
             and len(tokens) <= 6
         )
-        if is_positive:
+
+    def _process_turn_approvals(self, session_id: str, message: str) -> None:
+        from services import approvals
+
+        # Bind this turn's tool calls (register/redeem) to the session.
+        approvals.set_session(session_id)
+
+        # Read before arming: on_user_turn consumes and cancels.
+        had_pending = approvals.has_pending(session_id)
+        lane = approvals.pending_lane(session_id)
+
+        normalized = self._normalize_voice_text(message).strip(" ?!.,")
+        affirmative = self._is_affirmative_reply(normalized)
+
+        # One call covers both kinds of pending action: proposed meeting slots
+        # arm on any turn (choosing IS the answer), yes/no approvals only on a
+        # yes — and only the most recent one, so a single "da" cannot authorise
+        # a queue of pending writes.
+        armed = approvals.on_user_turn(session_id, affirmative=affirmative)
+
+        if not had_pending:
+            return
+
+        # A pending approval means an agent just asked a question — route this
+        # short reply back to the agent that asked (one-shot pin). Pinning every
+        # smart-home turn was too broad: an unrelated short question minutes
+        # after "upali svjetlo" landed in the wrong agent.
+        if lane:
+            self._voice_pinned_lane[session_id] = (
+                lane, time.time() + VOICE_LANE_PIN_TTL_SECONDS
+            )
+
+        if armed:
             logger.info("Protected-action approval ARMED for session %s", session_id)
-            arm_pending_approvals(session_id)
+        elif affirmative:
+            logger.info(
+                "Affirmative reply in session %s, but nothing was waiting on a yes",
+                session_id,
+            )
         else:
             logger.info(
                 "Pending protected-action approval CANCELLED for session %s "
                 "(non-affirmative reply)", session_id,
             )
-            cancel_pending_approvals(session_id)
+
 
     def _apply_voice_lane_pin(
         self,

@@ -60,6 +60,7 @@ class _Pending:
     ttl: float
     seq: int
     question: str = ""
+    lane: str = ""
     armed: bool = False
     meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -114,6 +115,7 @@ def register(
     *,
     question: str = "",
     arm_mode: str = AFFIRMATIVE,
+    lane: str = "",
     ttl: Optional[float] = None,
     session: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
@@ -128,6 +130,7 @@ def register(
         ttl=default_ttl() if ttl is None else ttl,
         seq=next(_seq),
         question=question,
+        lane=lane,
         meta=dict(meta or {}),
     )
 
@@ -196,11 +199,25 @@ def has_pending(session_id: Optional[str]) -> bool:
     return bool(_live(_norm(session_id), time.monotonic()))
 
 
-def pending_question(session_id: Optional[str]) -> Optional[str]:
+def _newest(session_id: Optional[str]):
     live = _live(_norm(session_id), time.monotonic())
-    if not live:
-        return None
-    return max(live, key=lambda e: e.seq).question or None
+    return max(live, key=lambda e: e.seq) if live else None
+
+
+def pending_question(session_id: Optional[str]) -> Optional[str]:
+    entry = _newest(session_id)
+    return (entry.question or None) if entry else None
+
+
+def pending_lane(session_id: Optional[str]) -> Optional[str]:
+    """Which agent asked the question still waiting.
+
+    A short "da" belongs back in the lane that asked for it. Assuming
+    smart_home — as the MQTT-only version could — would send a confirmed
+    stock movement to the light switches once other tools were gated.
+    """
+    entry = _newest(session_id)
+    return (entry.lane or None) if entry else None
 
 
 def cancel(session_id: Optional[str]) -> None:
@@ -210,5 +227,11 @@ def cancel(session_id: Optional[str]) -> None:
 
 
 def reset() -> None:
-    """Tests only."""
+    """Tests only. Clears pending state *and* the bound session.
+
+    Leaving the session bound leaks across tests: a case that binds "session-a"
+    makes the next one register under it, and an assertion about "global"
+    then fails only when the suite runs in order.
+    """
     _PENDING.clear()
+    _session_var.set("global")

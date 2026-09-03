@@ -131,11 +131,11 @@ class TestCreateEventMeetLink:
 class TestAdkWrappers:
     @pytest.fixture(autouse=True)
     def clean_proposals(self):
-        import tools.adk_tools.calendar_adk_tools as calendar_adk
+        from services import approvals
 
-        calendar_adk._PROPOSED_SLOTS.clear()
+        approvals.reset()
         yield
-        calendar_adk._PROPOSED_SLOTS.clear()
+        approvals.reset()
 
     def _fake_create(self, monkeypatch, fake_creds, captured):
         import tools.adk_tools.calendar_adk_tools as calendar_adk

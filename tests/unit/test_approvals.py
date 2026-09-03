@@ -135,3 +135,49 @@ class TestPendingQuestion:
 
     def test_none_when_nothing_is_waiting(self):
         assert approvals.pending_question("s1") is None
+
+
+class TestAffirmativeParsing:
+    """A sentence that starts with "da" is not consent if it takes it back."""
+
+    @pytest.mark.parametrize(
+        "reply",
+        ["da", "moze", "u redu", "ok", "potvrdujem", "da naravno", "tako je"],
+    )
+    def test_plain_yes(self, reply):
+        from interfaces.base_interface import BaseInterface
+
+        assert BaseInterface._is_affirmative_reply(reply) is True
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "da ali nemoj",
+            "da ne gasi bojler",
+            "ne",
+            "nemoj",
+            "da ipak ne",
+            "cekaj",
+            "koliko je sati",
+        ],
+    )
+    def test_not_consent(self, reply):
+        from interfaces.base_interface import BaseInterface
+
+        assert BaseInterface._is_affirmative_reply(reply) is False
+
+    def test_a_long_sentence_starting_with_da_is_not_a_confirmation(self):
+        from interfaces.base_interface import BaseInterface
+
+        assert BaseInterface._is_affirmative_reply(
+            "da bih volio znati koliko to sve skupa kosta"
+        ) is False
+
+
+class TestLaneRouting:
+    def test_the_reply_goes_back_to_the_agent_that_asked(self):
+        approvals.register("erp:adjust", lane="skladistar", question="Skinuti pet?")
+        assert approvals.pending_lane("s1") == "skladistar"
+
+    def test_no_lane_when_nothing_is_waiting(self):
+        assert approvals.pending_lane("s1") is None

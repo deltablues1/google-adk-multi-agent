@@ -194,11 +194,11 @@ class TestIntentGate:
 class TestProtectedDevices:
     @pytest.fixture(autouse=True)
     def clean_approvals(self):
-        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+        from services import approvals
 
-        mqtt_tools._PENDING_APPROVALS.clear()
+        approvals.reset()
         yield
-        mqtt_tools._PENDING_APPROVALS.clear()
+        approvals.reset()
 
     @pytest.mark.parametrize("device,state", [
         ("uticnica_frizider", "OFF"),
@@ -237,14 +237,19 @@ class TestProtectedDevices:
         import time as time_mod
 
         import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+        from services import approvals
 
         asyncio.run(mqtt_tools.mqtt_switch_control("uticnica_bojler", "OFF"))
-        # simulate TTL expiry
-        entry = mqtt_tools._PENDING_APPROVALS[("global", "uticnica_bojler", "OFF")]
-        entry["created_at"] = time_mod.monotonic() - 999
-        mqtt_tools.arm_pending_approvals("global")  # purges expired
+        assert approvals.has_pending("global") is True
 
-        assert ("global", "uticnica_bojler", "OFF") not in mqtt_tools._PENDING_APPROVALS
+        # Simulate TTL expiry: an approval the user never got back to must not
+        # still be sitting there an hour later waiting for a stray "da".
+        key = ("global", mqtt_tools._action_id("uticnica_bojler", "OFF"))
+        approvals._PENDING[key].created_at = time_mod.monotonic() - 999
+
+        assert approvals.has_pending("global") is False
+        mqtt_tools.arm_pending_approvals("global")  # purges expired
+        assert key not in approvals._PENDING
 
     def test_other_session_cannot_arm(self):
         # An approval pending in session A must not be unlocked by traffic
@@ -396,11 +401,11 @@ class TestSceneComposition:
 class TestTurnApprovalSemantics:
     @pytest.fixture(autouse=True)
     def clean_approvals(self):
-        import tools.adk_tools.mqtt_adk_tools as mqtt_tools
+        from services import approvals
 
-        mqtt_tools._PENDING_APPROVALS.clear()
+        approvals.reset()
         yield
-        mqtt_tools._PENDING_APPROVALS.clear()
+        approvals.reset()
 
     @pytest.fixture
     def iface(self):

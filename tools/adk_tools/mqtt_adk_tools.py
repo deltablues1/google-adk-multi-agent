@@ -48,89 +48,52 @@ PROTECTED_OFF_DEVICES = {"uticnica_frizider", "uticnica_bojler"}
 PROTECTED_ON_DEVICES = {"pecnica"}
 
 # --- Turn-gated approvals for protected actions -----------------------------
-# confirm=True alone proves nothing: the model could set it immediately.
-# A protected action becomes redeemable only after the user EXPLICITLY
-# confirms in their next message ("da", "može", ...) in the SAME session:
-# BaseInterface.process_message parses the new user message and calls
-# arm_pending_approvals(session) on a positive reply — anything else
-# (a "ne", an unrelated request, a message from another session/channel)
-# CANCELS the pending approval instead of arming it.
-import contextvars as _contextvars
+# The mechanism lives in services/approvals.py now; these are the names the
+# rest of the code already imports, kept as a thin shim. confirm=True alone
+# still proves nothing — a protected action becomes redeemable only after the
+# user confirms in their NEXT message, which the model cannot fabricate.
+from services import approvals as _approvals
 
-_PENDING_APPROVALS: dict = {}  # (session, device, state) -> {"created_at", "armed"}
-_APPROVAL_TTL_SECONDS = 120.0
-_approval_session: _contextvars.ContextVar = _contextvars.ContextVar(
-    "mqtt_approval_session", default="global"
-)
+_PROTECTED_LANE = "smart_home"
+
+
+def _action_id(device_name: str, state: str) -> str:
+    return _approvals.fingerprint("mqtt_switch_control", device=device_name, state=state)
 
 
 def set_approval_session(session_id: str) -> None:
     """Bind subsequent register/redeem calls to this session's context."""
-    _approval_session.set(session_id or "global")
-
-
-def _session() -> str:
-    return _approval_session.get()
+    _approvals.set_session(session_id)
 
 
 def register_pending_approval(device_name: str, state: str) -> None:
-    import time as _time
-
-    _PENDING_APPROVALS[(_session(), device_name, state)] = {
-        "created_at": _time.monotonic(),
-        "armed": False,
-    }
+    friendly = DEVICE_NAMES.get(device_name, device_name)
+    _approvals.register(
+        _action_id(device_name, state),
+        question=f"{friendly} -> {state}",
+        lane=_PROTECTED_LANE,
+    )
 
 
 def arm_pending_approvals(session_id: str) -> None:
-    """The user of *session_id* explicitly confirmed: purge expired entries,
-    arm the survivors belonging to that session only."""
-    import time as _time
-
-    now = _time.monotonic()
-    for key in list(_PENDING_APPROVALS):
-        entry = _PENDING_APPROVALS[key]
-        if now - entry["created_at"] > _APPROVAL_TTL_SECONDS:
-            del _PENDING_APPROVALS[key]
-        elif key[0] == (session_id or "global"):
-            entry["armed"] = True
+    """The user of *session_id* explicitly confirmed."""
+    _approvals.on_user_turn(session_id, affirmative=True)
 
 
 def cancel_pending_approvals(session_id: str) -> None:
-    """The user said no / changed topic: drop that session's pending approvals."""
-    for key in list(_PENDING_APPROVALS):
-        if key[0] == (session_id or "global"):
-            del _PENDING_APPROVALS[key]
+    """The user said no / changed topic."""
+    _approvals.cancel(session_id)
 
 
 def has_pending_approval(session_id: str) -> bool:
-    """True when this session has an unexpired pending approval (used by the
-    voice router to send short follow-ups back to the smart_home agent)."""
-    import time as _time
-
-    now = _time.monotonic()
-    return any(
-        key[0] == (session_id or "global")
-        and now - entry["created_at"] <= _APPROVAL_TTL_SECONDS
-        for key, entry in _PENDING_APPROVALS.items()
-    )
+    return _approvals.has_pending(session_id)
 
 
 def redeem_approval(device_name: str, state: str) -> bool:
     """Consume an armed, unexpired approval for the current session."""
-    import time as _time
+    return _approvals.redeem(_action_id(device_name, state))
 
-    key = (_session(), device_name, state)
-    entry = _PENDING_APPROVALS.get(key)
-    if not entry:
-        return False
-    if _time.monotonic() - entry["created_at"] > _APPROVAL_TTL_SECONDS:
-        del _PENDING_APPROVALS[key]
-        return False
-    if not entry["armed"]:
-        return False
-    del _PENDING_APPROVALS[key]
-    return True
+
 
 # Human-readable names (Croatian)
 DEVICE_NAMES = {
