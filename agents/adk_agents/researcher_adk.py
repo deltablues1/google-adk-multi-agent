@@ -103,7 +103,10 @@ def create_researcher_agent(
         load_instruction_from_file=True,  # Will load from agents/researcher/instructions.md
         config={
             "temperature": 0.6,  # Balanced for creativity and accuracy
-            "max_tokens": 8192,  # Large context for comprehensive research
+            # A price report with a table and full source URLs runs past 8k, and
+            # on Claude the thinking tokens come out of the same budget — 8192 was
+            # also exactly _CLAUDE_THINKING_MIN_OUTPUT_TOKENS, leaving no headroom.
+            "max_tokens": 16384,
             # Note: max_iterations handled by LlmAgent's ReAct implementation
         }
     )
