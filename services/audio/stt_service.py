@@ -74,27 +74,42 @@ _INTERACTIONS_MIME = {
 _GEMINI_TRANSCRIBE_ENGINES = {"gemini_transcribe", "gemini-transcribe", "transcribe"}
 
 
-def get_interactions_client():
-    """A Gemini Developer client for the Interactions API.
+def post_interaction(payload: dict, timeout: float = 30.0) -> dict:
+    """POST one Interactions request and return the parsed response.
 
-    Kept module-level and unmemoised on purpose: the key can be rotated in
-    `.env` between calls, and building the client costs nothing next to the
-    network round trip it precedes.
+    Raw REST rather than the SDK on purpose. google-genai 1.x still speaks the
+    pre-May-2026 Interactions schema and the API answers it with HTTP 400; the
+    2.x line fixes that, but this process shares its google-genai with ADK
+    1.31.1 and every Vertex agent in the house. One `urllib` call has no such
+    entanglement — the same reasoning that put Chirp on REST above.
     """
-    from google import genai as _genai
+    import json as _json
+    import urllib.error
+    import urllib.request
 
     api_key = get_google_api_key()
     if not api_key:
         raise RuntimeError(
             "GEMINI_API_KEY / GOOGLE_API_KEY not set - required for STT_ENGINE=gemini_transcribe"
         )
-    # Same dance as _get_client: the Vertex env vars would otherwise build a
-    # Vertex client, which has no `interactions` at all.
-    _backup = {k: os.environ.pop(k) for k in genai_vertex_env_keys() if k in os.environ}
+    endpoint = (
+        os.getenv("GEMINI_TRANSCRIBE_ENDPOINT", "").strip()
+        or "https://generativelanguage.googleapis.com/v1beta/interactions"
+    )
+    request = urllib.request.Request(
+        endpoint,
+        data=_json.dumps(payload).encode("utf-8"),
+        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        return _genai.Client(api_key=api_key, vertexai=False)
-    finally:
-        os.environ.update(_backup)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return _json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        # The body carries the reason that matters — a depleted prepayment
+        # balance reads as a bare 429 without it.
+        detail = err.read().decode("utf-8", "ignore")[:300]
+        raise RuntimeError(f"Interactions API {err.code}: {detail}") from err
 
 
 # --- Cloud Speech-to-Text v2 (Chirp) credentials --------------------------
@@ -255,12 +270,29 @@ class STTService:
             item["rate"] = int(os.getenv("STT_PCM_SAMPLE_RATE", "16000"))
             item["channels"] = 1
 
-        interaction = get_interactions_client().interactions.create(
-            model=self._transcribe_model(),
-            input=[item],
-            generation_config={"transcription_config": self._transcribe_config()},
+        # Input items are wrapped in a turn — the May 2026 schema change that
+        # the older SDK still gets wrong.
+        payload = {
+            "model": self._transcribe_model(),
+            "input": [{"type": "user_input", "content": [item]}],
+            "generation_config": {"transcription_config": self._transcribe_config()},
+        }
+        body = post_interaction(
+            payload,
+            timeout=float(os.getenv("GEMINI_TRANSCRIBE_TIMEOUT_SECONDS", "30")),
         )
-        return (getattr(interaction, "output_text", "") or "").strip()
+
+        text = body.get("output_text")
+        if not text:
+            # Same words, one level down; kept as a fallback so a response
+            # shape that drops the convenience field is not silence.
+            text = " ".join(
+                part.get("text", "")
+                for step in body.get("steps", [])
+                for part in step.get("content", [])
+                if part.get("type") == "text"
+            )
+        return (text or "").strip()
 
     def _get_client(self):
         from google import genai as _genai
