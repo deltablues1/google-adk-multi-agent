@@ -17,9 +17,26 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-# Custom Search API configuration
-CUSTOM_SEARCH_API_KEY = os.getenv("GOOGLE_API_KEY")
-CUSTOM_SEARCH_ENGINE_ID = os.getenv("GOOGLE_CUSTOM_SEARCH_CX")
+# Custom Search API configuration.
+#
+# Read per call, not at import: these were module constants, so adding the key
+# to .env did nothing until the process restarted — and the failure is silent,
+# a fallback to grounding rather than an error.
+#
+# GOOGLE_CUSTOM_SEARCH_API_KEY first, because the key that works here is a
+# Google Cloud key with the Custom Search API enabled on the project; the
+# Gemini/AI-Studio key in GOOGLE_API_KEY is usually not that key and comes
+# back as "API keys are not supported by this API".
+def _custom_search_api_key() -> Optional[str]:
+    return (
+        os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or None
+    )
+
+
+def _custom_search_cx() -> Optional[str]:
+    return os.getenv("GOOGLE_CUSTOM_SEARCH_CX") or None
 
 # Croatian queries need gl/hl=hr. Without them Custom Search answers from the
 # caller's IP locale, so a question about prices in Croatia comes back with
@@ -230,15 +247,22 @@ async def google_custom_search(
         Dictionary with search results
     """
     try:
-        if not CUSTOM_SEARCH_API_KEY:
+        api_key = _custom_search_api_key()
+        engine_id = _custom_search_cx()
+
+        if not api_key:
             return {
                 "query": query,
-                "error": "GOOGLE_API_KEY not configured",
+                "error": (
+                    "Custom Search key not configured. Set GOOGLE_CUSTOM_SEARCH_API_KEY "
+                    "to a Google Cloud API key with the Custom Search API enabled on "
+                    "the project (a Gemini/AI Studio key is rejected by this API)."
+                ),
                 "sources": [],
                 "source_count": 0
             }
 
-        if not CUSTOM_SEARCH_ENGINE_ID:
+        if not engine_id:
             return {
                 "query": query,
                 "error": "GOOGLE_CUSTOM_SEARCH_CX not configured. Create a Custom Search Engine at https://programmablesearchengine.google.com/",
@@ -253,8 +277,8 @@ async def google_custom_search(
         # Build the Custom Search API URL
         base_url = "https://www.googleapis.com/customsearch/v1"
         params = {
-            "key": CUSTOM_SEARCH_API_KEY,
-            "cx": CUSTOM_SEARCH_ENGINE_ID,
+            "key": api_key,
+            "cx": engine_id,
             "q": query,
             "num": min(num_results, 10)  # API max is 10
         }
@@ -491,9 +515,15 @@ def register_google_search_tools(tool_registry) -> None:
     )
 
     # Log configuration status
-    if CUSTOM_SEARCH_ENGINE_ID:
-        logger.info(f"Custom Search API configured (cx: {CUSTOM_SEARCH_ENGINE_ID[:8]}...)")
+    cx = _custom_search_cx()
+    if cx and _custom_search_api_key():
+        logger.info(f"Custom Search API configured (cx: {cx[:8]}...)")
+    elif cx:
+        logger.warning(
+            "GOOGLE_CUSTOM_SEARCH_CX is set but no Custom Search API key is — "
+            "google_search_simple will fall back to grounding citations"
+        )
     else:
-        logger.warning("GOOGLE_CUSTOM_SEARCH_CX not set - Custom Search fallback unavailable")
+        logger.warning("GOOGLE_CUSTOM_SEARCH_CX not set - Custom Search unavailable")
 
     logger.info("Google Search tools registered successfully")

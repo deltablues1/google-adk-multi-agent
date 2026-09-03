@@ -132,3 +132,32 @@ class TestGroundingSystemInstruction:
 
     def test_english_query_does_not(self):
         assert "Croatian sources" not in api._grounding_system_instruction("boiler prices uk")
+
+
+class TestCustomSearchCredentialsAreReadPerCall:
+    """They were module constants: adding the key to .env changed nothing until
+    a restart, and the symptom was a silent fallback rather than an error."""
+
+    @pytest.mark.asyncio
+    async def test_a_key_set_after_import_is_picked_up(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_API_KEY", "late-key")
+        monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_CX", "late-cx")
+        assert api._custom_search_api_key() == "late-key"
+        assert api._custom_search_cx() == "late-cx"
+
+    def test_the_dedicated_key_wins_over_the_generic_one(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "gemini-key")
+        monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_API_KEY", "search-key")
+        assert api._custom_search_api_key() == "search-key"
+
+    def test_no_key_at_all_reads_as_missing(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        assert api._custom_search_api_key() is None
+
+    @pytest.mark.asyncio
+    async def test_the_missing_key_error_names_what_to_set(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        result = await api.google_custom_search("cijene")
+        assert "GOOGLE_CUSTOM_SEARCH_API_KEY" in result["error"]
