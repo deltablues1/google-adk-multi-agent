@@ -25,14 +25,9 @@ import logging
 import os
 from typing import Any, Callable, Dict, Optional
 
-from services import approvals
+from services import approvals, known_recipients
 
 logger = logging.getLogger(__name__)
-
-
-def _trusted_email_domains() -> set:
-    raw = os.getenv("APPROVAL_TRUSTED_EMAIL_DOMAINS", "")
-    return {d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()}
 
 
 def _recipients(args: Dict[str, Any]) -> list:
@@ -43,16 +38,14 @@ def _recipients(args: Dict[str, Any]) -> list:
     return out
 
 
-def _untrusted_recipients(args: Dict[str, Any]) -> list:
-    trusted = _trusted_email_domains()
-    if not trusted:
-        # Nothing declared as trusted: confirm every send rather than silently
-        # trusting everything, which is the failure this gate exists to prevent.
-        return _recipients(args)
-    return [
-        address for address in _recipients(args)
-        if address.rsplit("@", 1)[-1].lower() not in trusted
-    ]
+def _unknown_recipients(args: Dict[str, Any]) -> list:
+    """Addresses the house has never written to and does not have on file.
+
+    Filtering by domain was the first attempt and it asked about every client,
+    which is most of the real mail — friction on the normal case and no extra
+    safety, since a plausible domain is the easy half of a redirect to forge.
+    A recipient nobody has ever written to is the actual signal."""
+    return [a for a in _recipients(args) if not known_recipients.is_known(a)]
 
 
 class _Rule:
@@ -62,22 +55,27 @@ class _Rule:
         key: Callable[[Dict[str, Any]], Dict[str, Any]],
         question: Callable[[Dict[str, Any]], str],
         lane: str = "",
+        on_confirmed: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ):
         self.when = when
         self.key = key
         self.question = question
         self.lane = lane
+        self.on_confirmed = on_confirmed
 
 
 RULES: Dict[str, _Rule] = {
     "gmail_send_message": _Rule(
-        when=lambda a: bool(_untrusted_recipients(a)),
+        when=lambda a: bool(_unknown_recipients(a)),
         key=lambda a: {"to": sorted(_recipients(a)), "subject": a.get("subject", "")},
         question=lambda a: (
-            f"poslati mail na {', '.join(_untrusted_recipients(a))} "
+            f"poslati mail na {', '.join(_unknown_recipients(a))} "
             f"({a.get('subject', 'bez naslova')})"
         ),
         lane="mailer",
+        # Confirmed once is known from then on, so the gate narrows to genuinely
+        # new addresses instead of nagging about the same client every time.
+        on_confirmed=lambda a: known_recipients.remember(_recipients(a)),
     ),
     "drive_share_file": _Rule(
         # Sharing with a named person is ordinary work; "anyone" is publishing.
@@ -165,6 +163,11 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
 
     if approvals.redeem(action_id):
         logger.info("[APPROVAL] redeemed for %s", name)
+        if rule.on_confirmed is not None:
+            try:
+                rule.on_confirmed(args)
+            except Exception as exc:
+                logger.warning("Post-approval hook for '%s' failed: %s", name, exc)
         return None
 
     approvals.register(action_id, question=question, lane=rule.lane)

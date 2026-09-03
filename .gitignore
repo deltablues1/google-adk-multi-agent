@@ -169,3 +169,6 @@ deploy/tv_app_launcher/build/
 deploy/tv_app_launcher/android.jar
 deploy/tv_app_launcher/r8.jar
 deploy/tv_app_launcher/*.keystore
+
+# Learned mail recipients (real email addresses — personal data, not config).
+data/known_recipients.json

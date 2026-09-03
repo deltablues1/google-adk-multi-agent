@@ -531,6 +531,12 @@ def create_app(interface) -> FastAPI:
         await _web_interface.start()  # Initializes agents + loads sessions from Firestore
         agent_count = len(_web_interface.system.worker_agents)
         logger.info(f"System ready. {agent_count} worker agents loaded.")
+
+        # Seed the approval gate's known recipients from Contacts, so people
+        # already in the address book never trigger a mail confirmation.
+        # Fire-and-forget: Contacts being unavailable only costs confirmations.
+        from services.known_recipients import refresh_from_contacts
+        asyncio.create_task(refresh_from_contacts())
         yield
         # Shutdown
         if (_web_interface.system and _web_interface.system.scheduler

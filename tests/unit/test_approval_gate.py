@@ -23,12 +23,17 @@ class _Tool:
 
 
 @pytest.fixture(autouse=True)
-def clean(monkeypatch):
+def clean(monkeypatch, tmp_path):
+    from services import known_recipients
+
     approvals.reset()
     approvals.set_session("s1")
     monkeypatch.setenv("APPROVAL_TRUSTED_EMAIL_DOMAINS", "lux-tech.hr")
+    monkeypatch.setenv("KNOWN_RECIPIENTS_FILE", str(tmp_path / "known.json"))
+    known_recipients.reset()
     yield
     approvals.reset()
+    known_recipients.reset()
 
 
 def _call(tool_name, **args):
@@ -82,16 +87,26 @@ class TestConsequentialWritesAreHeld:
         assert _call("erp_adjust_stock", product_id="P1", quantity_delta=-50) is not None
 
 
-class TestGmailIsGatedByRecipient:
+class TestGmailIsGatedByUnknownRecipient:
+    """Filtering by domain asked about every client — most of the real mail —
+    and bought nothing: a plausible domain is the easy half of a forged
+    redirect. An address nobody has ever written to is the actual signal."""
+
     def test_a_colleague_on_a_trusted_domain_goes_through(self):
         assert _call("gmail_send_message", to="ivan@lux-tech.hr", subject="Ponuda") is None
 
-    def test_an_outside_address_is_held(self):
+    def test_a_known_contact_goes_through(self):
+        from services import known_recipients
+
+        known_recipients.remember(["klijent@example.com"])
+        assert _call("gmail_send_message", to="klijent@example.com", subject="Ponuda") is None
+
+    def test_a_never_seen_address_is_held(self):
         held = _call("gmail_send_message", to="stranac@example.com", subject="Ponuda")
         assert held["status"] == "needs_confirmation"
         assert "stranac@example.com" in held["question"]
 
-    def test_one_outside_address_among_trusted_ones_is_enough(self):
+    def test_one_unknown_address_among_known_ones_is_enough(self):
         held = _call(
             "gmail_send_message",
             to="ivan@lux-tech.hr",
@@ -100,9 +115,28 @@ class TestGmailIsGatedByRecipient:
         )
         assert held is not None
 
-    def test_with_no_trusted_domains_declared_every_send_is_held(self, monkeypatch):
-        monkeypatch.delenv("APPROVAL_TRUSTED_EMAIL_DOMAINS", raising=False)
-        assert _call("gmail_send_message", to="ivan@lux-tech.hr", subject="x") is not None
+    def test_confirming_once_teaches_the_address(self):
+        _call("gmail_send_message", to="stranac@example.com", subject="Ponuda")
+        approvals.on_user_turn("s1", affirmative=True)
+        assert _call("gmail_send_message", to="stranac@example.com", subject="Ponuda") is None
+
+        # A different subject to the same person no longer asks.
+        assert _call("gmail_send_message", to="stranac@example.com", subject="Druga tema") is None
+
+    def test_a_refused_send_teaches_nothing(self):
+        _call("gmail_send_message", to="stranac@example.com", subject="Ponuda")
+        approvals.on_user_turn("s1", affirmative=False)
+        assert _call("gmail_send_message", to="stranac@example.com", subject="Ponuda") is not None
+
+    def test_an_unreadable_store_fails_closed(self, monkeypatch, tmp_path):
+        from services import known_recipients
+
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        monkeypatch.setenv("KNOWN_RECIPIENTS_FILE", str(broken))
+        known_recipients.reset()
+
+        assert _call("gmail_send_message", to="klijent@example.com", subject="x") is not None
 
 
 class TestDriveIsGatedOnlyForPublishing:
