@@ -48,6 +48,55 @@ def _stt_use_vertex() -> bool:
     }
 
 
+# --- Gemini 3.5 Transcribe (Interactions API) -----------------------------
+# A purpose-built ASR model rather than the multimodal path below: the audio
+# goes inline (no Files API round trip) and the language is pinned, which is
+# the whole reason Croatian ended up on Chirp in the first place.
+#
+# Developer API only, verified 2026-09-02: the publisher model is not on Vertex
+# (404 in both `global` and `us-central1`) and the SDK refuses `interactions`
+# on a Vertex client outright. So this path builds its own client with the API
+# key even though everything else in the process talks to Vertex.
+_INTERACTIONS_MIME = {
+    "audio/wav": "audio/wav",
+    "audio/x-wav": "audio/wav",
+    "audio/ogg": "audio/ogg",
+    "audio/opus": "audio/opus",
+    "audio/mpeg": "audio/mpeg",
+    "audio/mp3": "audio/mp3",
+    "audio/m4a": "audio/m4a",
+    "audio/mp4": "audio/m4a",
+    "audio/flac": "audio/flac",
+    "audio/aac": "audio/aac",
+    "audio/l16": "audio/l16",
+}
+
+_GEMINI_TRANSCRIBE_ENGINES = {"gemini_transcribe", "gemini-transcribe", "transcribe"}
+
+
+def get_interactions_client():
+    """A Gemini Developer client for the Interactions API.
+
+    Kept module-level and unmemoised on purpose: the key can be rotated in
+    `.env` between calls, and building the client costs nothing next to the
+    network round trip it precedes.
+    """
+    from google import genai as _genai
+
+    api_key = get_google_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY / GOOGLE_API_KEY not set - required for STT_ENGINE=gemini_transcribe"
+        )
+    # Same dance as _get_client: the Vertex env vars would otherwise build a
+    # Vertex client, which has no `interactions` at all.
+    _backup = {k: os.environ.pop(k) for k in genai_vertex_env_keys() if k in os.environ}
+    try:
+        return _genai.Client(api_key=api_key, vertexai=False)
+    finally:
+        os.environ.update(_backup)
+
+
 # --- Cloud Speech-to-Text v2 (Chirp) credentials --------------------------
 # Cloud STT uses native per-language ASR (Chirp), far more reliable for
 # Croatian than Gemini multimodal, especially on short utterances. We call the
@@ -160,6 +209,59 @@ class STTService:
         )
         return (getattr(resp, "text", "") or "").strip()
 
+    def _transcribe_model(self) -> str:
+        return os.getenv("GEMINI_TRANSCRIBE_MODEL", "").strip() or "gemini-3.5-transcribe"
+
+    def _transcribe_config(self) -> dict:
+        """The transcription_config sent with every Interactions request."""
+        raw = os.getenv("GEMINI_TRANSCRIBE_LANGUAGES", "").strip() or self.cloud_language_code
+        # Never left empty: an empty list means "detect the language", and
+        # detection is exactly what mistook Croatian for Macedonian and Czech
+        # on the two engines that were rejected before this one.
+        config: dict = {"language_codes": [c.strip() for c in raw.split(",") if c.strip()]}
+
+        mode = os.getenv("GEMINI_TRANSCRIBE_MODE", "").strip().lower()
+        if mode in {"smart", "verbatim"}:
+            config["mode"] = {"type": mode}
+
+        vocabulary = [
+            term.strip()
+            for term in os.getenv("GEMINI_TRANSCRIBE_VOCABULARY", "").split(",")
+            if term.strip()
+        ]
+        if vocabulary:
+            # The API caps the list at 1000 terms and rejects the whole request
+            # if it is longer, so the cut happens here rather than there.
+            config["custom_vocabulary"] = vocabulary[:1000]
+        return config
+
+    def _transcribe_interactions_sync(self, audio_bytes: bytes, mime_type: str) -> str:
+        """Transcribe via Gemini 3.5 Transcribe. Returns plain text."""
+        import base64
+
+        mime = _INTERACTIONS_MIME.get((mime_type or "").strip().lower())
+        if not mime:
+            raise RuntimeError(
+                f"{mime_type} is not an audio type {self._transcribe_model()} accepts"
+            )
+
+        item: dict = {
+            "type": "audio",
+            "data": base64.b64encode(audio_bytes).decode("ascii"),
+            "mime_type": mime,
+        }
+        if mime == "audio/l16":
+            # Raw PCM carries no header, so the rate travels beside it.
+            item["rate"] = int(os.getenv("STT_PCM_SAMPLE_RATE", "16000"))
+            item["channels"] = 1
+
+        interaction = get_interactions_client().interactions.create(
+            model=self._transcribe_model(),
+            input=[item],
+            generation_config={"transcription_config": self._transcribe_config()},
+        )
+        return (getattr(interaction, "output_text", "") or "").strip()
+
     def _get_client(self):
         from google import genai as _genai
 
@@ -234,6 +336,46 @@ class STTService:
             )
             logger.info(
                 f"STT[openai:{self._openai_model()}] transcription "
+                f"({len(audio_bytes)} bytes): {transcript[:100]}"
+            )
+            return transcript
+
+        # Gemini 3.5 Transcribe (opt-in via STT_ENGINE=gemini_transcribe).
+        if self.engine in _GEMINI_TRANSCRIBE_ENGINES:
+            async def _call_transcribe():
+                return await asyncio.get_event_loop().run_in_executor(
+                    None, self._transcribe_interactions_sync, audio_bytes, mime_type
+                )
+
+            try:
+                transcript = await run_with_bounded_retry(
+                    "stt_gemini_transcribe",
+                    _call_transcribe,
+                    config=RetryConfig(max_retries=1, base_delay=1.0, max_delay=4.0),
+                    log=logger,
+                )
+            except Exception as err:  # noqa: BLE001 - hearing matters more
+                fallback = os.getenv("STT_FALLBACK_ENGINE", "chirp").strip().lower()
+                if fallback in {"", "none", "off"}:
+                    raise
+                # A depleted balance, a rotated key or a five-minute outage at
+                # Google must not leave the house deaf: Chirp still works and
+                # costs the same as it did before this engine existed.
+                logger.warning(
+                    "STT[%s] failed (%s); falling back to %s",
+                    self._transcribe_model(), err, self.cloud_model,
+                )
+                transcript = await asyncio.get_event_loop().run_in_executor(
+                    None, self._transcribe_cloud_sync, audio_bytes
+                )
+                logger.info(
+                    f"STT[{self.cloud_model} fallback] transcription "
+                    f"({len(audio_bytes)} bytes): {transcript[:100]}"
+                )
+                return transcript
+
+            logger.info(
+                f"STT[{self._transcribe_model()}] transcription "
                 f"({len(audio_bytes)} bytes): {transcript[:100]}"
             )
             return transcript
