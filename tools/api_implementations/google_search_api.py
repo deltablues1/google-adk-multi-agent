@@ -21,6 +21,60 @@ logger = logging.getLogger(__name__)
 CUSTOM_SEARCH_API_KEY = os.getenv("GOOGLE_API_KEY")
 CUSTOM_SEARCH_ENGINE_ID = os.getenv("GOOGLE_CUSTOM_SEARCH_CX")
 
+# Croatian queries need gl/hl=hr. Without them Custom Search answers from the
+# caller's IP locale, so a question about prices in Croatia comes back with
+# international shops the user cannot buy from.
+_CROATIAN_HINTS = frozenset({
+    "cijena", "cijene", "cijenu", "kosta", "kostaju", "koliko", "kolika",
+    "najbolji", "najbolja", "kupiti", "kupovina", "gdje", "kada", "kako",
+    "zasto", "hrvatska", "hrvatskoj", "hrvatske", "ponuda", "akcija",
+})
+
+
+def _grounding_system_instruction(query: str) -> str:
+    """Rules the grounding model gets before it searches.
+
+    Without this it is handed a bare "answer this" and has no idea what day it
+    is, which country the asker is in, or that a price is worthless without the
+    shop and the date it was read.
+    """
+    try:
+        import pytz
+        from datetime import datetime
+
+        tz_name = os.getenv("USER_TIMEZONE", "Europe/Zagreb")
+        today = datetime.now(pytz.timezone(tz_name)).strftime("%Y-%m-%d")
+    except Exception:  # pragma: no cover - clock/tz problems must not block search
+        today = "unknown"
+
+    croatian = _looks_croatian(query)
+    lines = [
+        f"Today is {today}. Treat it as the present when judging how fresh a source is.",
+        "Answer in the same language as the question.",
+        "Every number, price or date you report must carry its source and the date "
+        "that source was published or last updated. If you cannot establish the date, "
+        "say the figure is undated rather than dropping the caveat.",
+        "Prices must include the currency and say whether tax is included. Never "
+        "convert or round a price you did not read directly in a source.",
+        "State plainly what you could not find. Do not fill gaps from memory.",
+    ]
+    if croatian:
+        lines.insert(
+            2,
+            "The question is Croatian: prefer Croatian sources and Croatian shops, "
+            "and report prices in EUR as listed there.",
+        )
+    return " ".join(lines)
+
+
+def _looks_croatian(query: str) -> bool:
+    """Best-effort language sniff for the Custom Search locale parameters."""
+    lowered = query.lower()
+    if any(ch in lowered for ch in "čćžšđ"):
+        return True
+    words = {w.strip(".,?!\"'()[]") for w in lowered.split()}
+    return bool(words & _CROATIAN_HINTS)
+
 
 async def google_search_grounding(
     credentials,
@@ -86,10 +140,11 @@ async def google_search_grounding(
         # The model will automatically search and cite sources
         response = client.models.generate_content(
             model=grounding_model,
-            contents=f"Search the web and answer: {query}",
+            contents=query,
             config=types.GenerateContentConfig(
                 tools=[google_search_tool],
                 response_modalities=["TEXT"],
+                system_instruction=_grounding_system_instruction(query),
             )
         )
 
@@ -151,7 +206,8 @@ async def google_search_grounding(
 
 async def google_custom_search(
     query: str,
-    num_results: int = 10
+    num_results: int = 10,
+    locale: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Perform web search using Google Custom Search API (Programmable Search Engine)
@@ -167,6 +223,8 @@ async def google_custom_search(
     Args:
         query: Search query
         num_results: Number of results (max 10 per request)
+        locale: Two-letter country/language code for gl+hl. None auto-detects
+            Croatian and leaves other queries on the API default.
 
     Returns:
         Dictionary with search results
@@ -200,6 +258,12 @@ async def google_custom_search(
             "q": query,
             "num": min(num_results, 10)  # API max is 10
         }
+
+        if locale is None and _looks_croatian(query):
+            locale = "hr"
+        if locale:
+            params["gl"] = locale
+            params["hl"] = locale
 
         async with aiohttp.ClientSession() as session:
             async with session.get(base_url, params=params) as response:
@@ -278,33 +342,58 @@ async def google_search_simple(
     num_results: int = 10
 ) -> Dict[str, Any]:
     """
-    Simple web search that returns just URLs and snippets
+    Web search returning raw results: one title, URL and snippet per hit.
 
-    Uses Custom Search API directly for reliability (avoids Vertex AI quota issues).
+    Goes straight to the Custom Search API. It deliberately does NOT call
+    google_search_grounding: grounding returns a single AI-written summary, and
+    a researcher handed a summary here has nothing left to open and read. Use
+    google_search_grounding for a quick overview, this for sources to scrape.
+
+    Falls back to grounding only when Custom Search is not configured, and says
+    so in `search_method` and `warning` rather than pretending these are raw hits.
 
     Args:
         credentials: Google Cloud credentials (not used, kept for API consistency)
         query: Search query
-        num_results: Number of results to return
+        num_results: Number of results to return (max 10 per request)
 
     Returns:
-        Dictionary with search results
+        Dictionary with `results`: [{"url", "title", "snippet"}, ...]
     """
     try:
         logger.info(f"Executing simple Google Search: {query}")
 
-        # Use Vertex AI Grounding as primary search method
-        full_result = await google_search_grounding(
+        full_result = await google_custom_search(query=query, num_results=num_results)
+
+        if not full_result.get("error"):
+            return {
+                "query": query,
+                "results": full_result.get("sources", []),
+                "result_count": full_result.get("source_count", 0),
+                "search_method": full_result.get("search_method", "custom_search_api")
+            }
+
+        # Custom Search unavailable (no key/cx, or quota). Grounding still answers,
+        # but its "sources" are citations behind a summary, not a result list.
+        logger.warning(
+            "Custom Search unavailable (%s), falling back to grounding citations",
+            full_result.get("error"),
+        )
+        grounded = await google_search_grounding(
             credentials=credentials,
-            query=f"Find information about: {query}",
+            query=query,
             max_results=num_results
         )
 
         return {
             "query": query,
-            "results": full_result.get("sources", []),
-            "result_count": full_result.get("source_count", 0),
-            "search_method": full_result.get("search_method", "vertex_ai_grounding")
+            "results": grounded.get("sources", []),
+            "result_count": grounded.get("source_count", 0),
+            "search_method": "vertex_ai_grounding_fallback",
+            "warning": (
+                "Custom Search unavailable; these are grounding citations, not raw "
+                "search results. Open the pages before quoting anything from them."
+            )
         }
 
     except Exception as e:
@@ -357,7 +446,7 @@ def register_google_search_tools(tool_registry) -> None:
     tool_registry.register_tool(
         name="google_search_simple",
         function=google_search_simple,
-        description="Simple web search that returns URLs and snippets without AI summarization.",
+        description="Web search returning raw results (title, URL, snippet) via Google Custom Search. Use this to find pages to open; use google_search_grounding for a quick AI overview.",
         parameters={
             "type": "object",
             "properties": {
