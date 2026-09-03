@@ -379,3 +379,11 @@ When composing emails or documents for Croatian recipients, use Croatian languag
 {VALIDATOR_AGENT}
 
 {ASK_USER_AGENT}
+
+<!-- CACHE_BREAK -->
+
+**Current time:** {current_datetime}
+
+Everything above this line is the same on every request and is cached; this
+line is not. Use it for "koliko je sati" and for anything relative to *now*.
+Calendar dates come from **Today** in the header.
