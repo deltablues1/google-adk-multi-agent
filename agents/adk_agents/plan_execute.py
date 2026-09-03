@@ -26,6 +26,7 @@ path can only help the failing case — it never degrades the working ones.
 """
 
 import os
+import unicodedata
 import re
 import json
 import logging
@@ -269,6 +270,65 @@ def _looks_failed(result: str) -> bool:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+# --- Cheap pre-filter: is it even worth asking the planner? -----------------
+#
+# The planner is a full Sonnet call (~2.7k input tokens, ~4 s) and it ran ahead
+# of every orchestrated request, including the ones it immediately declared
+# single-step. "Upali svjetlo" does not need a plan.
+#
+# The voice path prepends a persona block before the transcript, so the user's
+# own words have to be recovered before anything is counted.
+_VOICE_PROFILE_END = "[/VOICE_ASSISTANT_PROFILE]"
+_VOICE_TRANSCRIPT_PREFIXES = (
+    "Korisnik je rekao:", "User request:", "User question:",
+)
+
+# Joiners that actually chain one action onto another.
+_CHAIN_MARKERS = (
+    " i posalji", " i poslji", " i napravi", " i spremi", " i dodaj", " i javi",
+    " i upisi", " i posalje", " pa posalji", " pa napravi", " pa mi", " pa ga",
+    " zatim", " te mi", " te ga", " nakon toga", " onda ",
+    " and send", " and create", " and email", " and add", " then ",
+)
+
+
+def _user_text(message: str) -> str:
+    """The user's own words, with any voice persona preamble stripped."""
+    _, sep, tail = message.partition(_VOICE_PROFILE_END)
+    text = tail if sep else message
+    for prefix in _VOICE_TRANSCRIPT_PREFIXES:
+        idx = text.find(prefix)
+        if idx != -1:
+            text = text[idx + len(prefix):]
+            break
+    return text.strip()
+
+
+def _looks_multi_step(message: str) -> bool:
+    """True when a request is worth a planner call.
+
+    Deliberately generous: a false positive costs one planner call, a false
+    negative only means the Smart Orchestrator handles the request itself,
+    which is exactly what happens today when the planner says "single step".
+    """
+    try:
+        threshold = int(os.getenv("PLAN_EXECUTE_MIN_WORDS", "12"))
+    except ValueError:
+        threshold = 12
+    if threshold <= 0:  # opt out of the shortcut entirely
+        return True
+
+    text = _user_text(message)
+    # Fold Croatian diacritics so "pošalji" matches the ASCII marker list,
+    # and collapse whitespace so a line break cannot hide a joiner.
+    folded = unicodedata.normalize("NFKD", text.lower())
+    folded = folded.encode("ascii", "ignore").decode("ascii")
+    lowered = " " + " ".join(folded.split()) + " "
+    if any(marker in lowered for marker in _CHAIN_MARKERS):
+        return True
+    return len(text.split()) >= threshold
+
+
 async def run_plan_execute(
     user_message: str,
     worker_agents: List[Any],
@@ -298,6 +358,10 @@ async def run_plan_execute(
     Returns:
         Final user-facing answer text.
     """
+    if not _looks_multi_step(user_message):
+        logger.info("[PLAN] Short single-action request — skipping planner.")
+        return await fallback(user_message)
+
     agents_by_name = {getattr(a, "name", ""): a for a in worker_agents}
     valid_agents = set(agents_by_name)
 
