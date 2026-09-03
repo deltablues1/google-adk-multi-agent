@@ -311,6 +311,54 @@ def _tool_loop_before(tool=None, args=None, tool_context=None, **_kwargs):
     return None
 
 
+# ---- Per-tool call budget -------------------------------------------------
+# The researcher's prompt says "at most 15 tool calls". On 2026-09-03 it made
+# 16 google_search_simple calls in one run and was still going at 24 minutes,
+# because a sentence in a prompt is not a limit. The loop guard above only
+# catches the *same* failing call repeated; a model that keeps inventing new
+# queries walks past it.
+#
+# The cap is per (run, tool), not per run: an orchestrator legitimately calls
+# sixteen different workers, while sixteen calls to one search tool is a loop.
+
+_tool_call_counts: Dict[tuple, int] = {}
+
+
+def _tool_budget() -> int:
+    try:
+        return max(1, int(os.getenv("AGENT_MAX_CALLS_PER_TOOL", "12")))
+    except ValueError:
+        return 12
+
+
+def _tool_budget_before(tool=None, args=None, tool_context=None, **_kwargs):
+    invocation = getattr(tool_context, "invocation_id", None) or "global"
+    name = getattr(tool, "name", None) or getattr(tool, "__name__", "?")
+    key = (invocation, name)
+
+    count = _tool_call_counts.get(key, 0) + 1
+    _tool_call_counts[key] = count
+    if len(_tool_call_counts) > 4096:  # bounded memory
+        _tool_call_counts.clear()
+
+    budget = _tool_budget()
+    if count <= budget:
+        return None
+
+    logger.warning(
+        "Tool budget exhausted: '%s' called %d times in one run (limit %d)",
+        name, count, budget,
+    )
+    return {
+        "error": (
+            f"TOOL BUDGET: '{name}' has been called {count} times in this run, "
+            f"over the limit of {budget}. Stop calling it. Write your answer "
+            "from what you already have, and state plainly what you could not "
+            "confirm."
+        )
+    }
+
+
 def _is_agent_tool(tool) -> bool:
     """True for a sub-agent exposed as a tool (ADK AgentTool)."""
     try:
@@ -546,10 +594,10 @@ def create_adk_agent(
 
         agent_kwargs["before_tool_callback"] = (
             [_log_tool_call, _agent_tool_args_guard, _tool_loop_before,
-             approval_before_tool, before_tool_callback]
+             _tool_budget_before, approval_before_tool, before_tool_callback]
             if before_tool_callback is not None
             else [_log_tool_call, _agent_tool_args_guard, _tool_loop_before,
-                  approval_before_tool]
+                  _tool_budget_before, approval_before_tool]
         )
         agent_kwargs["after_tool_callback"] = (
             [_tool_loop_after, _log_tool_result, after_tool_callback]
