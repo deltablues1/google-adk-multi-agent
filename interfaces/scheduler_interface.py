@@ -150,6 +150,14 @@ class SchedulerInterface(BaseInterface):
 
         logger.info(f"[SCHEDULER] Executing job '{job_id}': {job_config.agent_request}")
 
+        # Nobody is in the loop at 07:30. Bind the run to its own session and
+        # mark it autonomous, so a tool that needs a user's confirmation is
+        # refused outright rather than left pending under the default "global"
+        # session, where a "da" typed later in Telegram could arm it.
+        from services import approvals
+        approvals.set_session(f"scheduler-{job_id}")
+        approvals.set_autonomous(True)
+
         start_time = time.time()
         attempt = 0
         max_attempts = job_config.max_retries + 1

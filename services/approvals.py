@@ -48,6 +48,11 @@ DEFAULT_TTL_SECONDS = 120.0
 PROPOSAL_TTL_SECONDS = 600.0
 
 _session_var: ContextVar[str] = ContextVar("approval_session", default="global")
+# A run with nobody to ask. The scheduler fires jobs at 07:30 with no user in
+# the loop, so a gated action there can never be confirmed — and must not be
+# left pending either, or a "da" typed later in an unrelated channel could arm
+# it. Autonomous runs are refused outright instead.
+_autonomous_var: ContextVar[bool] = ContextVar("approval_autonomous", default=False)
 _seq = itertools.count()
 
 
@@ -88,6 +93,15 @@ def set_session(session_id: Optional[str]) -> None:
 
 def current_session() -> str:
     return _session_var.get()
+
+
+def set_autonomous(flag: bool) -> None:
+    """Mark this run as having no user to ask (scheduler, background jobs)."""
+    _autonomous_var.set(bool(flag))
+
+
+def is_autonomous() -> bool:
+    return _autonomous_var.get()
 
 
 def _norm(session_id: Optional[str]) -> str:
@@ -235,3 +249,4 @@ def reset() -> None:
     """
     _PENDING.clear()
     _session_var.set("global")
+    _autonomous_var.set(False)

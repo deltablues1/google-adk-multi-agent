@@ -136,10 +136,31 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
     try:
         if not rule.when(args):
             return None
-        action_id = approvals.fingerprint(name, **rule.key(args))
         question = rule.question(args)
     except Exception as exc:  # a broken rule must not block the house
         logger.warning("Approval rule for '%s' failed, letting the call through: %s", name, exc)
+        return None
+
+    if approvals.is_autonomous():
+        # Nobody is listening. Registering here would leave a pending approval
+        # that a later "da" in some other channel could arm, and returning
+        # "ask the user" would send the model round the loop guard for nothing.
+        logger.warning("[APPROVAL] refusing %s in an autonomous run: %s", name, question)
+        return {
+            "status": "not_permitted",
+            "action": name,
+            "error": "AUTONOMOUS_RUN_NEEDS_CONFIRMATION",
+            "message": (
+                f"Radnja '{question}' traži potvrdu korisnika, a ovo je automatski "
+                "posao bez korisnika. Nemoj ponavljati poziv — javi u odgovoru da "
+                "radnja nije izvršena i zašto."
+            ),
+        }
+
+    try:
+        action_id = approvals.fingerprint(name, **rule.key(args))
+    except Exception as exc:  # a broken rule must not block the house
+        logger.warning("Approval key for '%s' failed, letting the call through: %s", name, exc)
         return None
 
     if approvals.redeem(action_id):

@@ -142,3 +142,38 @@ class TestTheReplyGoesBackToTheRightAgent:
     def test_a_mail_question_pins_the_mailer_lane(self):
         _call("gmail_send_message", to="stranac@example.com", subject="x")
         assert approvals.pending_lane("s1") == "mailer"
+
+
+class TestAutonomousRuns:
+    """The scheduler fires at 07:30 with nobody to ask."""
+
+    def test_a_gated_action_is_refused_not_held(self):
+        approvals.set_autonomous(True)
+        result = _call("gmail_send_message", to="stranac@example.com", subject="Izvještaj")
+
+        assert result["status"] == "not_permitted"
+        assert result["error"] == "AUTONOMOUS_RUN_NEEDS_CONFIRMATION"
+
+    def test_nothing_is_left_pending_for_a_later_yes_to_arm(self):
+        """Registering here is the dangerous part: a 'da' typed in Telegram
+        hours later must not authorise a job's held mail."""
+        approvals.set_autonomous(True)
+        _call("gmail_send_message", to="stranac@example.com", subject="Izvještaj")
+
+        assert approvals.has_pending("s1") is False
+        assert approvals.has_pending("global") is False
+
+    def test_the_model_is_told_to_stop_rather_than_retry(self):
+        approvals.set_autonomous(True)
+        result = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert "Nemoj ponavljati poziv" in result["message"]
+
+    def test_ungated_work_still_runs_autonomously(self):
+        approvals.set_autonomous(True)
+        assert _call("erp_find_product", query="cijev") is None
+        assert _call("gmail_send_message", to="ivan@lux-tech.hr", subject="x") is None
+
+    def test_interactive_runs_are_unaffected(self):
+        approvals.set_autonomous(False)
+        held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert held["status"] == "needs_confirmation"
