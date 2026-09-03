@@ -498,9 +498,16 @@ def create_adk_agent(
     # (before) / keeps the first non-None override (after) — the guard returns
     # None in the happy path, so caller callbacks still run.
     if tools:
+        # The approval gate goes after the loop guard and before any caller
+        # guardrail: a consequential call must be held for a real user turn no
+        # matter which agent is making it, so it is wired in here rather than
+        # left to each agent to remember.
+        from services.approval_gate import approval_before_tool
+
         agent_kwargs["before_tool_callback"] = (
-            [_log_tool_call, _tool_loop_before, before_tool_callback]
-            if before_tool_callback is not None else [_log_tool_call, _tool_loop_before]
+            [_log_tool_call, _tool_loop_before, approval_before_tool, before_tool_callback]
+            if before_tool_callback is not None
+            else [_log_tool_call, _tool_loop_before, approval_before_tool]
         )
         agent_kwargs["after_tool_callback"] = (
             [_tool_loop_after, _log_tool_result, after_tool_callback]
