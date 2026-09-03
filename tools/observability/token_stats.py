@@ -42,7 +42,13 @@ PRICES: Dict[str, tuple] = {
     "gemini-2.5-pro": (1.25, 10.00),
     "gemini-3.1-pro": (1.25, 10.00),
     "gemini-3-pro": (1.25, 10.00),
-    # Claude (public list price) — for comparison if you swap via LiteLLM.
+    # Claude (public list price). ORDER MATTERS: _price_for takes the first
+    # substring match in insertion order, so version-specific keys come first.
+    # Sonnet 5 is $2/$10; the generic "claude-sonnet" below is Sonnet 4.6's
+    # $3/$15, which is what every report used until 2026-09-03 — overstating
+    # the bill by ~50% for a fleet that runs on Sonnet 5.
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-fable": (10.00, 50.00),
     "claude-opus": (5.00, 25.00),
     "claude-sonnet": (3.00, 15.00),
     "claude-haiku": (1.00, 5.00),

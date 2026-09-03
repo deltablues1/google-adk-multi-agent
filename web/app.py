@@ -72,7 +72,12 @@ _cost_tracker = {
     "session_costs": [],
 }
 
-# Pricing (USD) — Vertex AI Gemini, April 2026
+# Pricing (USD) — Vertex AI Gemini and media, April 2026.
+#
+# LLM token spend is NOT tracked here: _track_llm below has no callers, and its
+# _PRICING.get(key, (0, 0)) fallback would price every Claude call at zero
+# anyway. The live token accounting is tools/observability/token_stats.py
+# (behind /tokens) — fix prices there, not here.
 _PRICING = {
     # model_key: (input_per_1M, output_per_1M)
     "gemini-3.5-flash":    (0.10,  0.40),  # GA default workhorse
