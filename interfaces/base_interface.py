@@ -156,6 +156,10 @@ VOICE_ROUTING_USER_PREFIXES = (
 # the two answer different questions: how to route, and whether anyone hears it.
 SPOKEN_CHANNEL_USER_PREFIXES = VOICE_ROUTING_USER_PREFIXES
 
+# The one channel whose window closes on its own: a phone's Assist dialogue
+# ends when the screen sleeps, taking the pipeline run with it.
+HA_ASSIST_USER_PREFIX = "ha-assist"
+
 LOCAL_VOICE_ROUTE = "local_voice_response"
 WEATHER_VOICE_ROUTE = "local_weather_response"
 BRIEFING_VOICE_ROUTE = "local_briefing_response"
@@ -302,6 +306,48 @@ class BaseInterface(ABC):
             await asyncio.get_event_loop().run_in_executor(None, hook, text)
         except Exception:
             logger.debug("Working-ack hook failed", exc_info=True)
+
+    async def _run_orchestration_for_voice(
+        self, prompt: str, user_id: str, question: str
+    ) -> str:
+        """Run the orchestrator without betting the answer on the window staying open.
+
+        Home Assistant Assist on a phone gives up long before the orchestrator
+        does. Measured 2026-09-03: a 53 s turn was spoken back in full, while a
+        3 min 25 s research task finished on this side with nobody left
+        listening. So the run gets a grace period; past it the user is told the
+        work continues, and `services/late_answer` puts the result on the phone
+        when it lands.
+
+        Only Assist defers. The wake word has a speaker in the room and a loop
+        patient enough to use it, and text channels have no window to lose.
+        """
+        if not user_id.startswith(HA_ASSIST_USER_PREFIX):
+            return await self.system.run_orchestration(prompt)
+
+        try:
+            grace = float(os.getenv("VOICE_DEFER_AFTER_SECONDS", "25"))
+        except ValueError:
+            grace = 25.0
+        if grace <= 0:
+            return await self.system.run_orchestration(prompt)
+
+        task = asyncio.ensure_future(self.system.run_orchestration(prompt))
+        try:
+            # shield, not wait_for on the task itself: the timeout must end the
+            # waiting, never the work.
+            return await asyncio.wait_for(asyncio.shield(task), timeout=grace)
+        except asyncio.TimeoutError:
+            pass
+
+        from services.late_answer import deliver_when_done
+
+        deliver_when_done(task, question)
+        logger.info("Voice task deferred after %.0fs; answer will go to the phone", grace)
+        return os.getenv(
+            "VOICE_DEFER_ACK_TEXT",
+            "Ovo će potrajati. Nastavljam raditi i poslat ću ti odgovor na mobitel čim bude gotov.",
+        )
 
     @staticmethod
     def _voice_friendly_error(exc: Exception) -> str:
@@ -690,7 +736,11 @@ class BaseInterface(ABC):
             logger.info("voice_qa escalated to orchestrator: %r", message[:120])
             await self._speak_working_ack()
             from config.voice_persona import wrap_agent_voice_message
-            return await self.system.run_orchestration(wrap_agent_voice_message(message))
+            return await self._run_orchestration_for_voice(
+                wrap_agent_voice_message(message),
+                user_id=user_id,
+                question=message,
+            )
 
         return response
 
@@ -801,8 +851,10 @@ class BaseInterface(ABC):
                         # this LLM boundary (routing above saw the raw text).
                         await self._speak_working_ack()
                         from config.voice_persona import wrap_agent_voice_message
-                        result = await self.system.run_orchestration(
-                            wrap_agent_voice_message(message)
+                        result = await self._run_orchestration_for_voice(
+                            wrap_agent_voice_message(message),
+                            user_id=user_id,
+                            question=message,
                         )
                 elif direct_agent == "socrates":
                     self.system.active_mode = "CLASSROOM"
