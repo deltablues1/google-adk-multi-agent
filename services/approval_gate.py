@@ -203,6 +203,21 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
         return None
 
     approvals.register(action_id, question=question, lane=rule.lane)
+
+    # register() arms immediately when the user already said yes this turn, so
+    # ask again right here. Checking only before registering meant the hold was
+    # decided before the consent was applied, and a confirmation that arrived
+    # ahead of the attempt was recorded and then thrown away unused.
+    if approvals.redeem(action_id):
+        logger.info("[APPROVAL] %s armed by this turn's confirmation", name)
+        _clear_holds(tool_context, action_id)
+        if rule.on_confirmed is not None:
+            try:
+                rule.on_confirmed(args)
+            except Exception as exc:
+                logger.warning("Post-approval hook for '%s' failed: %s", name, exc)
+        return None
+
     holds = _record_hold(tool_context, action_id)
     logger.info(
         "[APPROVAL] holding %s until the user confirms (attempt %d): %s",

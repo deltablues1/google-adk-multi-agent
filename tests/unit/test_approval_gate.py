@@ -308,3 +308,29 @@ class TestRepeatingAHeldCallInTheSameTurn:
 
         # A later, separate request for the same action asks politely again.
         assert "Već si" not in self._held(ctx)["message"]
+
+
+class TestConsentGivenBeforeTheAttempt:
+    """The gate used to decide the hold before applying a confirmation that had
+    already arrived, so a yes given ahead of the attempt was recorded and then
+    thrown away — a calendar deletion sat unexecuted through three turns."""
+
+    def test_a_yes_from_this_turn_lets_the_call_through(self):
+        approvals.on_user_turn("s1", affirmative=True)   # nothing pending yet
+        assert _call("calendar_delete_event", event_id="E1") is None
+
+    def test_without_a_yes_it_is_still_held(self):
+        approvals.on_user_turn("s1", affirmative=False)
+        assert _call("calendar_delete_event", event_id="E1")["status"] == "needs_confirmation"
+
+    def test_one_yes_still_covers_only_one_action(self):
+        approvals.on_user_turn("s1", affirmative=True)
+        assert _call("calendar_delete_event", event_id="E1") is None
+        assert _call("erp_adjust_stock", product_id="P1", quantity_delta=-5) is not None
+
+    def test_a_mail_let_through_this_way_still_learns_the_address(self):
+        from services import known_recipients
+
+        approvals.on_user_turn("s1", affirmative=True)
+        assert _call("gmail_send_message", to="novi@example.com", subject="x") is None
+        assert known_recipients.is_known("novi@example.com") is True
