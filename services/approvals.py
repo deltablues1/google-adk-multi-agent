@@ -75,6 +75,24 @@ class _Pending:
 
 _PENDING: Dict[Tuple[str, str], _Pending] = {}
 
+# "The user said yes this turn, but nothing was waiting for it."
+# A gate that only ever arms on the NEXT message spends a turn whenever the
+# model asks its own clarifying question first — measured 2026-09-04, deleting
+# a calendar event took three turns because turn one was spent identifying
+# which event. The consent is real, it just arrived before the attempt.
+_affirmative_turn: Dict[str, bool] = {}
+
+# What was executed a moment ago, so a repeated "da" cannot run it twice.
+_recently_redeemed: Dict[Tuple[str, str], float] = {}
+REDEEM_MEMORY_SECONDS = 120.0
+
+
+def allow_same_turn() -> bool:
+    """Whether a yes may authorise an action attempted later in the same turn."""
+    return os.getenv("APPROVAL_ALLOW_SAME_TURN", "true").lower() in (
+        "1", "true", "yes", "on"
+    )
+
 
 def default_ttl() -> float:
     try:
@@ -136,6 +154,20 @@ def register(
 ) -> None:
     """Record that this action is waiting for the user. Never armed on creation."""
     sess = _norm(session or current_session())
+
+    # The user's yes came before the attempt. Honour it once, for one action,
+    # and never for something already executed on the back of the same word.
+    armed_now = False
+    if (
+        arm_mode == AFFIRMATIVE
+        and allow_same_turn()
+        and _affirmative_turn.get(sess)
+        and not _redeemed_recently(sess, action_id)
+    ):
+        armed_now = True
+        _affirmative_turn[sess] = False
+        logger.info("Approval armed by this turn's confirmation: %s", action_id)
+
     _PENDING[(sess, action_id)] = _Pending(
         action_id=action_id,
         session=sess,
@@ -145,8 +177,14 @@ def register(
         seq=next(_seq),
         question=question,
         lane=lane,
+        armed=armed_now,
         meta=dict(meta or {}),
     )
+
+
+def _redeemed_recently(session: str, action_id: str) -> bool:
+    stamp = _recently_redeemed.get((session, action_id))
+    return stamp is not None and (time.monotonic() - stamp) < REDEEM_MEMORY_SECONDS
 
 
 def _purge(now: float) -> None:
@@ -172,6 +210,11 @@ def on_user_turn(session_id: Optional[str], *, affirmative: bool) -> Optional[st
     _purge(now)
 
     armed_id = None
+    had_affirmative_pending = any(
+        e.arm_mode == AFFIRMATIVE for e in _live(sess, now)
+    )
+    _affirmative_turn[sess] = bool(affirmative) and not had_affirmative_pending
+
     for entry in _live(sess, now):
         if entry.arm_mode == NEXT_TURN:
             entry.armed = True
@@ -205,6 +248,9 @@ def redeem(action_id: str, *, session: Optional[str] = None) -> bool:
     if not entry.armed:
         return False
     del _PENDING[(sess, action_id)]
+    _recently_redeemed[(sess, action_id)] = time.monotonic()
+    if len(_recently_redeemed) > 2048:  # bounded memory
+        _recently_redeemed.clear()
     return True
 
 
@@ -248,5 +294,7 @@ def reset() -> None:
     then fails only when the suite runs in order.
     """
     _PENDING.clear()
+    _affirmative_turn.clear()
+    _recently_redeemed.clear()
     _session_var.set("global")
     _autonomous_var.set(False)

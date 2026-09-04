@@ -181,3 +181,61 @@ class TestLaneRouting:
 
     def test_no_lane_when_nothing_is_waiting(self):
         assert approvals.pending_lane("s1") is None
+
+
+class TestConfirmationThatArrivesBeforeTheAttempt:
+    """A gate that only ever arms on the NEXT message spends a whole turn
+    whenever the model asks its own clarifying question first. Deleting a
+    calendar event took three turns on 2026-09-04 because turn one went on
+    identifying which event. The consent was real; it just arrived early."""
+
+    def test_a_yes_authorises_the_action_attempted_in_that_turn(self):
+        approvals.on_user_turn("s1", affirmative=True)   # nothing pending yet
+        approvals.register("cal:delete-1")               # model tries afterwards
+        assert approvals.redeem("cal:delete-1") is True
+
+    def test_it_authorises_only_one_action(self):
+        approvals.on_user_turn("s1", affirmative=True)
+        approvals.register("cal:delete-1")
+        approvals.register("erp:adjust-1")
+        assert approvals.redeem("cal:delete-1") is True
+        assert approvals.redeem("erp:adjust-1") is False
+
+    def test_a_non_affirmative_turn_authorises_nothing(self):
+        approvals.on_user_turn("s1", affirmative=False)
+        approvals.register("cal:delete-1")
+        assert approvals.redeem("cal:delete-1") is False
+
+    def test_the_model_still_cannot_act_without_any_user_message(self):
+        approvals.register("cal:delete-1")
+        assert approvals.redeem("cal:delete-1") is False
+
+    def test_an_echoed_yes_cannot_repeat_what_just_ran(self):
+        approvals.on_user_turn("s1", affirmative=True)
+        approvals.register("erp:adjust-5")
+        assert approvals.redeem("erp:adjust-5") is True
+
+        approvals.on_user_turn("s1", affirmative=True)   # the echo
+        approvals.register("erp:adjust-5")
+        assert approvals.redeem("erp:adjust-5") is False
+
+    def test_a_pending_question_still_takes_precedence(self):
+        """When something IS waiting, the yes belongs to it, not to whatever
+        the model tries next."""
+        approvals.register("mqtt:bojler-off")
+        approvals.on_user_turn("s1", affirmative=True)
+        approvals.register("erp:adjust-1")
+
+        assert approvals.redeem("erp:adjust-1") is False
+        assert approvals.redeem("mqtt:bojler-off") is True
+
+    def test_it_can_be_switched_off(self, monkeypatch):
+        monkeypatch.setenv("APPROVAL_ALLOW_SAME_TURN", "false")
+        approvals.on_user_turn("s1", affirmative=True)
+        approvals.register("cal:delete-1")
+        assert approvals.redeem("cal:delete-1") is False
+
+    def test_slot_proposals_are_unaffected(self):
+        approvals.on_user_turn("s1", affirmative=True)
+        approvals.register("cal:slot-1", arm_mode=approvals.NEXT_TURN)
+        assert approvals.redeem("cal:slot-1") is False
