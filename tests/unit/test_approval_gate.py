@@ -24,14 +24,16 @@ class _Tool:
 
 @pytest.fixture(autouse=True)
 def clean(monkeypatch, tmp_path):
-    from services import known_recipients
+    from services import approval_gate, known_recipients
 
+    approval_gate._holds_this_run.clear()
     approvals.reset()
     approvals.set_session("s1")
     monkeypatch.setenv("APPROVAL_TRUSTED_EMAIL_DOMAINS", "lux-tech.hr")
     monkeypatch.setenv("KNOWN_RECIPIENTS_FILE", str(tmp_path / "known.json"))
     known_recipients.reset()
     yield
+    approval_gate._holds_this_run.clear()
     approvals.reset()
     known_recipients.reset()
 
@@ -229,3 +231,70 @@ class TestTheHeldMessageExplainsTheRelay:
     def test_it_says_nothing_was_executed(self):
         held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
         assert "NIJE izvršena" in held["message"]
+
+
+class TestRepeatingAHeldCallInTheSameTurn:
+    """Asking is something you do once.
+
+    On 2026-09-04 a model re-issued the same held call five times inside one
+    turn — five billed round-trips that could not possibly succeed, because the
+    approval only arms on the user's next message and the user cannot answer
+    while the turn is still running."""
+
+    class _Ctx:
+        def __init__(self, invocation_id="run-1"):
+            self.invocation_id = invocation_id
+
+    def _held(self, ctx):
+        from services.approval_gate import approval_before_tool
+
+        return approval_before_tool(
+            tool=_Tool("erp_adjust_stock"),
+            args={"product_id": "P1", "quantity_delta": -5},
+            tool_context=ctx,
+        )
+
+    @pytest.fixture(autouse=True)
+    def _clear(self):
+        from services import approval_gate
+
+        approval_gate._holds_this_run.clear()
+        yield
+        approval_gate._holds_this_run.clear()
+
+    def test_the_first_hold_asks_politely(self):
+        first = self._held(self._Ctx())
+        assert "Već si" not in first["message"]
+
+    def test_the_second_tells_it_to_stop(self):
+        ctx = self._Ctx()
+        self._held(ctx)
+        second = self._held(ctx)
+        assert "PRESTANI" in second["message"]
+        assert "NE MOŽE uspjeti" in second["message"]
+
+    def test_it_counts_the_attempts(self):
+        ctx = self._Ctx()
+        for _ in range(3):
+            result = self._held(ctx)
+        assert "3 puta" in result["message"]
+
+    def test_a_different_run_starts_over(self):
+        self._held(self._Ctx("run-1"))
+        fresh = self._held(self._Ctx("run-2"))
+        assert "Već si" not in fresh["message"]
+
+    def test_the_counter_clears_once_it_goes_through(self):
+        from services.approval_gate import approval_before_tool
+
+        ctx = self._Ctx()
+        self._held(ctx)
+        approvals.on_user_turn("s1", affirmative=True)
+        assert approval_before_tool(
+            tool=_Tool("erp_adjust_stock"),
+            args={"product_id": "P1", "quantity_delta": -5},
+            tool_context=ctx,
+        ) is None
+
+        # A later, separate request for the same action asks politely again.
+        assert "Već si" not in self._held(ctx)["message"]

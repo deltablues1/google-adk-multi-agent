@@ -116,6 +116,28 @@ RULES: Dict[str, _Rule] = {
 }
 
 
+# How many times one action has already been held inside the current run.
+# Asking the user is a thing you do once: on 2026-09-04 a model re-issued the
+# same held call five times in a single turn, each a billed round-trip that
+# could not possibly succeed, because nothing said "you already asked".
+_holds_this_run: Dict[tuple, int] = {}
+
+
+def _record_hold(tool_context, action_id: str) -> int:
+    invocation = getattr(tool_context, "invocation_id", None) or approvals.current_session()
+    key = (invocation, action_id)
+    count = _holds_this_run.get(key, 0) + 1
+    _holds_this_run[key] = count
+    if len(_holds_this_run) > 2048:  # bounded memory
+        _holds_this_run.clear()
+    return count
+
+
+def _clear_holds(tool_context, action_id: str) -> None:
+    invocation = getattr(tool_context, "invocation_id", None) or approvals.current_session()
+    _holds_this_run.pop((invocation, action_id), None)
+
+
 def gate_enabled() -> bool:
     return os.getenv("APPROVAL_GATE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 
@@ -163,6 +185,7 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
 
     if approvals.redeem(action_id):
         logger.info("[APPROVAL] redeemed for %s", name)
+        _clear_holds(tool_context, action_id)
         if rule.on_confirmed is not None:
             try:
                 rule.on_confirmed(args)
@@ -171,7 +194,28 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
         return None
 
     approvals.register(action_id, question=question, lane=rule.lane)
-    logger.info("[APPROVAL] holding %s until the user confirms: %s", name, question)
+    holds = _record_hold(tool_context, action_id)
+    logger.info(
+        "[APPROVAL] holding %s until the user confirms (attempt %d): %s",
+        name, holds, question,
+    )
+
+    if holds > 1:
+        # Repeating the call cannot help: the approval only arms on the user's
+        # NEXT message, which cannot arrive while this turn is still running.
+        return {
+            "status": "needs_confirmation",
+            "action": name,
+            "question": question,
+            "message": (
+                f"Već si u ovom turnusu {holds} puta pokušao '{question}'. "
+                "Ponavljanje NE MOŽE uspjeti — odobrenje se aktivira tek kad "
+                "korisnik odgovori, a on ne može odgovoriti dok ti radiš. "
+                "PRESTANI zvati ovaj alat, postavi korisniku pitanje i završi "
+                "odgovor."
+            ),
+        }
+
     return {
         "status": "needs_confirmation",
         "action": name,
