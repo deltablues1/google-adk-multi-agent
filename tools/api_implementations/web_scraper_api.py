@@ -455,7 +455,11 @@ async def scrape_url_jina(
     url: str,
 ) -> dict:
     """
-    Scrape a URL using Jina Reader (r.jina.ai) — free, no API key required.
+    Scrape a URL using Jina Reader (r.jina.ai). Works with no API key at all;
+    JINA_API_KEY, when set, raises the rate limit — which matters because a
+    research run opens several pages in quick succession and an anonymous
+    caller gets throttled first.
+
     Returns clean Markdown. Handles most static and moderately dynamic pages.
 
     Args:
@@ -465,12 +469,16 @@ async def scrape_url_jina(
     Returns:
         Dictionary with content, word_count, url, source, success flag
     """
+    import os as _os
     import requests as _requests
     jina_url = f"https://r.jina.ai/{url}"
     headers = {
         "Accept": "text/plain",
         "X-Return-Format": "markdown",
     }
+    _jina_key = _os.getenv("JINA_API_KEY")
+    if _jina_key:
+        headers["Authorization"] = f"Bearer {_jina_key}"
     try:
         loop = asyncio.get_event_loop()
         resp = await loop.run_in_executor(

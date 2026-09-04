@@ -124,3 +124,42 @@ class TestProviderChain:
         assert result["search_method"] == "vertex_ai_grounding_fallback"
         assert "warning" in result
         assert len(result["providers_tried"]) == 2
+
+
+class TestJinaKeyIsUsedForScrapingToo:
+    """A research run opens several pages in a row; the anonymous caller is the
+    one that gets throttled first."""
+
+    def _headers_for(self, monkeypatch, key):
+        import requests
+
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            text = "x" * 200
+
+        def _fake_get(url, headers=None, timeout=None):
+            captured["headers"] = headers or {}
+            return _Resp()
+
+        monkeypatch.setattr(requests, "get", _fake_get)
+        if key is None:
+            monkeypatch.delenv("JINA_API_KEY", raising=False)
+        else:
+            monkeypatch.setenv("JINA_API_KEY", key)
+
+        import asyncio
+
+        from tools.api_implementations.web_scraper_api import scrape_url_jina
+
+        asyncio.run(scrape_url_jina(None, "https://example.hr"))
+        return captured["headers"]
+
+    def test_the_key_is_sent_when_present(self, monkeypatch):
+        headers = self._headers_for(monkeypatch, "jina_testkey")
+        assert headers["Authorization"] == "Bearer jina_testkey"
+
+    def test_it_still_works_anonymously(self, monkeypatch):
+        headers = self._headers_for(monkeypatch, None)
+        assert "Authorization" not in headers
