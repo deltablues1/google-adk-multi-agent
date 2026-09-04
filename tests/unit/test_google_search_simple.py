@@ -26,6 +26,7 @@ def no_grounding(monkeypatch):
 
 
 def _custom_search_returning(sources, error=None):
+    """Stub shaped like a provider in the chain (query, num_results, locale)."""
     async def _stub(query, num_results=10, locale=None):
         _stub.calls.append({"query": query, "num_results": num_results, "locale": locale})
         if error:
@@ -50,7 +51,7 @@ class TestSimpleSearchReturnsRawHits:
             {"url": "https://b.hr/p2", "title": "Dizalica 12 kW", "snippet": "3.199 EUR"},
         ]
         stub = _custom_search_returning(hits)
-        monkeypatch.setattr(api, "google_custom_search", stub)
+        monkeypatch.setattr(api, "_raw_search_providers", lambda: [("custom_search_api", stub)])
 
         result = await api.google_search_simple(None, "cijene dizalica topline", num_results=10)
 
@@ -62,8 +63,8 @@ class TestSimpleSearchReturnsRawHits:
 
     @pytest.mark.asyncio
     async def test_query_is_passed_through_unwrapped(self, monkeypatch, no_grounding):
-        stub = _custom_search_returning([])
-        monkeypatch.setattr(api, "google_custom_search", stub)
+        stub = _custom_search_returning([{"url": "https://a.hr", "title": "A", "snippet": "s"}])
+        monkeypatch.setattr(api, "_raw_search_providers", lambda: [("custom_search_api", stub)])
 
         await api.google_search_simple(None, "cijena bojlera")
 
@@ -74,11 +75,14 @@ class TestSimpleSearchReturnsRawHits:
 
 class TestGroundingFallbackIsLabelled:
     @pytest.mark.asyncio
-    async def test_unconfigured_custom_search_falls_back_and_warns(self, monkeypatch):
+    async def test_every_raw_provider_down_falls_back_and_warns(self, monkeypatch):
+        """Grounding citations are an AI summary's footnotes, not pages read."""
+        async def _dead(query, num_results, locale):
+            return {"error": "not configured", "sources": [], "source_count": 0}
+
         monkeypatch.setattr(
-            api,
-            "google_custom_search",
-            _custom_search_returning([], error="GOOGLE_CUSTOM_SEARCH_CX not configured"),
+            api, "_raw_search_providers",
+            lambda: [("custom_search_api", _dead), ("duckduckgo_search", _dead)],
         )
 
         async def _grounding(credentials=None, query="", max_results=5, **_kwargs):

@@ -360,6 +360,29 @@ async def google_custom_search(
         }
 
 
+def _raw_search_providers():
+    """Providers that return a list of pages, best first.
+
+    Custom Search when it is configured, Jina when there is a key, and
+    DuckDuckGo — which needs neither — as the one that always answers. Anything
+    unconfigured reports an error and the chain moves on, so adding a key later
+    is enough to promote a provider without touching code.
+    """
+    from tools.api_implementations.search_providers import (
+        duckduckgo_search,
+        jina_search,
+    )
+
+    async def _custom(query, num_results, locale):
+        return await google_custom_search(query, num_results=num_results, locale=locale)
+
+    return [
+        ("custom_search_api", _custom),
+        ("jina_search", jina_search),
+        ("duckduckgo_search", duckduckgo_search),
+    ]
+
+
 async def google_search_simple(
     credentials,
     query: str,
@@ -387,22 +410,26 @@ async def google_search_simple(
     try:
         logger.info(f"Executing simple Google Search: {query}")
 
-        full_result = await google_custom_search(query=query, num_results=num_results)
+        locale = "hr" if _looks_croatian(query) else None
+        tried = []
 
-        if not full_result.get("error"):
-            return {
-                "query": query,
-                "results": full_result.get("sources", []),
-                "result_count": full_result.get("source_count", 0),
-                "search_method": full_result.get("search_method", "custom_search_api")
-            }
+        for name, call in _raw_search_providers():
+            result = await call(query, num_results, locale)
+            error = result.get("error")
+            if not error and result.get("sources"):
+                return {
+                    "query": query,
+                    "results": result.get("sources", []),
+                    "result_count": result.get("source_count", 0),
+                    "search_method": result.get("search_method", name),
+                }
+            tried.append(f"{name}: {error or 'no results'}")
+            logger.info("Raw search provider %s unavailable (%s)", name, error or "no results")
 
-        # Custom Search unavailable (no key/cx, or quota). Grounding still answers,
-        # but its "sources" are citations behind a summary, not a result list.
-        logger.warning(
-            "Custom Search unavailable (%s), falling back to grounding citations",
-            full_result.get("error"),
-        )
+        # Every raw provider is out. Grounding still answers, but its "sources"
+        # are citations behind a summary, not a result list — say so rather than
+        # letting the researcher treat them as pages it has read.
+        logger.warning("No raw search provider worked (%s); falling back to grounding", "; ".join(tried))
         grounded = await google_search_grounding(
             credentials=credentials,
             query=query,
@@ -414,9 +441,11 @@ async def google_search_simple(
             "results": grounded.get("sources", []),
             "result_count": grounded.get("source_count", 0),
             "search_method": "vertex_ai_grounding_fallback",
+            "providers_tried": tried,
             "warning": (
-                "Custom Search unavailable; these are grounding citations, not raw "
-                "search results. Open the pages before quoting anything from them."
+                "No raw search provider was available; these are grounding "
+                "citations, not search results. Open the pages before quoting "
+                "anything from them."
             )
         }
 
