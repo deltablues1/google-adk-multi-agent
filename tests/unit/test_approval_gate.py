@@ -211,3 +211,21 @@ class TestAutonomousRuns:
         approvals.set_autonomous(False)
         held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
         assert held["status"] == "needs_confirmation"
+
+
+class TestTheHeldMessageExplainsTheRelay:
+    """A worker that asks for confirmation is gone by the time the user answers.
+    Forwarding a bare "da" to a fresh instance loops forever without writing —
+    seen on a warehouse entry, 2026-09-04."""
+
+    def test_it_says_the_whole_request_must_be_repeated(self):
+        held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert "CIJELI zahtjev" in held["message"]
+
+    def test_it_warns_that_a_bare_yes_is_useless(self):
+        held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert "'da'" in held["message"]
+
+    def test_it_says_nothing_was_executed(self):
+        held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert "NIJE izvršena" in held["message"]

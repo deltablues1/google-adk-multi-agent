@@ -177,8 +177,11 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
         "action": name,
         "question": question,
         "message": (
-            f"Radnja '{question}' čeka potvrdu. Pitaj korisnika, PRIČEKAJ njegov "
-            "odgovor u sljedećoj poruci, pa ponovi ovaj isti poziv s istim "
-            "argumentima. Ne mijenjaj argumente i ne pretpostavljaj potvrdu."
+            f"Radnja '{question}' čeka potvrdu korisnika i NIJE izvršena. "
+            "Prenesi to pitanje korisniku i stani. Kad korisnik potvrdi, mora "
+            "se ponoviti CIJELI zahtjev s identičnim argumentima — sama riječ "
+            "'da' proslijeđena agentu ne znači ništa, jer agent nastaje iznova "
+            "i ne pamti što je pitao. Ne mijenjaj argumente i ne pretpostavljaj "
+            "potvrdu."
         ),
     }

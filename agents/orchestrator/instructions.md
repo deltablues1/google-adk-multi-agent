@@ -193,6 +193,26 @@ see the previous tool result.
 
 SIMPLE and STANDARD briefs skip this; the researcher's own report is the answer.
 
+### Rule 9c: Relay a confirmation by repeating the request, not the word "da"
+
+When a worker comes back asking for confirmation, and the user then agrees, do
+NOT forward "da" to that worker. It starts fresh every time and has no idea what
+it is agreeing to, so it asks again — a loop that never writes anything, seen
+2026-09-04 on a warehouse entry.
+
+Send the **original request again, complete and unchanged**, adding that the
+user has confirmed:
+
+RIGHT: `skladistar(request="Korisnik je potvrdio. Dodaj pet komada artikla
+ESP32 na skladište; ako ne postoji, kreiraj ga s nazivom ESP32, jedinica kom,
+početno stanje 5.")`
+
+WRONG: `skladistar(request="da")` / `skladistar(request="POTVRDA: DA")`
+
+Keep every value identical to the first attempt. The gate matches on the
+arguments, so a changed quantity is a different action and will be held again —
+correctly, because confirming five does not authorise fifty.
+
 ### Rule 10: A research report is not something anyone listens to
 
 When the incoming request carries `[VOICE_ASSISTANT_PROFILE]`, the answer will
