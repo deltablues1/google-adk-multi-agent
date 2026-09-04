@@ -63,3 +63,19 @@ class TestOrchestratorRelaysTheWholeRequest:
 
     def test_it_says_values_must_not_change(self):
         assert "identical" in self._rule().lower()
+
+
+class TestOrchestratorDoesNotPreEmptTheGate:
+    """Asking before attempting leaves nothing for the user's "da" to arm, so
+    the write stays a full turn away — seen on a stock removal, 2026-09-04."""
+
+    def _rule(self):
+        return ORCHESTRATOR.split("### Rule 9c:")[1].split("### Rule 10")[0]
+
+    def test_it_forbids_asking_on_the_workers_behalf(self):
+        assert "Do not ask for permission on the worker's behalf" in self._rule()
+
+    def test_it_explains_what_asking_first_costs(self):
+        rule = self._rule()
+        assert "nothing waiting" in rule
+        assert "one full turn away" in rule

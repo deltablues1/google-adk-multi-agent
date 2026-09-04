@@ -124,8 +124,11 @@ _holds_this_run: Dict[tuple, int] = {}
 
 
 def _record_hold(tool_context, action_id: str) -> int:
-    invocation = getattr(tool_context, "invocation_id", None) or approvals.current_session()
-    key = (invocation, action_id)
+    # Keyed on the user's session, not the ADK invocation id: the orchestrator
+    # calls a worker as a sub-agent, and each of those calls is its own
+    # invocation. Keying on invocation counted every retry as "attempt 1",
+    # which is exactly the loop this counter exists to interrupt.
+    key = (approvals.current_session(), action_id)
     count = _holds_this_run.get(key, 0) + 1
     _holds_this_run[key] = count
     if len(_holds_this_run) > 2048:  # bounded memory
@@ -134,8 +137,14 @@ def _record_hold(tool_context, action_id: str) -> int:
 
 
 def _clear_holds(tool_context, action_id: str) -> None:
-    invocation = getattr(tool_context, "invocation_id", None) or approvals.current_session()
-    _holds_this_run.pop((invocation, action_id), None)
+    _holds_this_run.pop((approvals.current_session(), action_id), None)
+
+
+def reset_holds(session_id: Optional[str] = None) -> None:
+    """A new user message starts the count over: asking once per turn is fine."""
+    session = session_id or approvals.current_session()
+    for key in [k for k in _holds_this_run if k[0] == session]:
+        del _holds_this_run[key]
 
 
 def gate_enabled() -> bool:

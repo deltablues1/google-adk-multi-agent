@@ -213,6 +213,14 @@ Keep every value identical to the first attempt. The gate matches on the
 arguments, so a changed quantity is a different action and will be held again —
 correctly, because confirming five does not authorise fifty.
 
+**Do not ask for permission on the worker's behalf.** Issue the action. If it
+needs confirming, the system holds it and hands you the question to relay —
+that question is the one to ask. Asking first, before anything has been
+attempted, leaves nothing waiting for the answer: the user's "da" arrives, finds
+no pending action to authorise, and the write is still one full turn away. Seen
+2026-09-04 on a stock removal, where instructing the worker to "find the product
+and ask" cost a turn and desynchronised the whole exchange.
+
 ### Rule 10: A research report is not something anyone listens to
 
 When the incoming request carries `[VOICE_ASSISTANT_PROFILE]`, the answer will

@@ -564,6 +564,11 @@ class BaseInterface(ABC):
         # Bind this turn's tool calls (register/redeem) to the session.
         approvals.set_session(session_id)
 
+        # Asking once per turn is fine; it is the repeat inside one turn that
+        # cannot succeed and must be interrupted.
+        from services.approval_gate import reset_holds
+        reset_holds(session_id)
+
         # Read before arming: on_user_turn consumes and cancels.
         had_pending = approvals.has_pending(session_id)
         lane = approvals.pending_lane(session_id)

@@ -279,10 +279,20 @@ class TestRepeatingAHeldCallInTheSameTurn:
             result = self._held(ctx)
         assert "3 puta" in result["message"]
 
-    def test_a_different_run_starts_over(self):
-        self._held(self._Ctx("run-1"))
-        fresh = self._held(self._Ctx("run-2"))
-        assert "Već si" not in fresh["message"]
+    def test_a_sub_agent_call_does_not_reset_the_count(self):
+        """The orchestrator calls a worker as a sub-agent, and every such call
+        is its own ADK invocation. Counting per invocation made every retry
+        "attempt 1" — the exact loop this counter exists to interrupt."""
+        self._held(self._Ctx("invocation-1"))
+        second = self._held(self._Ctx("invocation-2"))
+        assert "PRESTANI" in second["message"]
+
+    def test_a_new_user_turn_starts_over(self):
+        from services.approval_gate import reset_holds
+
+        self._held(self._Ctx())
+        reset_holds("s1")  # what a new user message does
+        assert "Već si" not in self._held(self._Ctx())["message"]
 
     def test_the_counter_clears_once_it_goes_through(self):
         from services.approval_gate import approval_before_tool
