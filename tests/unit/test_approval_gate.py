@@ -275,9 +275,11 @@ class TestRepeatingAHeldCallInTheSameTurn:
 
     def test_it_counts_the_attempts(self):
         ctx = self._Ctx()
-        for _ in range(3):
-            result = self._held(ctx)
-        assert "3 puta" in result["message"]
+        self._held(ctx)
+        second = self._held(ctx)
+        assert "2 puta" in second["message"]
+        # The third stops being a question at all — see
+        # TestARepeatedHoldBecomesAHardStop.
 
     def test_a_sub_agent_call_does_not_reset_the_count(self):
         """The orchestrator calls a worker as a sub-agent, and every such call
@@ -353,3 +355,35 @@ class TestTheQuestionIsNotPresentedAsAFault:
     def test_it_forbids_calling_it_a_technical_problem(self):
         held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
         assert "tehnički problem" in held["message"]
+
+
+class TestARepeatedHoldBecomesAHardStop:
+    """Advice did not stop it: on 2026-09-04 a calendar deletion was held four
+    times inside one turn, each a billed round-trip that could not succeed."""
+
+    def _held(self, n):
+        for _ in range(n):
+            result = _call("calendar_delete_event", event_id="E1")
+        return result
+
+    def test_the_third_hold_returns_an_error_not_a_question(self):
+        result = self._held(3)
+        assert "error" in result
+        assert "status" not in result
+
+    def test_the_error_says_repeating_cannot_work(self):
+        assert "NEĆE proći" in self._held(3)["error"]
+
+    def test_it_still_forbids_calling_it_a_fault(self):
+        assert "nije kvar" in self._held(3)["error"].lower()
+
+    def test_the_first_two_are_still_questions(self):
+        assert self._held(1)["status"] == "needs_confirmation"
+        assert _call("calendar_delete_event", event_id="E1")["status"] == "needs_confirmation"
+
+    def test_a_new_turn_clears_the_hard_stop(self):
+        from services.approval_gate import reset_holds
+
+        self._held(3)
+        reset_holds("s1")
+        assert _call("calendar_delete_event", event_id="E1")["status"] == "needs_confirmation"

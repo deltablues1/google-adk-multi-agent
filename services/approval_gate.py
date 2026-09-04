@@ -224,6 +224,25 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
         name, holds, question,
     )
 
+    if holds >= 3:
+        # Advice did not stop it: held four times in one turn on a calendar
+        # deletion, 2026-09-04. An "error" key is the shape the loop guard
+        # counts and the model treats as terminal, so this ends the turn
+        # instead of spending more round-trips that cannot succeed.
+        logger.warning(
+            "[APPROVAL] %s held %d times in one turn — returning a hard stop",
+            name, holds,
+        )
+        return {
+            "error": (
+                f"STOP: '{question}' je zadržano {holds} puta u ovom turnusu i "
+                "NEĆE proći koliko god puta pokušao. Odobrenje se aktivira tek "
+                "na korisnikovu sljedeću poruku. Ne zovi više nijedan alat. "
+                "Postavi korisniku pitanje i završi odgovor. Ovo nije kvar nego "
+                "sigurnosni korak — ne opisuj ga kao grešku."
+            )
+        }
+
     if holds > 1:
         # Repeating the call cannot help: the approval only arms on the user's
         # NEXT message, which cannot arrive while this turn is still running.

@@ -79,3 +79,22 @@ class TestOrchestratorDoesNotPreEmptTheGate:
         rule = self._rule()
         assert "nothing waiting" in rule
         assert "one full turn away" in rule
+
+
+class TestOrchestratorDoesNotCallTheGateAFault:
+    """A deletion working exactly as designed was reported as "naišao sam na
+    problem, sustav traži potvrdu u krug" — which teaches the user to distrust
+    the mechanism protecting them."""
+
+    def _rule(self):
+        return ORCHESTRATOR.split("### Rule 9c:")[1].split("### Rule 10")[0]
+
+    def test_it_says_a_confirmation_request_is_not_a_malfunction(self):
+        assert "not a malfunction" in self._rule()
+
+    def test_it_forbids_calling_it_an_error_or_a_loop(self):
+        rule = self._rule()
+        assert "loop" in rule and "error" in rule
+
+    def test_it_says_retrying_in_the_same_turn_cannot_help(self):
+        assert "cannot help" in self._rule()

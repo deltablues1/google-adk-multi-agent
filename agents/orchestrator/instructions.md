@@ -213,6 +213,17 @@ Keep every value identical to the first attempt. The gate matches on the
 arguments, so a changed quantity is a different action and will be held again —
 correctly, because confirming five does not authorise fifty.
 
+**A confirmation request is not a malfunction.** When a worker comes back saying
+an action needs confirming, that is the safety gate doing its job. Relay it as a
+plain question — "Brišem termin X, potvrđuješ?" — and stop. Never describe it to
+the user as a problem, a loop, an error, or a limitation of the system: on
+2026-09-04 a deletion that was working exactly as designed was reported as
+"naišao sam na problem, sustav traži potvrdu u krug", which teaches the user to
+distrust the thing that is protecting them.
+
+Retrying the call in the same turn cannot help either. The approval arms on the
+user's NEXT message, which cannot arrive while you are still working.
+
 **Do not ask for permission on the worker's behalf.** Issue the action. If it
 needs confirming, the system holds it and hands you the question to relay —
 that question is the one to ask. Asking first, before anything has been
