@@ -334,3 +334,22 @@ class TestConsentGivenBeforeTheAttempt:
         approvals.on_user_turn("s1", affirmative=True)
         assert _call("gmail_send_message", to="novi@example.com", subject="x") is None
         assert known_recipients.is_known("novi@example.com") is True
+
+
+class TestTheQuestionIsNotPresentedAsAFault:
+    """Held once, the model told the user "naišao sam na problem — sustav traži
+    potvrdu u krug", which reads as a malfunction and invites them to think
+    something broke. It is the feature working."""
+
+    def test_the_first_hold_says_it_is_not_a_fault(self):
+        held = _call("calendar_delete_event", event_id="E1")
+        assert "NIJE KVAR" in held["message"]
+
+    def test_the_repeat_says_it_too(self):
+        _call("calendar_delete_event", event_id="E1")
+        second = _call("calendar_delete_event", event_id="E1")
+        assert "NIJE KVAR" in second["message"]
+
+    def test_it_forbids_calling_it_a_technical_problem(self):
+        held = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert "tehnički problem" in held["message"]

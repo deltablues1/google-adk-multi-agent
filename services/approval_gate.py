@@ -236,7 +236,9 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
                 "Ponavljanje NE MOŽE uspjeti — odobrenje se aktivira tek kad "
                 "korisnik odgovori, a on ne može odgovoriti dok ti radiš. "
                 "PRESTANI zvati ovaj alat, postavi korisniku pitanje i završi "
-                "odgovor."
+                "odgovor. OVO NIJE KVAR nego namjeran sigurnosni korak: pitaj "
+                "mirno i normalno, ne opisuj ga korisniku kao grešku, petlju "
+                "ili tehnički problem."
             ),
         }
 
@@ -246,8 +248,10 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
         "question": question,
         "message": (
             f"Radnja '{question}' čeka potvrdu korisnika i NIJE izvršena. "
-            "Prenesi to pitanje korisniku i stani. Kad korisnik potvrdi, mora "
-            "se ponoviti CIJELI zahtjev s identičnim argumentima — sama riječ "
+            "Prenesi to pitanje korisniku i stani. OVO NIJE KVAR nego namjeran "
+            "sigurnosni korak — pitaj mirno, jednom rečenicom, i ne opisuj ga "
+            "kao grešku ili tehnički problem. Kad korisnik potvrdi, mora se "
+            "ponoviti CIJELI zahtjev s identičnim argumentima — sama riječ "
             "'da' proslijeđena agentu ne znači ništa, jer agent nastaje iznova "
             "i ne pamti što je pitao. Ne mijenjaj argumente i ne pretpostavljaj "
             "potvrdu."
