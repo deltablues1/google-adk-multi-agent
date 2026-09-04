@@ -64,6 +64,51 @@ ROOM_EXCLUDE = (
 
 CONTROL_DOMAINS = ("light", "switch", "media_player")
 
+# One helper drives every graph on the board, so picking "Mjesec" on Klima
+# leaves Zrak on the same span. Created in Home Assistant as an input_select;
+# "Dan" is its first option and therefore the default after a restart.
+PERIOD_HELPER = "input_select.razdoblje_grafova"
+
+# What each choice means to a statistics graph. Day keeps the five-minute
+# buckets, which is the finest Home Assistant stores and only for ten days;
+# the longer spans coarsen so a year is twelve points per line rather than
+# a hundred thousand.
+PERIODS = (
+    ("Dan", "5minute", 1),
+    ("Tjedan", "hour", 7),
+    ("Mjesec", "day", 31),
+    ("Godina", "month", 365),
+)
+
+
+def period_picker(columns: int = 12, name: str = "Razdoblje") -> dict:
+    return {
+        "type": "entities",
+        "entities": [{"entity": PERIOD_HELPER, "name": name, "icon": "mdi:calendar-range"}],
+        "grid_options": {"columns": columns},
+    }
+
+
+def period_graphs(entities: list[tuple[str, str]], rows: int,
+                  columns: int = 12) -> list[dict]:
+    """The same series once per period, only one of them ever visible."""
+    return [
+        {
+            "type": "conditional",
+            "conditions": [{"condition": "state", "entity": PERIOD_HELPER, "state": label}],
+            "card": {
+                "type": "statistics-graph",
+                "chart_type": "line",
+                "period": period,
+                "days_to_show": days,
+                "stat_types": ["mean"],
+                "entities": [{"entity": e, "name": n} for e, n in entities],
+            },
+            "grid_options": {"columns": columns, "rows": rows},
+        }
+        for label, period, days in PERIODS
+    ]
+
 TEMPERATURES = [
     ("sensor.bme280_mux_node_vanjska_temperatura", "Vani"),
     ("sensor.bme280_mux_node_dnevni_prostor_temperatura", "Boravak"),
@@ -133,18 +178,41 @@ def room_name(name: str, area_label: str) -> str:
     return (trimmed[:1].upper() + trimmed[1:]) if trimmed else name
 
 
-def tile(entity_id: str, name: str, toggle: bool, columns: int = TILE_COLUMNS) -> dict:
+def tile(entity_id: str, name: str, toggle: bool, columns: int = TILE_COLUMNS,
+         vertical: bool = True) -> dict:
+    """One switch. Upright for thumbs, flat for lists.
+
+    An upright tile stacks icon over name over state and costs about 105px; the
+    flat one puts them on a line at 56. The lights and the appliances are grids
+    you aim a thumb at and stay upright; a room is a list of a dozen things and
+    lies flat, which is the difference between the Sobe view fitting the panel
+    and not.
+    """
     card = {
         "type": "tile",
         "entity": entity_id,
         "name": name,
-        "vertical": True,
+        "vertical": vertical,
         "grid_options": {"columns": columns},
         "tap_action": {"action": "toggle"} if toggle else {"action": "more-info"},
     }
     if toggle:
         card["icon_tap_action"] = {"action": "toggle"}
     return card
+
+
+def readings_table(entities: list[tuple[str, str]]) -> dict:
+    """Names on one line, values on the next, no unit repeated five times."""
+    names = " | ".join(name for _, name in entities)
+    values = " | ".join(
+        "{{ states('%s') | float(0) | round(0) }}" % entity_id
+        for entity_id, _ in entities
+    )
+    return {
+        "type": "markdown",
+        "content": f"| {names} |\n" + "|:--:" * len(entities) + "|\n" + f"| {values} |\n",
+        "grid_options": {"columns": 12, "rows": 2},
+    }
 
 
 def glance(entities: list[tuple[str, str]], title: str | None = None,
@@ -247,7 +315,10 @@ def overview_view(all_light_ids: list[str],
                     glance(TEMPERATURES, columns=5),
                     *([{"type": "heading", "heading": "Najčešće",
                         "heading_style": "title", "icon": "mdi:star-outline"}]
-                      + [tile(entity_id, name, toggle=True, columns=6)
+                      # Flat, not upright: on a 1366x768 laptop the upright
+                      # pair of rows pushed this column past the fold, and a
+                      # favourite is a line in a list, not a thumb target.
+                      + [tile(entity_id, name, toggle=True, columns=6, vertical=False)
                          for entity_id, name in (favourites or [])[:4]]
                       if favourites else []),
                 ],
@@ -399,33 +470,40 @@ def _cut_points(count: int, columns: int):
 
 
 def rooms_view(by_area: dict, area_names: dict) -> dict:
+    """A room is its controls. The temperature rides along with its name.
+
+    Every room used to carry a glance card of everything it measures --
+    temperature, pressure, humidity, particles -- which took as much height as
+    the switches themselves and turned the view into a scroll. The one reading
+    anybody looks for while standing in a doorway is the temperature, so it
+    became a badge on the room's own heading and the cards went away. Nothing
+    is lost: humidity and pressure for every room, side by side and with their
+    graphs, are what the Klima view is for.
+    """
     sections = []
     for area_id, icon in ROOM_ORDER:
         entities = by_area.get(area_id) or []
         if not entities:
             continue
         label = area_names.get(area_id, area_id)
-        controls, readings = [], []
+        controls, temperature = [], None
         for item in entities:
-            domain = item["entity_id"].split(".", 1)[0]
+            entity_id = item["entity_id"]
+            domain = entity_id.split(".", 1)[0]
             name = room_name(item["name"], label)
             if domain in CONTROL_DOMAINS:
-                controls.append((domain, item["entity_id"], name))
-            elif domain == "sensor":
-                readings.append((item["entity_id"], reading_name(item["entity_id"], name)))
+                controls.append((domain, entity_id, name))
+            elif domain == "sensor" and "temperatura" in entity_id and temperature is None:
+                temperature = entity_id
 
-        cards = [{"type": "heading", "heading": label, "heading_style": "title", "icon": icon}]
+        heading = {"type": "heading", "heading": label, "heading_style": "title", "icon": icon}
+        if temperature:
+            heading["badges"] = [{"type": "entity", "entity": temperature,
+                                  "show_state": True, "show_icon": True}]
+        cards = [heading]
         for domain, entity_id, name in sorted(controls, key=lambda c: (c[0], c[2].lower())):
-            cards.append(tile(entity_id, name, toggle=domain in ("light", "switch")))
-        if readings:
-            sorted_readings = sorted(readings, key=lambda r: r[1].lower())
-            reading_card = glance(sorted_readings, columns=max(3, len(sorted_readings)))
-            # glance wraps at three per row, and pinning every room to two rows
-            # clipped the fourth reading in the rooms that have one.
-            reading_card["grid_options"] = {
-                "columns": 12, "rows": 2 if len(sorted_readings) <= 3 else 3,
-            }
-            cards.append(reading_card)
+            cards.append(tile(entity_id, name, toggle=domain in ("light", "switch"),
+                              columns=6, vertical=False))
         sections.append(cards)
 
     return {
@@ -442,6 +520,12 @@ def rooms_view(by_area: dict, area_names: dict) -> dict:
 
 def climate_view() -> dict:
     """Three readings, three graphs, three pairs of extremes -- one screen.
+
+    The graphs read a day by default and stretch to a year: one helper drives
+    all three, so the columns always show the same span. They gave up a row of
+    height to pay for the picker, which is the trade that was asked for -- a
+    day at a glance most of the time, a year when the question is whether this
+    August was worse than the last.
 
     The day's max and min used to sit in a column of their own under the
     temperatures, two cards to a row and four rows deep, which pushed Boravak
@@ -471,9 +555,8 @@ def climate_view() -> dict:
                     {"type": "heading", "heading": "Temperatura", "heading_style": "title",
                      "icon": "mdi:thermometer"},
                     glance(TEMPERATURES, columns=5),
-                    {"type": "history-graph", "hours_to_show": 24,
-                     "grid_options": {"rows": 5},
-                     "entities": [{"entity": e, "name": n} for e, n in TEMPERATURES]},
+                    period_picker(name="Razdoblje svih grafova"),
+                    *period_graphs(TEMPERATURES, rows=4),
                     *extremes("sensor.bme280_mux_node_vanjska_temperatura", "Vani"),
                 ],
             },
@@ -483,21 +566,21 @@ def climate_view() -> dict:
                     {"type": "heading", "heading": "Vlaga", "heading_style": "title",
                      "icon": "mdi:water-percent"},
                     glance(HUMIDITIES, columns=5),
-                    {"type": "history-graph", "hours_to_show": 24,
-                     "grid_options": {"rows": 5},
-                     "entities": [{"entity": e, "name": n} for e, n in HUMIDITIES]},
+                    *period_graphs(HUMIDITIES, rows=4),
                     *extremes("sensor.bme280_mux_node_dnevni_prostor_temperatura", "Boravak"),
                 ],
             },
             {
                 "type": "grid",
                 "cards": [
-                    {"type": "heading", "heading": "Tlak", "heading_style": "title",
+                    {"type": "heading", "heading": "Tlak (hPa)", "heading_style": "title",
                      "icon": "mdi:gauge"},
-                    glance(PRESSURES, columns=5),
-                    {"type": "history-graph", "hours_to_show": 48,
-                     "grid_options": {"rows": 5},
-                     "entities": [{"entity": e, "name": n} for e, n in PRESSURES]},
+                    # Five pressures in a glance truncate to "1.000 h…" however
+                    # few decimals they carry: four digits, a separator and a
+                    # unit do not fit a fifth of a column. A table drops the
+                    # repeated unit into the heading and shows every digit.
+                    readings_table(PRESSURES),
+                    *period_graphs(PRESSURES, rows=4),
                     *extremes("sensor.bme280_mux_node_soba_temperatura", "Soba"),
                 ],
             },
@@ -508,6 +591,14 @@ def climate_view() -> dict:
 # --- Air ---------------------------------------------------------------------------
 
 def air_view() -> dict:
+    """The number now, the trend beside it, and the sensor's own knobs at the foot.
+
+    The cleaning button and the average particle size used to hold a whole
+    column of their own, which left the graph -- the only thing on this view
+    worth looking at twice -- squeezed into a third of the width. They are
+    settings, so they sit at the bottom of the readings column, and the graph
+    takes the two columns they vacated.
+    """
     return {
         "type": "sections",
         "max_columns": 3,
@@ -522,30 +613,13 @@ def air_view() -> dict:
                      "icon": "mdi:air-filter"},
                     {"type": "gauge", "entity": "sensor.bme280_mux_node_kvaliteta_zraka_pm2_5",
                      "name": "PM2.5", "min": 0, "max": 250, "needle": True,
+                     "grid_options": {"columns": 12, "rows": 3},
                      "severity": {"green": 0, "yellow": 35, "red": 100}},
                     glance([
                         ("sensor.bme280_mux_node_kvaliteta_zraka_pm1", "PM1"),
                         ("sensor.bme280_mux_node_kvaliteta_zraka_pm4", "PM4"),
                         ("sensor.bme280_mux_node_kvaliteta_zraka_pm10", "PM10"),
                     ]),
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {"type": "heading", "heading": "Kroz dan", "heading_style": "title",
-                     "icon": "mdi:chart-line"},
-                    # Alone in its column, so it may as well be legible.
-                    {"type": "history-graph", "hours_to_show": 24,
-                     "grid_options": {"rows": 6}, "entities": [
-                        {"entity": "sensor.bme280_mux_node_kvaliteta_zraka_pm2_5", "name": "PM2.5"},
-                        {"entity": "sensor.bme280_mux_node_kvaliteta_zraka_pm10", "name": "PM10"},
-                    ]},
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
                     {"type": "heading", "heading": "Senzor", "heading_style": "title",
                      "icon": "mdi:tune"},
                     {"type": "tile", "entity": "button.bme280_mux_node_sps30_pokreni_ciscenje",
@@ -556,13 +630,29 @@ def air_view() -> dict:
                      "grid_options": {"columns": 6}},
                 ],
             },
+            {
+                "type": "grid",
+                "column_span": 2,
+                "cards": [
+                    {"type": "heading", "heading": "Kroz vrijeme", "heading_style": "title",
+                     "icon": "mdi:chart-line"},
+                    # A section spanning two columns has a 24-wide grid, so
+                    # 12 was half of it: the graph sat in its own left half
+                    # with the picker beside it and the right half empty.
+                    period_picker(columns=8),
+                    *period_graphs([
+                        ("sensor.bme280_mux_node_kvaliteta_zraka_pm2_5", "PM2.5"),
+                        ("sensor.bme280_mux_node_kvaliteta_zraka_pm10", "PM10"),
+                    ], rows=7, columns=24),
+                ],
+            },
         ],
     }
 
 
 # --- System -------------------------------------------------------------------------
 
-def _status(entity: str) -> str:
+def _status(entity: str, extra: str = "") -> str:
     """Whether the box is answering at all, as the first row of its own table.
 
     It used to be a `###` line above the table, which cost a heading's worth of
@@ -574,7 +664,8 @@ def _status(entity: str) -> str:
     """
     return (
         "| Stanje | {% if states('" + entity + "') in "
-        "['unavailable', 'unknown', 'none'] %}NE JAVLJA SE{% else %}Online{% endif %} |\n"
+        "['unavailable', 'unknown', 'none'] %}NE JAVLJA SE{% else %}Online{% endif %}"
+        + extra + " |\n"
     )
 
 
@@ -597,7 +688,8 @@ def _uptime_from_seconds(entity: str) -> str:
 
 
 HOME_ASSISTANT_CARD = (
-    "| | |\n|---|--:|\n" + _status("sensor.system_monitor_processor_use") +
+    "| | |\n|---|--:|\n" + _status("sensor.system_monitor_processor_use",
+              "{% if is_state('binary_sensor.rpi_power_status','on') %} · PODNAPON{% endif %}") +
     "| Procesor | {{ states('sensor.system_monitor_processor_use') }} % · "
     "{{ states('sensor.system_monitor_processor_temperature') }} °C |\n"
     "| Memorija | {{ states('sensor.system_monitor_memory_usage') }} % |\n"
@@ -608,12 +700,13 @@ HOME_ASSISTANT_CARD = (
     "| Verzija | {{ state_attr('update.home_assistant_core_update','installed_version') }}"
     "{% if is_state('update.home_assistant_core_update','on') %} \u2192 "
     "{{ state_attr('update.home_assistant_core_update','latest_version') }}{% endif %} |\n"
-    "| Napajanje | {% if is_state('binary_sensor.rpi_power_status','on') %}"
-    "PODNAPON{% else %}u redu{% endif %} |\n"
+    ""
 )
 
 JARVIS_CARD = (
-    "| | |\n|---|--:|\n" + _status("sensor.jarvis_pi_cpu") +
+    "| | |\n|---|--:|\n" + _status("sensor.jarvis_pi_cpu",
+              "{% if states('stt.jarvis_stt') not in ['unavailable','unknown'] %}"
+              " · sluša i govori{% else %} · GLAS NEDOSTUPAN{% endif %}") +
     "| Procesor | {{ states('sensor.jarvis_pi_cpu') }} % · "
     "{{ states('sensor.jarvis_pi_temperature') }} °C |\n"
     "| Memorija | {{ states('sensor.jarvis_pi_memory') }} % |\n"
@@ -621,8 +714,7 @@ JARVIS_CARD = (
     "({{ states('sensor.jarvis_pi_disk_free_gb') }} GB) |\n"
     "| Radi | " + _uptime_from_boot("sensor.jarvis_pi_boot") + " |\n"
     "| IP | {{ states('sensor.jarvis_pi_ip') }} |\n"
-    "| Glas | {% if states('stt.jarvis_stt') not in ['unavailable','unknown'] %}"
-    "sluša i govori{% else %}NEDOSTUPAN{% endif %} |\n"
+    ""
 )
 
 # The ESP32 knows its own address, how long it has been up, how well it hears
@@ -727,30 +819,29 @@ def system_view() -> dict:
 
 # --- Lights and sockets --------------------------------------------------------------
 
-def devices_view(lights: list[tuple[str, str]], sockets: list[tuple[str, str]],
-                 light_ids: list[str]) -> dict:
-    """Lights and appliances on one view -- two tabs to reach them was one too many."""
-    light_cards = [
-        {"type": "heading", "heading": "Svjetla", "heading_style": "title",
-         "icon": "mdi:lightbulb-group"},
-        *[tile(entity_id, name, toggle=True) for entity_id, name in lights],
-        {"type": "button", "name": "Ugasi sva svjetla", "icon": "mdi:lightbulb-off-outline",
-         "show_state": False, "grid_options": {"columns": 12},
-         "tap_action": {"action": "perform-action",
-                        "perform_action": "homeassistant.turn_off",
-                        "target": {"entity_id": light_ids}}},
-    ]
-    socket_cards = [
-        {"type": "heading", "heading": "Trošila", "heading_style": "title",
-         "icon": "mdi:power-socket-eu"},
-        *[tile(entity_id, name, toggle=True) for entity_id, name in sockets],
-    ]
+def appliances_view(sockets: list[tuple[str, str]]) -> dict:
+    """The sockets, in the same grid as the lights.
+
+    They used to share a view with the lights, which listed all sixteen of
+    those a second time; whichever tab you opened, half of it was the other
+    one. Same layout as Svjetla, one section across the full width, four to a
+    row, ordered by what actually gets switched.
+    """
     return {
-        "type": "sections", "max_columns": 3, "title": "Uređaji", "path": "uredaji",
-        "icon": "mdi:toggle-switch-outline",
+        "type": "sections",
+        "max_columns": 3,
+        "title": "Trošila",
+        "path": "trosila",
+        "icon": "mdi:power-socket-eu",
         "sections": [
-            {"type": "grid", "cards": light_cards},
-            {"type": "grid", "cards": socket_cards},
+            {
+                "type": "grid",
+                "column_span": 3,
+                "cards": [{"type": "heading", "heading": "Trošila",
+                           "heading_style": "title", "icon": "mdi:power-socket-eu"}]
+                         + [tile(entity_id, name, toggle=True, columns=9)
+                            for entity_id, name in sockets],
+            }
         ],
     }
 
@@ -1063,7 +1154,8 @@ async def main():
         lights = [(e, label(e)) for e in sorted(
             (e for e in switchable if "svjetlo" in e), key=by_use)]
         sockets = [(e, label(e)) for e in sorted(
-            (e for e in switchable if "svjetlo" not in e), key=by_use)]
+            (e for e in switchable
+             if "svjetlo" not in e and e != "switch.jarvis_slusanje"), key=by_use)]
         if used:
             top = ", ".join(f"{label(e)} ({used.get(e, 0)}×)" for e, _ in lights[:4])
             print(f"  najčešće paljena svjetla u 14 dana: {top}")
@@ -1081,10 +1173,10 @@ async def main():
         cfg["views"] = [
             overview_view(light_ids, lights[:4]),
             lights_view([tile(e, n, True, columns=9) for e, n in lights]),
+            appliances_view(sockets),
             rooms_view(by_area, area_names),
             climate_view(),
             air_view(),
-            devices_view(lights, sockets, light_ids),
             tv_view(),
             system_view(),
             conversation_view(),
