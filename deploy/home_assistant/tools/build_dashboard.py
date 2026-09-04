@@ -83,8 +83,9 @@ PERIODS = (
 
 def period_picker(columns: int = 12, name: str = "Razdoblje") -> dict:
     return {
-        "type": "entities",
-        "entities": [{"entity": PERIOD_HELPER, "name": name, "icon": "mdi:calendar-range"}],
+        "type": "tile", "entity": PERIOD_HELPER, "name": name,
+        "icon": "mdi:calendar-range", "hide_state": True,
+        "features": [{"type": "select-options"}],
         "grid_options": {"columns": columns},
     }
 
@@ -555,7 +556,6 @@ def climate_view() -> dict:
                     {"type": "heading", "heading": "Temperatura", "heading_style": "title",
                      "icon": "mdi:thermometer"},
                     glance(TEMPERATURES, columns=5),
-                    period_picker(name="Razdoblje svih grafova"),
                     *period_graphs(TEMPERATURES, rows=4),
                     *extremes("sensor.bme280_mux_node_vanjska_temperatura", "Vani"),
                 ],
@@ -580,6 +580,7 @@ def climate_view() -> dict:
                     # unit do not fit a fifth of a column. A table drops the
                     # repeated unit into the heading and shows every digit.
                     readings_table(PRESSURES),
+                    period_picker(name="Razdoblje svih grafova"),
                     *period_graphs(PRESSURES, rows=4),
                     *extremes("sensor.bme280_mux_node_soba_temperatura", "Soba"),
                 ],
