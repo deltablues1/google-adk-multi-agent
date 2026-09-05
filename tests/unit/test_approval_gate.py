@@ -151,7 +151,9 @@ class TestDriveIsGatedOnlyForPublishing:
 
 
 class TestFailureModes:
-    def test_a_broken_rule_does_not_block_the_house(self, monkeypatch):
+    def test_a_broken_rule_refuses_the_call(self, monkeypatch):
+        """Fail closed. Whatever made the rule throw is precisely the input
+        nobody anticipated — the last one that should run unchecked."""
         from services import approval_gate
 
         monkeypatch.setitem(
@@ -163,7 +165,38 @@ class TestFailureModes:
                 question=lambda a: "",
             ),
         )
-        assert _call("erp_adjust_stock", product_id="P1", quantity_delta=-5) is None
+        result = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert "APPROVAL RULE FAILED" in result["error"]
+
+    def test_a_broken_fingerprint_refuses_the_call(self, monkeypatch):
+        from services import approval_gate
+
+        monkeypatch.setitem(
+            approval_gate.RULES,
+            "erp_adjust_stock",
+            approval_gate._Rule(
+                when=lambda a: True,
+                key=lambda a: (_ for _ in ()).throw(RuntimeError("boom")),
+                question=lambda a: "test",
+            ),
+        )
+        result = _call("erp_adjust_stock", product_id="P1", quantity_delta=-5)
+        assert "APPROVAL KEY FAILED" in result["error"]
+
+    def test_an_ungated_tool_is_still_untouched_by_a_broken_rule(self, monkeypatch):
+        """Failing closed must close the gated door, not every door."""
+        from services import approval_gate
+
+        monkeypatch.setitem(
+            approval_gate.RULES,
+            "erp_adjust_stock",
+            approval_gate._Rule(
+                when=lambda a: (_ for _ in ()).throw(RuntimeError("boom")),
+                key=lambda a: {},
+                question=lambda a: "",
+            ),
+        )
+        assert _call("mqtt_switch_control", device_name="svjetlo_kuhinja") is None
 
     def test_the_gate_can_be_switched_off(self, monkeypatch):
         monkeypatch.setenv("APPROVAL_GATE_ENABLED", "false")

@@ -166,9 +166,18 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
         if not rule.when(args):
             return None
         question = rule.question(args)
-    except Exception as exc:  # a broken rule must not block the house
-        logger.warning("Approval rule for '%s' failed, letting the call through: %s", name, exc)
-        return None
+    except Exception as exc:
+        # Fail closed. A security control that opens on its own bug is not a
+        # control: whatever made the rule throw is exactly the input nobody
+        # anticipated, which is the last input to run unchecked.
+        logger.error("Approval rule for '%s' failed — refusing the call: %s", name, exc)
+        return {
+            "error": (
+                f"APPROVAL RULE FAILED za '{name}'. Radnja NIJE izvršena i neće "
+                "biti dok se to ne popravi. Javi korisniku da je sigurnosna "
+                "provjera pukla i da radnju treba napraviti ručno."
+            )
+        }
 
     if approvals.is_autonomous():
         # Nobody is listening. Registering here would leave a pending approval
@@ -188,9 +197,16 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
 
     try:
         action_id = approvals.fingerprint(name, **rule.key(args))
-    except Exception as exc:  # a broken rule must not block the house
-        logger.warning("Approval key for '%s' failed, letting the call through: %s", name, exc)
-        return None
+    except Exception as exc:
+        # Same reasoning: without a fingerprint there is nothing to confirm
+        # against, so there is no way to let this through safely.
+        logger.error("Approval key for '%s' failed — refusing the call: %s", name, exc)
+        return {
+            "error": (
+                f"APPROVAL KEY FAILED za '{name}'. Radnja NIJE izvršena. Javi "
+                "korisniku da je sigurnosna provjera pukla."
+            )
+        }
 
     if approvals.redeem(action_id):
         logger.info("[APPROVAL] redeemed for %s", name)

@@ -501,11 +501,21 @@ function dashboard() {
                 console.log('formatMessage input contains media tag:', text.substring(text.indexOf('['), text.indexOf(']', text.indexOf('[')) + 1));
             }
 
-            // Escape HTML
+            // Escape HTML.
+            //
+            // Quotes matter as much as angle brackets here. Everything below
+            // interpolates captured text into src="..." and href="...", so a
+            // URL containing a quote used to terminate the attribute and let
+            // the rest of it become markup — an event handler, for instance.
+            // The content being escaped arrives from email bodies, scraped
+            // pages and documents, and it is stored in the chat history, so
+            // that was a stored XSS with the API token sitting in localStorage.
             let safe = text
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
 
             // === MEDIA TAGS - process BEFORE any other markdown ===
 
@@ -519,7 +529,7 @@ function dashboard() {
 
             // Inline images [IMAGE:url:alt]
             safe = safe.replace(/\[IMAGE:(\/api\/media\/[^\]:]+|https?:\/\/[^\]:]+):([^\]]*)\]/g,
-                '<div class="chat-image"><img src="$1" alt="$2" loading="lazy" onclick="document.querySelector(\'[x-data]\')._x_dataStack[0].openImageModal(\'$1\')"><div class="chat-image-caption">$2</div></div>');
+                '<div class="chat-image"><img src="$1" alt="$2" loading="lazy" class="chat-image-zoom" data-full-src="$1"><div class="chat-image-caption">$2</div></div>');
 
             // GCS image references (fallback - show placeholder)
             safe = safe.replace(/\[IMAGE:(gs:\/\/[^\]:]+):([^\]]*)\]/g,
@@ -527,11 +537,11 @@ function dashboard() {
 
             // Fallback: markdown links to /api/media/ rendered as images
             safe = safe.replace(/\[([^\]]*)\]\((\/api\/media\/[^)]+)\)/g,
-                '<div class="chat-image"><img src="$2" alt="$1" loading="lazy" onclick="document.querySelector(\'[x-data]\')._x_dataStack[0].openImageModal(\'$2\')"><div class="chat-image-caption">$1</div></div>');
+                '<div class="chat-image"><img src="$2" alt="$1" loading="lazy" class="chat-image-zoom" data-full-src="$2"><div class="chat-image-caption">$1</div></div>');
 
             // Fallback: bare /api/media/ URLs on their own line
             safe = safe.replace(/(?:^|\n)(\/api\/media\/\S+)(?:\n|$)/gm,
-                '\n<div class="chat-image"><img src="$1" alt="Generated image" loading="lazy" onclick="document.querySelector(\'[x-data]\')._x_dataStack[0].openImageModal(\'$1\')"><div class="chat-image-caption">Generated image</div></div>\n');
+                '\n<div class="chat-image"><img src="$1" alt="Generated image" loading="lazy" class="chat-image-zoom" data-full-src="$1"><div class="chat-image-caption">Generated image</div></div>\n');
 
             // Code blocks ```...```
             safe = safe.replace(/```(\w*)\n?([\s\S]*?)```/g,
@@ -959,3 +969,18 @@ function dashboard() {
         },
     };
 }
+
+// Image zoom, delegated.
+//
+// These handlers used to be written inline while assembling the message HTML,
+// which meant a crafted URL could contribute its own JavaScript. The element
+// now carries only data, and the behaviour lives here.
+document.addEventListener('click', (event) => {
+    const img = event.target.closest && event.target.closest('img.chat-image-zoom');
+    if (!img) return;
+    const root = document.querySelector('[x-data]');
+    const scope = root && root._x_dataStack && root._x_dataStack[0];
+    if (scope && typeof scope.openImageModal === 'function') {
+        scope.openImageModal(img.dataset.fullSrc);
+    }
+});
