@@ -64,6 +64,21 @@ def _price_for(model: str) -> Optional[tuple]:
     return None
 
 
+def cost_of(model: str, prompt: int, output: int, cached: int = 0) -> Optional[float]:
+    """USD for one call, using the same arithmetic as the per-agent report.
+
+    Shared so the daily budget ledger and /tokens can never drift apart: a
+    ceiling computed differently from the report it is compared against is
+    worse than no ceiling.
+    """
+    price = _price_for(model)
+    if price is None:
+        return None
+    rate = float(os.getenv("CACHE_READ_RATE", "0.1"))
+    uncached = max(prompt - cached, 0)
+    return (uncached * price[0] + cached * price[0] * rate + output * price[1]) / 1_000_000.0
+
+
 @dataclass
 class CallRecord:
     agent: str

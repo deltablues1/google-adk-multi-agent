@@ -231,11 +231,46 @@ def _make_usage_callback(agent_name: str, model_str: str):
             total = getattr(um, "total_token_count", 0) or 0
             name = getattr(callback_context, "agent_name", None) or agent_name
             get_token_stats().record(name, model_str, prompt, output, cached, total)
+
+            from tools.observability.token_stats import cost_of
+            from services import budget
+
+            spend = cost_of(model_str, prompt, output, cached)
+            if spend:
+                budget.record(spend)
         except Exception:  # never let accounting break inference
             pass
         return None  # do not modify the response
 
     return _after_model
+
+
+class DailyBudgetExceeded(RuntimeError):
+    """Today's model spend is used up."""
+
+
+def _budget_before_model(callback_context, llm_request):
+    """Refuse to spend past the day's ceiling.
+
+    False wake-word triggers drained the credit overnight on 2026-08-30 while
+    token accounting recorded every call and did nothing with the total. A
+    console limit is the backstop; this is the part that can say why it stopped.
+    """
+    try:
+        from services import budget
+
+        if not budget.over_budget():
+            return None
+        spent, ceiling = budget.spent_today(), budget.daily_budget_usd()
+    except Exception:  # a broken ledger must not stop the house
+        return None
+
+    logger.error("Daily LLM budget exhausted: $%.2f of $%.2f", spent, ceiling)
+    raise DailyBudgetExceeded(
+        f"Dnevni budžet je potrošen: ${spent:.2f} od ${ceiling:.2f}. "
+        "Zaustavljam pozive modela do ponoći. Ako je ovo pogreška, podigni "
+        "DAILY_LLM_BUDGET_USD ili provjeri što troši."
+    )
 
 
 # ---- Tool retry loop guard ------------------------------------------------
@@ -611,6 +646,7 @@ def create_adk_agent(
 
     # Per-agent token accounting (provider-agnostic; disable with TOKEN_STATS_ENABLED=false).
     if os.getenv("TOKEN_STATS_ENABLED", "true").lower() in ("1", "true", "yes", "on"):
+        agent_kwargs["before_model_callback"] = _budget_before_model
         agent_kwargs["after_model_callback"] = _make_usage_callback(
             name, _effective_model_name(model, name)
         )

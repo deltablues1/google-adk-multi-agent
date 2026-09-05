@@ -11,7 +11,7 @@ import base64
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, WebSocket
 from fastapi.staticfiles import StaticFiles
@@ -496,6 +496,68 @@ def _build_live_system_prompt() -> str:
         "Uvijek govori o sebi u ženskom rodu."
     )
 
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Cap how often one caller can start paid work.
+
+    The daily budget stops spending after the fact; this is what keeps a device
+    on the LAN from reaching that ceiling in a minute. False wake-word triggers
+    drained the credit overnight on 2026-08-30 without anything on this side
+    counting the requests.
+
+    Only the routes that cost money are limited — reading sessions, status and
+    metrics stay unthrottled so a dashboard cannot lock you out of your own
+    diagnostics.
+    """
+
+    PAID_PREFIXES = ("/api/chat", "/api/tts", "/api/upload", "/api/live")
+
+    def __init__(self, app, limit: int, window_seconds: float):
+        super().__init__(app)
+        self.limit = limit
+        self.window = window_seconds
+        self._hits: Dict[str, List[float]] = defaultdict(list)
+
+    def _client(self, request: Request) -> str:
+        # No proxy in front of the Pi, so the socket address is the caller.
+        # X-Forwarded-For is deliberately ignored: it is attacker-controlled
+        # and trusting it would make the limit trivially bypassable.
+        return getattr(request.client, "host", None) or "unknown"
+
+    async def dispatch(self, request: Request, call_next):
+        if not request.url.path.startswith(self.PAID_PREFIXES):
+            return await call_next(request)
+
+        import time as _time
+
+        now = _time.monotonic()
+        key = self._client(request)
+        recent = [t for t in self._hits[key] if now - t < self.window]
+
+        if len(recent) >= self.limit:
+            retry_after = int(self.window - (now - recent[0])) + 1
+            self._hits[key] = recent
+            logger.warning(
+                "Rate limit hit: %s made %d requests to %s within %.0fs",
+                key, len(recent), request.url.path, self.window,
+            )
+            return JSONResponse(
+                {
+                    "detail": (
+                        f"Previše zahtjeva ({len(recent)} u {int(self.window)}s). "
+                        "Ovo je zaštita od potrošnje kredita, ne kvar."
+                    )
+                },
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        recent.append(now)
+        self._hits[key] = recent
+        if len(self._hits) > 512:  # bounded memory on a long-running Pi
+            self._hits = defaultdict(list, {key: recent})
+        return await call_next(request)
+
+
 class TokenAuthMiddleware(BaseHTTPMiddleware):
     """Simple bearer token auth for /api/* routes (except /api/media/).
 
@@ -565,6 +627,17 @@ def create_app(interface) -> FastAPI:
         raise RuntimeError("API_TOKEN is required by the active deployment profile")
     if api_token:
         app.add_middleware(TokenAuthMiddleware, token=api_token)
+
+    # Registered after the auth middleware so it runs before it: an unauthorised
+    # flood should be cheap to refuse.
+    try:
+        rate_limit = int(os.getenv("API_RATE_LIMIT", "30"))
+        rate_window = float(os.getenv("API_RATE_WINDOW_SECONDS", "60"))
+    except ValueError:
+        rate_limit, rate_window = 30, 60.0
+    if rate_limit > 0:
+        app.add_middleware(RateLimitMiddleware, limit=rate_limit, window_seconds=rate_window)
+        logger.info("Rate limit: %d paid requests per %.0fs per client", rate_limit, rate_window)
         logger.info("API token authentication enabled")
     else:
         logger.warning("API_TOKEN not set — web API is unauthenticated (OK for local dev)")
