@@ -31,7 +31,19 @@ class MetricsCollector:
 
     def __init__(self):
         self.metrics = defaultdict(int)
-        self.timings = defaultdict(list)
+        # Recent samples only. An unbounded list here grows for as long as the
+        # process lives, and this one lives on a Pi for weeks — every timed call
+        # ever made was being kept to compute an average.
+        #
+        # The window is for the average; count, min and max are tracked
+        # separately so they keep meaning what they have always meant. Swapping
+        # in a bounded buffer alone would have quietly turned "count" into
+        # "count since the buffer last filled".
+        self.timing_window = max(20, int(os.getenv("METRICS_TIMING_WINDOW", "200")))
+        self.timings = defaultdict(lambda: deque(maxlen=self.timing_window))
+        self.timing_counts = defaultdict(int)
+        self.timing_min = {}
+        self.timing_max = {}
         self.errors = defaultdict(int)
         self.structured_events = deque(
             maxlen=max(50, int(os.getenv("MONITORING_EVENT_BUFFER_SIZE", "400")))
@@ -114,6 +126,11 @@ class MetricsCollector:
         """Record a timing metric"""
         key = self._make_key(metric_name, labels)
         self.timings[key].append(duration)
+        self.timing_counts[key] += 1
+        if key not in self.timing_min or duration < self.timing_min[key]:
+            self.timing_min[key] = duration
+        if key not in self.timing_max or duration > self.timing_max[key]:
+            self.timing_max[key] = duration
         logger.debug(f"Timing recorded: {key} = {duration:.3f}s")
         
         # Export to Cloud Logging
@@ -149,10 +166,13 @@ class MetricsCollector:
             "counters": dict(self.metrics),
             "timings": {
                 k: {
-                    "count": len(v),
+                    # Count, min and max are lifetime figures; the average is
+                    # over the retained window, and says how many that was.
+                    "count": self.timing_counts.get(k, len(v)),
                     "avg": sum(v) / len(v) if v else 0,
-                    "min": min(v) if v else 0,
-                    "max": max(v) if v else 0
+                    "avg_over_last": len(v),
+                    "min": self.timing_min.get(k, min(v) if v else 0),
+                    "max": self.timing_max.get(k, max(v) if v else 0),
                 }
                 for k, v in self.timings.items()
             },
@@ -169,6 +189,9 @@ class MetricsCollector:
         """Reset all metrics"""
         self.metrics.clear()
         self.timings.clear()
+        self.timing_counts.clear()
+        self.timing_min.clear()
+        self.timing_max.clear()
         self.errors.clear()
         self.structured_events.clear()
 

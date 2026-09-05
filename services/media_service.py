@@ -27,6 +27,40 @@ ALLOWED_MIME_TYPES = {
 # Max file size: 20MB (Gemini inline limit)
 MAX_FILE_SIZE = 20 * 1024 * 1024
 
+# What the bytes actually are, not what the upload claimed they are.
+# content_type comes from the client and is trivially forged, so a file
+# announcing itself as image/png is checked against the signature of the
+# formats we accept before anything downstream tries to interpret it.
+# Byte values are written numerically to keep the escapes out of the way.
+_PNG_MAGIC = bytes([0x89]) + b'PNG' + bytes([0x0D, 0x0A, 0x1A, 0x0A])
+_JPEG_MAGIC = bytes([0xFF, 0xD8, 0xFF])
+_WEBM_MAGIC = bytes([0x1A, 0x45, 0xDF, 0xA3])
+
+_MAGIC_SIGNATURES = (
+    (_JPEG_MAGIC, 'image/jpeg'),
+    (_PNG_MAGIC, 'image/png'),
+    (b'GIF87a', 'image/gif'),
+    (b'GIF89a', 'image/gif'),
+    (b'BM', 'image/bmp'),
+    (b'%PDF-', 'application/pdf'),
+    (_WEBM_MAGIC, 'video/webm'),
+)
+
+
+def sniff_mime(head: bytes) -> Optional[str]:
+    """Best-effort format detection from the first bytes. None = unrecognised."""
+    for signature, mime in _MAGIC_SIGNATURES:
+        if head.startswith(signature):
+            return mime
+    # RIFF containers carry their real type at offset 8.
+    if head[:4] == b'RIFF' and len(head) >= 12 and head[8:12] == b'WEBP':
+        return 'image/webp'
+    # ISO base media (mp4) puts 'ftyp' at offset 4.
+    if len(head) >= 12 and head[4:8] == b'ftyp':
+        return 'video/mp4'
+    return None
+
+
 
 def save_upload(file_bytes: bytes, original_filename: str, mime_type: str) -> dict:
     """

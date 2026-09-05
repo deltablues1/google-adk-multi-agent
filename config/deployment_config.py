@@ -129,7 +129,16 @@ def get_deployment_config() -> DeploymentConfig:
         return _deployment_config
 
     profile = _env_str("DEPLOYMENT_PROFILE", "dev")
-    defaults = _DEFAULTS.get(profile, _DEFAULTS["dev"])
+    if profile not in _DEFAULTS:
+        # Falling back to "dev" on a typo is how a deployment meant to require
+        # authentication quietly stops requiring it. The profile decides that,
+        # so an unrecognised one is a configuration error, not a default.
+        raise RuntimeError(
+            f"Unknown DEPLOYMENT_PROFILE {profile!r}. "
+            f"Valid profiles: {', '.join(sorted(_DEFAULTS))}. "
+            "Refusing to start rather than silently using development settings."
+        )
+    defaults = _DEFAULTS[profile]
     voice_mode_default = _env_str(
         "VOICE_MODE_DEFAULT",
         defaults["voice_mode_default"],

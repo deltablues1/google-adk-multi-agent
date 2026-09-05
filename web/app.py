@@ -1324,10 +1324,11 @@ def create_app(interface) -> FastAPI:
         The frontend sends the file, then includes the file_id in the chat message.
         """
         from services.media_service import (
-            save_upload, ALLOWED_MIME_TYPES, MAX_FILE_SIZE
+            save_upload, sniff_mime, ALLOWED_MIME_TYPES, MAX_FILE_SIZE
         )
 
-        # Validate MIME type
+        # Validate the declared MIME type first — it is free to check and
+        # rejects the honest mistakes before any bytes are read.
         if file.content_type not in ALLOWED_MIME_TYPES:
             raise HTTPException(
                 status_code=400,
@@ -1335,12 +1336,40 @@ def create_app(interface) -> FastAPI:
                        f"Allowed: {', '.join(ALLOWED_MIME_TYPES)}"
             )
 
-        # Read file
-        file_bytes = await file.read()
-        if len(file_bytes) > MAX_FILE_SIZE:
+        # Read in chunks and stop at the limit. Reading the whole upload first
+        # and checking its length afterwards means the machine has already paid
+        # for it: on a Pi, one oversized upload is enough to exhaust memory
+        # before the check that was supposed to prevent exactly that.
+        chunks = []
+        total = 0
+        while True:
+            chunk = await file.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_FILE_SIZE:
+                logger.warning(
+                    "Upload refused: exceeded %d bytes (declared %s)",
+                    MAX_FILE_SIZE, file.content_type,
+                )
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Max: {MAX_FILE_SIZE} bytes",
+                )
+            chunks.append(chunk)
+        file_bytes = b"".join(chunks)
+
+        # And check what the bytes actually are. content_type is supplied by the
+        # client, so on its own it establishes nothing.
+        actual = sniff_mime(file_bytes[:16])
+        if actual is None or actual not in ALLOWED_MIME_TYPES:
+            logger.warning(
+                "Upload refused: content does not match any allowed format "
+                "(declared %s, detected %s)", file.content_type, actual,
+            )
             raise HTTPException(
                 status_code=400,
-                detail=f"File too large ({len(file_bytes)} bytes). Max: {MAX_FILE_SIZE} bytes"
+                detail="File content does not match an allowed format.",
             )
 
         # Save locally
