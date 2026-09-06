@@ -467,6 +467,15 @@ _CONFIRMATION_GATE_AGENTS = {
     "smart_orchestrator",
 }
 
+# Agents owning at least one tool that can come back "unknown": the write may
+# already have landed and only the answer was lost. Listed from the
+# except-UnconfirmedWrite sites in tools/adk_tools/*.py plus
+# gmail_send_message, which sets outcome="unknown" the same way.
+_UNKNOWN_OUTCOME_AGENTS = {
+    "mailer", "librarian", "analyst", "tracker", "rolodex", "scribe",
+    "smart_orchestrator",
+}
+
 
 def load_shared_fragment(name: str) -> Optional[str]:
     """Load a shared instruction fragment from agents/shared/{name}.md."""
@@ -521,6 +530,15 @@ def _append_confirmation_gate_rule(name: str, instruction: str) -> str:
         return instruction
     return _append_shared_fragment(
         instruction, load_shared_fragment("confirmation_gate")
+    )
+
+
+def _append_unknown_outcome_rule(name: str, instruction: str) -> str:
+    """Append the three-outcome protocol for agents with non-idempotent writes."""
+    if name.lower() not in _UNKNOWN_OUTCOME_AGENTS:
+        return instruction
+    return _append_shared_fragment(
+        instruction, load_shared_fragment("unknown_outcome")
     )
 
 
@@ -607,6 +625,7 @@ def create_adk_agent(
     # Prompt-injection boundary for agents that read external content.
     instruction = _append_untrusted_content_rule(name, instruction)
     instruction = _append_confirmation_gate_rule(name, instruction)
+    instruction = _append_unknown_outcome_rule(name, instruction)
 
     # Time-aware instructions must stay time-aware. Agents pass the raw
     # template; rendering it per invocation keeps a long-running process from

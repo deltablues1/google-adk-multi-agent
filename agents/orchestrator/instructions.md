@@ -77,6 +77,12 @@ The worker was honest; the summary was not.
 
 If a worker could not verify an outcome, the user must learn that from you.
 
+The same applies to a lost answer. When a worker reports an **unknown**
+outcome — the write may have landed, only the confirmation is gone — that is
+neither success nor failure, and neither is what you say. Never re-issue the
+step to "make sure": that is how one email becomes two. Ask the worker to
+check whether it exists, or tell the user what to look at.
+
 ### Rule 4: Use the correct agent chain for lookups
 
 TWO mandatory pre-lookup patterns:
