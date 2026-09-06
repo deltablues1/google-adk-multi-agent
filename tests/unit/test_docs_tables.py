@@ -185,3 +185,65 @@ class TestFailuresAreHonest:
         )
         result = await dt.docs_write_markdown("doc-1", MD)
         assert result["outcome"] == "unknown"
+
+
+class TestHeadingsDoNotGetOrphaned:
+    """Reported 2026-09-06: chapter 4's heading was the last line of a page
+
+    with its section starting overleaf. Docs has keepWithNext for exactly
+    this; forcing a page break before every heading would instead spend a
+    third of the report on white space.
+    """
+
+    def _heading_styles(self, markdown):
+        from tools.custom_tools.docs_formatter import DocsFormatter
+
+        reqs = DocsFormatter().markdown_to_docs_requests(markdown)
+        return [
+            r["updateParagraphStyle"] for r in reqs
+            if "updateParagraphStyle" in r
+            and "HEADING" in r["updateParagraphStyle"]["paragraphStyle"].get(
+                "namedStyleType", ""
+            )
+        ]
+
+    @pytest.mark.parametrize("level", ["#", "##", "###"])
+    def test_every_heading_sticks_to_its_section(self, level):
+        styles = self._heading_styles(f"{level} Poglavlje\n\nTekst.\n")
+        assert styles, "the heading produced no style request at all"
+        assert styles[0]["paragraphStyle"]["keepWithNext"] is True
+
+    def test_a_wrapped_heading_does_not_split(self):
+        styles = self._heading_styles("# " + "vrlo dug naslov " * 8 + "\n\nX\n")
+        assert styles[0]["paragraphStyle"]["keepLinesTogether"] is True
+
+    def test_the_fields_mask_actually_applies_them(self):
+        """A property missing from `fields` is silently ignored by Docs."""
+        fields = self._heading_styles("# Naslov\n\nX\n")[0]["fields"]
+        assert "keepWithNext" in fields
+        assert "keepLinesTogether" in fields
+        assert "namedStyleType" in fields
+
+
+class TestExplicitPageBreaks:
+    @pytest.mark.parametrize("rule", ["---", "***", "___", "-----"])
+    def test_a_horizontal_rule_becomes_a_page_break(self, rule):
+        from tools.custom_tools.docs_formatter import DocsFormatter
+
+        reqs = DocsFormatter().markdown_to_docs_requests(f"A\n\n{rule}\n\nB\n")
+        assert any("insertPageBreak" in r for r in reqs)
+
+    def test_a_table_separator_is_not_a_page_break(self):
+        """|---|---| lives inside a table and must stay there."""
+        from tools.custom_tools.docs_formatter import DocsFormatter
+
+        blocks = split_markdown_blocks(MD)
+        text = "\n".join(b["content"] for b in blocks if b["kind"] == "text")
+        reqs = DocsFormatter().markdown_to_docs_requests(text)
+        assert not any("insertPageBreak" in r for r in reqs)
+
+    def test_ordinary_dashes_in_prose_are_left_alone(self):
+        from tools.custom_tools.docs_formatter import DocsFormatter
+
+        reqs = DocsFormatter().markdown_to_docs_requests("Raspon je 10 - 20 kW.\n")
+        assert not any("insertPageBreak" in r for r in reqs)

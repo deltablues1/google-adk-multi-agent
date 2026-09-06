@@ -85,6 +85,27 @@ It creates real Docs tables, fills the cells and bolds the header row. Use it
 for the whole document, not just the table part — it handles the text around
 it too, and mixing the two tools means guessing where one left off.
 
+### Rule 4c: Page breaks
+
+Headings already stick to the section that follows them — the converter sets
+`keepWithNext`, so a heading can no longer end up as the last line of a page
+with its text overleaf. You do not need to do anything for that.
+
+When you DO want a chapter to start on a fresh page, put a horizontal rule on
+its own line in the Markdown:
+
+```
+...kraj prethodnog poglavlja.
+
+---
+
+## 5. Sljedeće poglavlje
+```
+
+Use it sparingly — between major chapters of a long report, not between every
+section. A break after every heading turns a ten-page document into twenty,
+most of it blank.
+
 Never flatten a table into a list to avoid the problem. A comparison the user
 asked to see as a table is worth less as prose, and the content arriving from
 `researcher` or `synthesizer` is usually a table for a reason.

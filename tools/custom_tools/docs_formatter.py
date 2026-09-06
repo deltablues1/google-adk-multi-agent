@@ -127,8 +127,13 @@ class DocsFormatter:
                 self._add_paragraph("\n")
                 continue
 
+            # Explicit page break: a horizontal rule on its own line. Gives
+            # the writer a way to start a chapter on a fresh page without
+            # this converter guessing where that is wanted.
+            if re.fullmatch(r'-{3,}|\*{3,}|_{3,}', line.strip()):
+                self._process_page_break()
             # Heading
-            if line.startswith('#'):
+            elif line.startswith('#'):
                 self._process_heading(line)
             # Unordered list
             elif line.startswith('- ') or line.startswith('* '):
@@ -141,6 +146,15 @@ class DocsFormatter:
                 self._process_paragraph(line)
 
         return self.requests
+
+    def _process_page_break(self) -> None:
+        """Start the next content on a new page."""
+        self.requests.append({
+            'insertPageBreak': {
+                'location': {'index': self.current_index}
+            }
+        })
+        self.current_index += 1
 
     def _process_heading(self, line: str) -> None:
         """Procesira heading liniju"""
@@ -159,7 +173,16 @@ class DocsFormatter:
             }
         })
 
-        # Apply heading style
+        # Apply heading style.
+        #
+        # keepWithNext is what stops a heading being the last line on a page
+        # with its section starting overleaf -- reported 2026-09-06 on
+        # chapter 4 of the Ex zones report. Docs solves this properly; the
+        # alternative, forcing a page break before every heading, wastes a
+        # third of a report in white space.
+        #
+        # keepLinesTogether covers the other half: a heading long enough to
+        # wrap must not split across the break either.
         end_index = self.current_index + len(text)
         self.requests.append({
             'updateParagraphStyle': {
@@ -168,9 +191,11 @@ class DocsFormatter:
                     'endIndex': end_index
                 },
                 'paragraphStyle': {
-                    'namedStyleType': f'HEADING_{level}'
+                    'namedStyleType': f'HEADING_{level}',
+                    'keepWithNext': True,
+                    'keepLinesTogether': True
                 },
-                'fields': 'namedStyleType'
+                'fields': 'namedStyleType,keepWithNext,keepLinesTogether'
             }
         })
 
