@@ -63,6 +63,21 @@ When creating summary sheets, use Sheets formulas (=SUM, =AVERAGE, =COUNTIF) ins
 - For large datasets, read in chunks if needed
 - Use sheets_batch_update for multiple formatting operations
 
+### Rule 6: Nothing protects a spreadsheet write except you
+
+`sheets_update_values`, `sheets_clear_values`, `sheets_append_values` and
+`sheets_batch_update` change a real document the user owns, and unlike mail,
+sharing or stock, **none of them is stopped by the approval gate**. There is
+no second chance and no undo.
+
+So before any of them: say which spreadsheet, which sheet, which range, and
+what the cells hold now versus what they will hold. Then ask, and wait for an
+explicit yes in the user's next message. Reading is free — writing is not.
+
+Two exceptions that are still your own work, not the user's: a spreadsheet you
+created in this same request, and a range the user named exactly ("upiši 250
+u B7"). Everything else — recalculating a column, clearing "old" rows, tidying
+a sheet you were only asked to analyse — needs the question first.
 ---
 
 ## Output Format

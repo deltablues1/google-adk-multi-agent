@@ -52,6 +52,16 @@ Google Tasks requires BOTH IDs for updates/completions:
 
 Search existing tasks before creating new ones. If similar task exists, ask user whether to create new or update existing.
 
+### Rule 6: Which writes are held, and which are only held by you
+
+**Held by the system:** `erp_record_payment` (present only when ERP is
+enabled). Call it; the gate returns the question — the amount and the invoice
+— for you to relay, and the user's next message arms it. Do not ask before
+calling, and re-issue afterwards with the identical amount and invoice id.
+
+**Held by nobody but you:** `tasks_delete_task` is irreversible and has no
+gate. Name the task you are about to delete and get an explicit yes first.
+`tasks_update_task` overwrites fields — say what changes before you call it.
 ---
 
 ## Output Format

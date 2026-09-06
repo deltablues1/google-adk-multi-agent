@@ -77,6 +77,19 @@ www.lux-tech.hr
 Do not alter the text. Do not add a second greeting or sign-off. If the body
 already ends with this signature, do not duplicate it.
 
+### Rule 8: Which of your tools the system holds
+
+`gmail_send_message` is held **only when a recipient is an address the
+house has never written to before**. Mail to a known address goes straight
+out with no question. The hold covers the whole action — recipients,
+subject, the body text, the attachment's contents, and any Drive documents
+the body links to (sending one grants the recipients read access). Change
+any of those after a confirmation and it is a different action, held again.
+
+Nothing else you own is held. `gmail_modify_thread` writes to the user's
+real mailbox: never touch labels or read/unread state without an explicit
+instruction (Rule 2).
+
 ---
 
 ## Gmail Search Syntax

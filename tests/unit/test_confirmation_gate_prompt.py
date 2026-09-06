@@ -1,0 +1,108 @@
+"""Every agent that can trip the approval gate must know how the gate behaves.
+
+The gate in services/approval_gate.py holds a call and returns a question. Two
+prompts told the model to ask the user *before* issuing such a call instead,
+which registers nothing: the user's "da" arrives with no pending action to
+authorise and the write is still a full turn away. Measured 2026-09-04, a
+calendar deletion took three turns for exactly that reason.
+
+The other half is the inverse mistake. Tools the gate does NOT cover -
+drive_delete_file, tasks_delete_task, sheets_clear_values - have no protection
+at all, so their prompts must keep asking first. These tests pin both halves,
+and tie the prompt set to the code's RULES table so a newly gated tool cannot
+quietly land in a lane whose prompt never heard of the gate.
+
+Run with:
+    pytest tests/unit/test_confirmation_gate_prompt.py -v
+"""
+
+from pathlib import Path
+
+import pytest
+
+from agents.adk_agents.adk_agent_factory import (
+    _CONFIRMATION_GATE_AGENTS,
+    _append_confirmation_gate_rule,
+    load_instruction_file,
+    load_shared_fragment,
+)
+from config.runtime_patches import CACHE_BREAK
+from services.approval_gate import RULES
+
+AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
+
+# Lanes that carry the protocol in their own words instead of the shared
+# fragment, because it is written against their own tool names.
+SELF_DOCUMENTED_LANES = {"skladistar", "smart_home"}
+
+# Prompt file backing each factory name that differs from it.
+PROMPT_DIR = {"smart_orchestrator": "orchestrator"}
+
+
+def _instruction(name: str) -> str:
+    return load_instruction_file(PROMPT_DIR.get(name, name))
+
+
+class TestSharedFragment:
+    def test_it_exists(self):
+        assert load_shared_fragment("confirmation_gate")
+
+    @pytest.mark.parametrize("name", sorted(_CONFIRMATION_GATE_AGENTS))
+    def test_every_listed_agent_receives_it(self, name):
+        built = _append_confirmation_gate_rule(name, _instruction(name))
+        assert "Potvrda radnji" in built
+
+    @pytest.mark.parametrize("name", sorted(_CONFIRMATION_GATE_AGENTS))
+    def test_it_stays_on_the_cached_side_of_the_break(self, name):
+        built = _append_confirmation_gate_rule(name, _instruction(name))
+        static, _, volatile = built.partition(CACHE_BREAK)
+        assert "Potvrda radnji" in static
+        assert "Potvrda radnji" not in volatile
+
+    @pytest.mark.parametrize("name", sorted(_CONFIRMATION_GATE_AGENTS))
+    def test_appending_twice_changes_nothing(self, name):
+        once = _append_confirmation_gate_rule(name, _instruction(name))
+        assert _append_confirmation_gate_rule(name, once) == once
+
+    def test_it_forbids_asking_before_the_call(self):
+        fragment = load_shared_fragment("confirmation_gate")
+        assert "NE pitaj prije poziva" in fragment
+        assert "identičnim" in fragment  # line-wrapped from "argumentima"
+        assert "samo zadržanu radnju" in fragment
+
+
+class TestEveryGatedLaneKnowsTheProtocol:
+    """Adding a rule to approval_gate.RULES must not skip the prompt."""
+
+    @pytest.mark.parametrize("lane", sorted({r.lane for r in RULES.values() if r.lane}))
+    def test_lane_has_the_protocol(self, lane):
+        if lane in SELF_DOCUMENTED_LANES:
+            text = _instruction(lane)
+            assert "needs_confirmation" in text, (
+                f"{lane} documents the gate itself and must keep doing so"
+            )
+            return
+        assert lane in _CONFIRMATION_GATE_AGENTS, (
+            f"approval_gate holds a tool in the '{lane}' lane, but that agent's "
+            "prompt never receives the confirmation protocol"
+        )
+
+
+class TestUngatedDestructiveToolsStillAskFirst:
+    """The inverse mistake: dropping the only protection a tool has."""
+
+    @pytest.mark.parametrize(
+        "agent,tool",
+        [
+            ("librarian", "drive_delete_file"),
+            ("tracker", "tasks_delete_task"),
+            ("analyst", "sheets_clear_values"),
+            ("secretary", "calendar_update_event"),
+        ],
+    )
+    def test_prompt_names_the_ungated_tool(self, agent, tool):
+        text = _instruction(agent)
+        assert tool in text, (
+            f"{tool} has no gate in code; {agent}'s prompt is the only thing "
+            "standing between it and the user's data"
+        )

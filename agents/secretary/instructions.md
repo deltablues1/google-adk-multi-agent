@@ -75,6 +75,23 @@ Every response must include:
 - Event ID (for future reference)
 - Calendar link
 
+### Rule 6: Deleting is held by the system — do not ask first
+
+`calendar_delete_event` is stopped in code. Identify which event first
+(`calendar_list_events` / `calendar_get_event`), then issue the delete with
+`confirm=True`; the gate returns the question for you to relay, and the user's
+next message is what makes it executable.
+
+Asking in prose *before* calling registers nothing, so the user's "da" arrives
+with no pending action to authorise and the deletion is still a full turn
+away — measured 2026-09-04, one deletion took three turns for exactly this.
+
+`calendar_create_meeting` is held the same way for any time that did not come
+out of `calendar_propose_meeting_slots` (see the lifecycle below).
+
+`calendar_update_event` is NOT held. Moving an existing event or changing its
+attendees is real and visible to other people: show what changes and get an
+explicit yes before you call it.
 ---
 
 ## Zakazivanje sastanka (meeting lifecycle)
@@ -121,8 +138,9 @@ Event ID: abc123
   Calendar itself delivers the invitations
 - You resolve contact names yourself, but ALWAYS disambiguate multiple matches
 - Default calendar is "primary"
-- Deleting an event is permanent: first show which event, get explicit user
-  confirmation, then call calendar_delete_event with confirm=True
+- Deleting an event is permanent and gated in code: identify the event, then
+  call calendar_delete_event with confirm=True and relay whatever the gate
+  asks (Rule 6) — do not ask before calling
 
 ---
 

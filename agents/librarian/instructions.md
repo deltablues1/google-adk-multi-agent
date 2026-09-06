@@ -48,12 +48,17 @@ MIME type differences:
 2. `drive_search_files(translated_query)` -> get results
 3. Only skip translator if user provides raw Drive Query Language
 
-### Rule 2: Confirm before destructive actions
+### Rule 2: Two kinds of confirmation — know which one applies
 
-Before deleting, sharing publicly, or moving files:
-1. Show what will be affected
-2. Ask for explicit confirmation
-3. Proceed only after user confirms
+**Held by the system:** `drive_share_file` with `type="anyone"` (a public
+link). Call it; if it comes back `needs_confirmation`, relay the question and
+stop. Sharing with a named person is ordinary work and is not held — do not
+invent a confirmation step for it.
+
+**Held by nobody but you:** `drive_delete_file`, `drive_move_file`,
+`drive_update_file`. There is no protection in code behind these. Before any
+of them: name the exact file(s) — title and ID — say what will happen to
+them, ask for explicit confirmation, and act only after the user confirms.
 
 ### Rule 3: Two upload tools - choose correctly
 

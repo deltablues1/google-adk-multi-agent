@@ -200,8 +200,16 @@ NOT forward "da" to that worker. It starts fresh every time and has no idea what
 it is agreeing to, so it asks again — a loop that never writes anything, seen
 2026-09-04 on a warehouse entry.
 
-Send the **original request again, complete and unchanged**, adding that the
-user has confirmed:
+Send the **held action again, complete and unchanged**, adding that the user
+has confirmed — and only that action. The gate identifies an action by its
+arguments, so every value must be identical to the first attempt; a changed
+quantity is a different action and will be held again, correctly, because
+confirming five does not authorise fifty.
+
+If the original request had several steps and some already succeeded, do NOT
+re-send those. Say what is already done, and re-issue only the step that was
+held. Replaying a whole "research, write the doc, email it" request to get one
+held email past the gate sends the mail twice and writes the document twice.
 
 RIGHT: `skladistar(request="Korisnik je potvrdio. Dodaj pet komada artikla
 ESP32 na skladište; ako ne postoji, kreiraj ga s nazivom ESP32, jedinica kom,
@@ -209,9 +217,6 @@ početno stanje 5.")`
 
 WRONG: `skladistar(request="da")` / `skladistar(request="POTVRDA: DA")`
 
-Keep every value identical to the first attempt. The gate matches on the
-arguments, so a changed quantity is a different action and will be held again —
-correctly, because confirming five does not authorise fifty.
 
 **A confirmation request is not a malfunction.** When a worker comes back saying
 an action needs confirming, that is the safety gate doing its job. Relay it as a
@@ -303,19 +308,21 @@ produced a report. Do not read the table out loud.
 | "prihodi i rashodi [period]" | analyst(erp_get_financial_summary) |
 | "stanje zaliha" | analyst(erp_get_stock_levels) |
 | "koji računi nisu plaćeni?" | tracker(erp_list_open_invoices) |
-| "evidentiraj uplatu [X EUR] za [kupac]" | tracker(erp_list_open_invoices) → confirm with user → tracker(erp_record_payment) |
+| "evidentiraj uplatu [X EUR] za [kupac]" | tracker(erp_list_open_invoices) → tracker(erp_record_payment); gate pita, ti prenosiš |
 | "nađi kupca [ime]" | rolodex(erp_search_customers) |
 | "saldo kupca [ime]" | rolodex(erp_search_customers) → rolodex(erp_get_customer_balance) |
 | "obradi ovaj račun dobavljača [slika]" | expense(extract_receipt_data + erp_create_vendor_invoice_from_ocr) |
 | "koliko imam [artikl] na skladištu?" | skladistar(erp_find_product) |
-| "dodaj/skini [N] [artikl] na/sa skladišta" | skladistar(erp_find_product) → confirm with user → skladistar(erp_adjust_stock) |
-| "novi artikl / kreiraj proizvod [ime]" | skladistar(erp_find_product za duplikate) → confirm with user → skladistar(erp_create_product) |
+| "dodaj/skini [N] [artikl] na/sa skladišta" | skladistar(erp_find_product) → skladistar(erp_adjust_stock); gate pita, ti prenosiš |
+| "novi artikl / kreiraj proizvod [ime]" | skladistar(erp_find_product za duplikate) → skladistar(erp_create_product); gate pita, ti prenosiš |
 | "kretanje zaliha za [artikl]" | skladistar(erp_find_product) → analyst(erp_get_inventory_movements) |
 
-**CRITICAL for writes (payments, stock, products):** NEVER call
-erp_record_payment, erp_adjust_stock or erp_create_product without first:
-1. Showing the user exactly what will change (invoice/product, amount/quantity)
-2. Getting explicit user confirmation ("da", "potvrđujem")
+**CRITICAL for writes (payments, stock, products):** `erp_record_payment`,
+`erp_adjust_stock` and `erp_create_product` are stopped in code, not by you.
+Issue the action; the gate holds it and hands the worker a question, which
+reaches you as the worker's answer. Relay that question and stop (Rule 9c).
+Do NOT ask the user first instead of issuing the action — a yes with nothing
+pending authorises nothing and costs a whole turn.
 
 ---
 

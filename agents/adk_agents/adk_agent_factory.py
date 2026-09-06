@@ -458,6 +458,16 @@ _UNTRUSTED_CONTENT_AGENTS = {
 }
 
 
+# Agents holding at least one tool that services/approval_gate.py can stop,
+# plus analyst and tracker, whose destructive tools have no gate at all and
+# therefore need the second half of the same text. skladistar and smart_home
+# write their own version against their own tools and are deliberately absent.
+_CONFIRMATION_GATE_AGENTS = {
+    "mailer", "librarian", "secretary", "tracker", "analyst",
+    "smart_orchestrator",
+}
+
+
 def load_shared_fragment(name: str) -> Optional[str]:
     """Load a shared instruction fragment from agents/shared/{name}.md."""
     fragment_path = Path(__file__).parent.parent / "shared" / f"{name}.md"
@@ -471,11 +481,8 @@ def load_shared_fragment(name: str) -> Optional[str]:
         return None
 
 
-def _append_untrusted_content_rule(name: str, instruction: str) -> str:
-    """Append the untrusted-content boundary for content-consuming agents."""
-    if name.lower() not in _UNTRUSTED_CONTENT_AGENTS:
-        return instruction
-    fragment = load_shared_fragment("untrusted_content")
+def _append_shared_fragment(instruction: str, fragment: Optional[str]) -> str:
+    """Append a static instruction fragment on the cached side of the break."""
     if not fragment or fragment.strip() in instruction:
         return instruction
 
@@ -492,6 +499,29 @@ def _append_untrusted_content_rule(name: str, instruction: str) -> str:
             + CACHE_BREAK + volatile
         )
     return f"{instruction.rstrip()}\n\n---\n\n{fragment.strip()}\n"
+
+
+def _append_untrusted_content_rule(name: str, instruction: str) -> str:
+    """Append the untrusted-content boundary for content-consuming agents."""
+    if name.lower() not in _UNTRUSTED_CONTENT_AGENTS:
+        return instruction
+    return _append_shared_fragment(
+        instruction, load_shared_fragment("untrusted_content")
+    )
+
+
+def _append_confirmation_gate_rule(name: str, instruction: str) -> str:
+    """Append the approval-gate protocol for agents that own gated tools.
+
+    Skipped for skladistar and smart_home: both already carry this protocol
+    written against their own tools, and a second copy would only give the
+    model two texts to reconcile.
+    """
+    if name.lower() not in _CONFIRMATION_GATE_AGENTS:
+        return instruction
+    return _append_shared_fragment(
+        instruction, load_shared_fragment("confirmation_gate")
+    )
 
 
 def load_instruction_file(agent_name: str) -> Optional[str]:
@@ -576,6 +606,7 @@ def create_adk_agent(
 
     # Prompt-injection boundary for agents that read external content.
     instruction = _append_untrusted_content_rule(name, instruction)
+    instruction = _append_confirmation_gate_rule(name, instruction)
 
     # Time-aware instructions must stay time-aware. Agents pass the raw
     # template; rendering it per invocation keeps a long-running process from
