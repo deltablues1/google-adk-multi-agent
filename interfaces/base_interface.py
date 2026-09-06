@@ -188,6 +188,26 @@ HR_WEEKDAY_NAMES = (
     "ponedjeljak", "utorak", "srijeda", "četvrtak", "petak", "subota", "nedjelja",
 )
 
+# A device NOUN is not a device COMMAND. "bojler", "terasa", "kuhinja" and
+# "kanal" are all ordinary Croatian as well as things in this house, so
+# SMART_HOME_KEYWORDS matches questions that merely mention one. Measured
+# 2026-09-06 on the Pi: "istrazi prednosti toplinskih pumpi u odnosu na plinski
+# bojler" was routed to smart_home, which answered "to je izvan mojih
+# mogucnosti" in two seconds. Nobody was asking about the boiler in the
+# bathroom.
+#
+# These stems mark a request as research or comparison, and send it to the
+# orchestrator instead of the device lane. Kept deliberately tight: the cost of
+# over-routing here is a slower answer, while the cost of under-routing is a
+# flat refusal, so only unambiguous research verbs belong. Matched against
+# _normalize_voice_text output, so ASCII-folded stems only.
+RESEARCH_VOICE_KEYWORDS = {
+    "istraz", "usporedi", "usporedb", "isplati li se", "prednosti",
+    "nedostat", "razlika izmedu", "sto je bolje", "sta je bolje",
+    "preporuci", "koliko kosta", "koliko stoji",
+}
+
+
 BUSINESS_ORCHESTRATOR_KEYWORDS = {
     "mail", "email", "gmail", "kalendar", "calendar", "drive", "docs",
     "dokument", "dokumenti", "sheet", "sheets", "tablica", "tablice",
@@ -411,6 +431,11 @@ class BaseInterface(ABC):
     def _looks_like_business_orchestrator_task(self, message: str) -> bool:
         msg_lower = self._normalize_voice_text(message)
         return any(kw in msg_lower for kw in BUSINESS_ORCHESTRATOR_KEYWORDS)
+
+    def _looks_like_research_request(self, message: str) -> bool:
+        """A question ABOUT something, not a command to a device."""
+        msg_lower = self._normalize_voice_text(message)
+        return any(kw in msg_lower for kw in RESEARCH_VOICE_KEYWORDS)
 
     async def _speak_working_ack(self) -> None:
         """Speak a short 'working on it' cue before a long orchestrator run.
@@ -729,6 +754,12 @@ class BaseInterface(ABC):
             return "agent", "secretary"
 
         if self._looks_like_business_orchestrator_task(message):
+            return ORCHESTRATOR_VOICE_ROUTE, None
+
+        # Research/comparison AFTER the business check (so "posalji mail s
+        # usporedbom" still goes the business way) but BEFORE every agent lane:
+        # a question that merely names a device is not a command for it.
+        if self._looks_like_research_request(message):
             return ORCHESTRATOR_VOICE_ROUTE, None
 
         # Weather AFTER the business check so mixed requests ("pošalji mail s
