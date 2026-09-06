@@ -1146,6 +1146,14 @@ def tv_view() -> dict:
                     {"type": "heading", "heading": "Aplikacije", "heading_style": "title",
                      "icon": "mdi:apps"},
                     *[app_button(*app) for app in TV_APPS],
+                    # A1 opens the channel list rather than the app: what
+                    # anyone wants from it is a channel, and the app is one
+                    # tap further in. Without this nothing links to that view.
+                    {"type": "button", "name": "A1 Xplore",
+                     "icon": "mdi:television-classic", "show_state": False,
+                     "grid_options": {"columns": 4},
+                     "tap_action": {"action": "navigate",
+                                    "navigation_path": f"/{BOARD}/kanali"}},
                 ],
             },
             {

@@ -343,6 +343,14 @@ class TestTheEveningOf20260906:
         assert sky, "the sun/moon line disappeared from the overview"
         assert sky[0]["grid_options"]["rows"] == "auto"
 
+    def test_something_actually_links_to_the_channel_view(self):
+        """A view nothing navigates to is reachable only by typing a URL."""
+        navs = [
+            c["tap_action"]["navigation_path"] for c in _cards(builder.tv_view())
+            if c.get("tap_action", {}).get("action") == "navigate"
+        ]
+        assert f"/{builder.BOARD}/kanali" in navs
+
     def test_the_a1_button_no_longer_just_launches_the_app(self):
         names = [a[0] for a in builder.TV_APPS]
         assert "A1 Xplore" not in names
