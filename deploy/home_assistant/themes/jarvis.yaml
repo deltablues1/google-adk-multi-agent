@@ -4,11 +4,10 @@
 # an automation on the sun and the weather. They carry the palette and the
 # translucency; nothing here changes what any card does.
 #
-# Two spellings of the same idea appear on purpose: `lovelace-background` and
-# `primary-background-color` for the view behind everything, `ha-card-background`
-# and `card-background-color` for the cards. Home Assistant has used both over
-# time and an unknown variable is simply ignored, so setting both is how this
-# stays working across frontend versions instead of guessing which one is live.
+# `ha-card-background` gives dashboard cards their translucency. Keep
+# `card-background-color` opaque: current HA also uses it for dropdown menus
+# and dialogs, where seeing the dashboard through the controls is illegible.
+# The explicit dialog and Material surface variables cover both UI generations.
 #
 # Cards are deliberately translucent so the sky reads through them. That is the
 # whole point — an opaque card on a gradient looks like a sticker on a window.
@@ -30,7 +29,16 @@ jarvis_dan:
   lovelace-background: "linear-gradient(170deg, #a9c9e4 0%, #cfdfea 42%, #e9eef0 100%) fixed"
   # --- cards float on it ---
   ha-card-background: "rgba(255, 255, 255, 0.58)"
-  card-background-color: "rgba(255, 255, 255, 0.58)"
+  card-background-color: "#eef3f7"
+  ha-dialog-surface-background: "#eef3f7"
+  mdc-theme-surface: "#eef3f7"
+  wa-color-text-normal: "var(--primary-text-color)"
+  wa-color-text-quiet: "var(--secondary-text-color)"
+  wa-color-neutral-fill-normal: "var(--secondary-background-color)"
+  ha-color-fill-primary-quiet-resting: "color-mix(in srgb, var(--primary-color) 15%, var(--card-background-color))"
+  ha-color-fill-primary-quiet-hover: "color-mix(in srgb, var(--primary-color) 25%, var(--card-background-color))"
+  # Five 40px sensor rows + padding fit four grid rows with a 3px gap.
+  entities-card-row-gap: "3px"
   ha-card-border-color: "rgba(20, 24, 29, 0.14)"
   ha-card-border-width: "1px"
   ha-card-border-radius: "10px"
@@ -73,7 +81,15 @@ jarvis_zalazak:
     radial-gradient(1px 1px at 8% 12%, rgba(255,255,255,0.3), rgba(255,255,255,0) 100%) fixed,
     linear-gradient(175deg, #3d3a5c 0%, #8a5a62 46%, #e0925a 82%, #f0b775 100%) fixed
   ha-card-background: "rgba(28, 20, 26, 0.34)"
-  card-background-color: "rgba(28, 20, 26, 0.34)"
+  card-background-color: "#352a36"
+  ha-dialog-surface-background: "#352a36"
+  mdc-theme-surface: "#352a36"
+  wa-color-text-normal: "var(--primary-text-color)"
+  wa-color-text-quiet: "var(--secondary-text-color)"
+  wa-color-neutral-fill-normal: "var(--secondary-background-color)"
+  ha-color-fill-primary-quiet-resting: "color-mix(in srgb, var(--primary-color) 15%, var(--card-background-color))"
+  ha-color-fill-primary-quiet-hover: "color-mix(in srgb, var(--primary-color) 25%, var(--card-background-color))"
+  entities-card-row-gap: "3px"
   ha-card-border-color: "rgba(255, 240, 225, 0.20)"
   ha-card-border-width: "1px"
   ha-card-border-radius: "10px"
@@ -140,7 +156,15 @@ jarvis_noc:
     radial-gradient(circle 150px at 84% 15%, rgba(150,175,215,0.13) 0%, rgba(150,175,215,0) 72%) fixed,
     linear-gradient(180deg, #05070c 0%, #0a0e17 58%, #121a26 100%) fixed
   ha-card-background: "rgba(255, 255, 255, 0.045)"
-  card-background-color: "rgba(255, 255, 255, 0.045)"
+  card-background-color: "#161e2b"
+  ha-dialog-surface-background: "#161e2b"
+  mdc-theme-surface: "#161e2b"
+  wa-color-text-normal: "var(--primary-text-color)"
+  wa-color-text-quiet: "var(--secondary-text-color)"
+  wa-color-neutral-fill-normal: "var(--secondary-background-color)"
+  ha-color-fill-primary-quiet-resting: "color-mix(in srgb, var(--primary-color) 15%, var(--card-background-color))"
+  ha-color-fill-primary-quiet-hover: "color-mix(in srgb, var(--primary-color) 25%, var(--card-background-color))"
+  entities-card-row-gap: "3px"
   ha-card-border-color: "rgba(255, 255, 255, 0.10)"
   ha-card-border-width: "1px"
   ha-card-border-radius: "10px"
@@ -172,7 +196,15 @@ jarvis_kisa:
   secondary-background-color: "#171d22"
   lovelace-background: "linear-gradient(180deg, #222a31 0%, #2b343c 40%, #171d22 100%) fixed"
   ha-card-background: "rgba(255, 255, 255, 0.05)"
-  card-background-color: "rgba(255, 255, 255, 0.05)"
+  card-background-color: "#26313a"
+  ha-dialog-surface-background: "#26313a"
+  mdc-theme-surface: "#26313a"
+  wa-color-text-normal: "var(--primary-text-color)"
+  wa-color-text-quiet: "var(--secondary-text-color)"
+  wa-color-neutral-fill-normal: "var(--secondary-background-color)"
+  ha-color-fill-primary-quiet-resting: "color-mix(in srgb, var(--primary-color) 15%, var(--card-background-color))"
+  ha-color-fill-primary-quiet-hover: "color-mix(in srgb, var(--primary-color) 25%, var(--card-background-color))"
+  entities-card-row-gap: "3px"
   ha-card-border-color: "rgba(255, 255, 255, 0.11)"
   ha-card-border-width: "1px"
   ha-card-border-radius: "10px"

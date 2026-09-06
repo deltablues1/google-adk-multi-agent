@@ -85,9 +85,28 @@ def period_picker(columns: int = 12, name: str = "Razdoblje") -> dict:
     return {
         "type": "tile", "entity": PERIOD_HELPER, "name": name,
         "icon": "mdi:calendar-range", "hide_state": True,
+        "features_position": "inline",
         "features": [{"type": "select-options"}],
-        "grid_options": {"columns": columns},
+        "grid_options": {"columns": columns, "rows": 1},
     }
+
+
+def period_toolbar(show_extremes: bool = False) -> dict:
+    """One short, shared selector above the graphs, not inside one column."""
+    cards = [period_picker(columns=12, name="Prikaz grafova")]
+    if show_extremes:
+        cards.append({"type": "button", "name": "Današnji min / max", "show_icon": False,
+                      "grid_options": {"columns": 12, "rows": 1},
+                      "tap_action": {"action": "navigate",
+                                     "navigation_path": f"/{BOARD}/klima-rasponi"}})
+    return {"type": "grid", "column_span": 3, "cards": cards}
+
+
+def readings_list(entities: list[tuple[str, str]]) -> dict:
+    """Native sensor rows keep full values, units and unavailable states."""
+    return {"type": "entities", "show_header_toggle": False,
+            "entities": [{"entity": entity, "name": name} for entity, name in entities],
+            "grid_options": {"columns": 12, "rows": 4}}
 
 
 def period_graphs(entities: list[tuple[str, str]], rows: int,
@@ -96,7 +115,10 @@ def period_graphs(entities: list[tuple[str, str]], rows: int,
     return [
         {
             "type": "conditional",
-            "conditions": [{"condition": "state", "entity": PERIOD_HELPER, "state": label}],
+            "conditions": [{"condition": "or", "conditions": [
+                {"condition": "state", "entity": PERIOD_HELPER, "state": state}
+                for state in ((label, "unknown", "unavailable") if label == "Dan" else (label,))
+            ]}],
             "card": {
                 "type": "statistics-graph",
                 "chart_type": "line",
@@ -240,36 +262,30 @@ def glance(entities: list[tuple[str, str]], title: str | None = None,
 # --- Overview ------------------------------------------------------------------
 
 SUN_LINE = (
-    "### ☀️ {{ as_timestamp(states('sensor.sun_next_rising')) | timestamp_custom('%H:%M') }}"
-    " &nbsp;&nbsp; 🌙 {{ as_timestamp(states('sensor.sun_next_setting')) "
-    "| timestamp_custom('%H:%M') }}\n"
-    "{% if is_state('sun.sun','above_horizon') %}"
-    "{% set s = as_timestamp(states('sensor.sun_next_setting')) - now().timestamp() %}"
-    "Dan traje još {{ (s // 3600) | int }} h {{ ((s % 3600) // 60) | int }} min."
-    "{% else %}"
-    "{% set s = as_timestamp(states('sensor.sun_next_rising')) - now().timestamp() %}"
-    "Sunce izlazi za {{ (s // 3600) | int }} h {{ ((s % 3600) // 60) | int }} min."
-    "{% endif %}\n\n"
-    # The phase name comes from Home Assistant's own moon integration, which is
-    # the same answer the sky module computes independently -- worth keeping in
-    # step, so a disagreement is visible rather than hidden.
+    "<font color='#e8a020'><ha-icon icon='mdi:weather-sunset-up'></ha-icon></font> "
+    "{{ as_timestamp(states('sensor.sun_next_rising'), none) | timestamp_custom('%H:%M', default='—') }}"
+    " &nbsp; <font color='#ed7946'><ha-icon icon='mdi:weather-sunset-down'></ha-icon></font> "
+    "{{ as_timestamp(states('sensor.sun_next_setting'), none) | timestamp_custom('%H:%M', default='—') }}"
+    "<br>"
     "{% set faze = {"
-    "'new_moon': ['🌑','mlađak'],"
-    "'waxing_crescent': ['🌒','mladi srp'],"
-    "'first_quarter': ['🌓','prva četvrt'],"
-    "'waxing_gibbous': ['🌔','pred uštapom'],"
-    "'full_moon': ['🌕','uštap'],"
-    "'waning_gibbous': ['🌖','nakon uštapa'],"
-    "'last_quarter': ['🌗','zadnja četvrt'],"
-    "'waning_crescent': ['🌘','stari srp']} %}"
-    "{% set f = faze.get(states('sensor.moon_phase'), ['🌙','—']) %}"
-    "{{ f[0] }} {{ f[1] }}"
-    "{% set c = state_attr('weather.forecast_dom','cloud_coverage') %}"
-    "{% if c is not none %} &nbsp;·&nbsp; naoblaka {{ c | round(0) }} %{% endif %}"
-    "{% set w = state_attr('weather.forecast_dom','wind_speed') %}"
-    "{% if w is not none %} &nbsp;·&nbsp; vjetar {{ w | round(0) }} km/h{% endif %}"
-    "{% set uv = state_attr('weather.forecast_dom','uv_index') %}"
-    "{% if uv is not none and uv > 0 %} &nbsp;·&nbsp; UV {{ uv | round(0) }}{% endif %}"
+    "'new_moon': ['moon-new','Mladi Mjesec'],"
+    "'waxing_crescent': ['moon-waxing-crescent','Srp u rastu'],"
+    "'first_quarter': ['moon-first-quarter','Prva četvrt'],"
+    "'waxing_gibbous': ['moon-waxing-gibbous','Mjesec raste'],"
+    "'full_moon': ['moon-full','Puni Mjesec'],"
+    "'waning_gibbous': ['moon-waning-gibbous','Mjesec opada'],"
+    "'last_quarter': ['moon-last-quarter','Zadnja četvrt'],"
+    "'waning_crescent': ['moon-waning-crescent','Srp u opadanju']} %}"
+    "{% set f = faze.get(states('sensor.moon_phase'), ['help-circle-outline','Mijena nije dostupna']) %}"
+    "<font color='#daa43b'><ha-icon icon='mdi:{{ f[0] }}'></ha-icon></font> **{{ f[1] }}**"
+    "{% set uv = state_attr('weather.forecast_dom', 'uv_index') %}"
+    "{% if is_number(uv) %} &nbsp; · &nbsp; UV {{ '%g' | format(uv | float | round(1)) }}{% endif %}"
+    "<br>{% set day = is_state('sun.sun', 'above_horizon') %}"
+    "{% set next = as_timestamp(states('sensor.sun_next_setting' if day else 'sensor.sun_next_rising'), none) %}"
+    "{% if next is not none %}{% set seconds = [0, next - now().timestamp()] | max %}"
+    "{{ 'Dan traje još' if day else 'Izlazak za' }} "
+    "{{ (seconds // 3600) | int }} h {{ ((seconds % 3600) // 60) | int }} min"
+    "{% endif %}"
 )
 
 
@@ -295,14 +311,14 @@ def overview_view(all_light_ids: list[str],
                     {"type": "heading", "heading": "Svjetla", "heading_style": "title",
                      "icon": "mdi:lightbulb-group"},
                     {
-                        "type": "button", "name": "Upravljanje svjetlima",
+                        "type": "button", "name": "Sva svjetla",
                         "icon": "mdi:lightbulb-group", "show_state": False,
                         "grid_options": {"columns": 6},
                         "tap_action": {"action": "navigate",
                                        "navigation_path": f"/{BOARD}/svjetla"},
                     },
                     {
-                        "type": "button", "name": "Ugasi sva svjetla",
+                        "type": "button", "name": "Ugasi svjetla",
                         "icon": "mdi:lightbulb-off-outline", "show_state": False,
                         "grid_options": {"columns": 6},
                         "tap_action": {
@@ -334,7 +350,7 @@ def overview_view(all_light_ids: list[str],
                         "grid_options": {"columns": 12, "rows": 2},
                     },
                     {"type": "markdown", "content": SUN_LINE,
-                     "grid_options": {"columns": 12, "rows": 3}},
+                     "grid_options": {"columns": 12, "rows": 2}},
                     {
                         "type": "weather-forecast", "entity": "weather.forecast_dom",
                         "forecast_type": "daily", "show_current": True,
@@ -470,126 +486,116 @@ def _cut_points(count: int, columns: int):
             yield (first, *(first + r for r in rest))
 
 
-def rooms_view(by_area: dict, area_names: dict) -> dict:
-    """A room is its controls. The temperature rides along with its name.
-
-    Every room used to carry a glance card of everything it measures --
-    temperature, pressure, humidity, particles -- which took as much height as
-    the switches themselves and turned the view into a scroll. The one reading
-    anybody looks for while standing in a doorway is the temperature, so it
-    became a badge on the room's own heading and the cards went away. Nothing
-    is lost: humidity and pressure for every room, side by side and with their
-    graphs, are what the Klima view is for.
-    """
-    sections = []
+def room_groups(by_area: dict, area_names: dict):
+    """Stable room order; registry noise never becomes a room control."""
     for area_id, icon in ROOM_ORDER:
-        entities = by_area.get(area_id) or []
-        if not entities:
-            continue
-        label = area_names.get(area_id, area_id)
-        controls, temperature = [], None
-        for item in entities:
-            entity_id = item["entity_id"]
-            domain = entity_id.split(".", 1)[0]
-            name = room_name(item["name"], label)
-            if domain in CONTROL_DOMAINS:
-                controls.append((domain, entity_id, name))
-            elif domain == "sensor" and "temperatura" in entity_id and temperature is None:
-                temperature = entity_id
+        entities = [e for e in by_area.get(area_id, [])
+                    if wanted_in_room(e["entity_id"])]
+        if entities:
+            yield area_id, icon, area_names.get(area_id, area_id), entities
 
-        heading = {"type": "heading", "heading": label, "heading_style": "title", "icon": icon}
-        if temperature:
-            heading["badges"] = [{"type": "entity", "entity": temperature,
-                                  "show_state": True, "show_icon": True}]
-        cards = [heading]
-        for domain, entity_id, name in sorted(controls, key=lambda c: (c[0], c[2].lower())):
-            cards.append(tile(entity_id, name, toggle=domain in ("light", "switch"),
-                              columns=6, vertical=False))
-        sections.append(cards)
 
-    return {
-        "type": "sections",
-        "max_columns": 3,
-        "title": "Sobe",
-        "path": "sobe",
-        "icon": "mdi:floor-plan",
-        "sections": pack_into_columns(sections, 3),
-    }
+def rooms_view(by_area: dict, area_names: dict) -> dict:
+    """Equal-size room cards. Controls live one tap away, not below the fold."""
+    cards = []
+    for area_id, icon, label, entities in room_groups(by_area, area_names):
+        temperature = next((e["entity_id"] for e in entities
+                            if e["entity_id"].endswith("temperatura")), None)
+        humidity = next((e["entity_id"] for e in entities
+                         if e["entity_id"].endswith("vlaga")), None)
+        controls = [e["entity_id"] for e in entities
+                    if e["entity_id"].split(".")[0] in ("light", "switch")]
+        action = {"action": "navigate", "navigation_path": f"/{BOARD}/soba-{area_id}"}
+        top = {"type": "tile", "entity": temperature or (controls[0] if controls else entities[0]["entity_id"]),
+               "name": label, "icon": icon, "hide_state": temperature is None,
+               "vertical": False,
+               "tap_action": action, "icon_tap_action": action,
+               "hold_action": {"action": "none"}}
+        # JSON literals are also valid Jinja string/list literals here.
+        status = ("{% set ids = " + json.dumps(controls) + " %}"
+                  "{% set active = expand(ids) | selectattr('state','eq','on') | list | count %}"
+                  "{% set missing = expand(ids) | selectattr('state','in',['unknown','unavailable']) | list | count %}"
+                  "{{ active }} / {{ ids | count }} uključeno"
+                  "{% if missing %} · {{ missing }} nedostupno{% endif %}") if controls else "Bez prekidača"
+        if humidity:
+            status += (" · {% set h = states('" + humidity + "') %}"
+                       "{{ (h | float | round(0) | int) ~ ' %' if is_number(h) else '—' }} vlage")
+        cards.append({"type": "vertical-stack", "grid_options": {"columns": 12, "rows": 2},
+                      "cards": [top, {"type": "markdown", "content": status}]})
+    # Three equal columns in row-major room order; no balancing by device count.
+    return {"type": "sections", "max_columns": 3, "title": "Sobe", "path": "sobe",
+            "icon": "mdi:floor-plan",
+            "sections": [{"type": "grid", "column_span": 3, "cards": cards}] if cards else []}
+
+
+def room_views(by_area: dict, area_names: dict) -> list[dict]:
+    """Subview per room with a clear way back and all existing controls."""
+    views = []
+    for area_id, icon, label, entities in room_groups(by_area, area_names):
+        sections = []
+        for title, domains in (("Svjetla", ("light", "switch")),
+                               ("Mediji", ("media_player",)),
+                               ("Mjerenja", ("sensor", "binary_sensor"))):
+            selected = [e for e in entities if e["entity_id"].split(".")[0] in domains]
+            if not selected:
+                continue
+            cards = [{"type": "heading", "heading": "Svjetla i trošila" if title == "Svjetla" else title,
+                      "heading_style": "title"}]
+            if title == "Mjerenja":
+                cards.append(readings_list([(e["entity_id"], reading_name(e["entity_id"], e["name"]))
+                                            for e in selected]))
+            else:
+                for e in sorted(selected, key=lambda e: e["name"].casefold()):
+                    cards.append(tile(e["entity_id"], room_name(e["name"], label),
+                                      toggle=title == "Svjetla", columns=6, vertical=False))
+            sections.append({"type": "grid", "cards": cards})
+        views.append({"type": "sections", "max_columns": 3, "title": label, "icon": icon,
+                      "path": f"soba-{area_id}", "subview": True,
+                      "back_path": f"/{BOARD}/sobe", "sections": sections})
+    return views
 
 
 # --- Climate ---------------------------------------------------------------------
 
 def climate_view() -> dict:
-    """Three readings, three graphs, three pairs of extremes -- one screen.
-
-    The graphs read a day by default and stretch to a year: one helper drives
-    all three, so the columns always show the same span. They gave up a row of
-    height to pay for the picker, which is the trade that was asked for -- a
-    day at a glance most of the time, a year when the question is whether this
-    August was worse than the last.
-
-    The day's max and min used to sit in a column of their own under the
-    temperatures, two cards to a row and four rows deep, which pushed Boravak
-    off the bottom of the panel: to read yesterday's low you had to scroll a
-    view that otherwise fits. A pair per column puts each room's extremes on
-    one row beside its own graph, and buys the graphs the height they were
-    always short of.
-    """
-    def extremes(entity: str, label: str) -> list[dict]:
-        return [
-            {"type": "statistic", "entity": entity, "name": f"{label} {word}",
-             "stat_type": stat, "grid_options": {"columns": 6, "rows": 1},
-             "period": {"calendar": {"period": "day"}}}
-            for word, stat in (("max", "max"), ("min", "min"))
-        ]
-
+    """Aligned current readings and graphs, with a single shared period row."""
     return {
-        "type": "sections",
-        "max_columns": 3,
-        "title": "Klima",
-        "path": "klima",
+        "type": "sections", "max_columns": 3, "title": "Klima", "path": "klima",
         "icon": "mdi:thermometer",
-        "sections": [
-            {
-                "type": "grid",
-                "cards": [
-                    {"type": "heading", "heading": "Temperatura", "heading_style": "title",
-                     "icon": "mdi:thermometer"},
-                    glance(TEMPERATURES, columns=5),
-                    *period_graphs(TEMPERATURES, rows=4),
-                    *extremes("sensor.bme280_mux_node_vanjska_temperatura", "Vani"),
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {"type": "heading", "heading": "Vlaga", "heading_style": "title",
-                     "icon": "mdi:water-percent"},
-                    glance(HUMIDITIES, columns=5),
-                    *period_graphs(HUMIDITIES, rows=4),
-                    *extremes("sensor.bme280_mux_node_dnevni_prostor_temperatura", "Boravak"),
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {"type": "heading", "heading": "Tlak (hPa)", "heading_style": "title",
-                     "icon": "mdi:gauge"},
-                    # Five pressures in a glance truncate to "1.000 h…" however
-                    # few decimals they carry: four digits, a separator and a
-                    # unit do not fit a fifth of a column. A table drops the
-                    # repeated unit into the heading and shows every digit.
-                    readings_table(PRESSURES),
-                    period_picker(name="Razdoblje svih grafova"),
-                    *period_graphs(PRESSURES, rows=4),
-                    *extremes("sensor.bme280_mux_node_soba_temperatura", "Soba"),
-                ],
-            },
+        "sections": [period_toolbar(show_extremes=True)] + [
+            {"type": "grid", "cards": [
+                {"type": "heading", "heading": title, "heading_style": "title", "icon": icon},
+                readings_list(entities),
+                *period_graphs(entities, rows=4),
+            ]}
+            for title, icon, entities in (
+                ("Temperatura", "mdi:thermometer", TEMPERATURES),
+                ("Vlaga", "mdi:water-percent", HUMIDITIES),
+                ("Tlak", "mdi:gauge", PRESSURES),
+            )
         ],
     }
 
 
 # --- Air ---------------------------------------------------------------------------
+
+
+def climate_extremes_view() -> dict:
+    """Keep daily minima/maxima available without stretching the main graphs."""
+    return {
+        "type": "sections", "max_columns": 3, "title": "Današnji min / max",
+        "path": "klima-rasponi", "subview": True, "back_path": f"/{BOARD}/klima",
+        "sections": [
+            {"type": "grid", "cards": [
+                {"type": "heading", "heading": name, "heading_style": "title"},
+                *[{"type": "statistic", "entity": entity, "name": label,
+                   "stat_type": stat, "period": {"calendar": {"period": "day"}},
+                   "grid_options": {"columns": 6, "rows": 2}}
+                  for stat, label in (("min", "Najniža"), ("max", "Najviša"))],
+            ]}
+            for entity, name in TEMPERATURES
+        ],
+    }
 
 def air_view() -> dict:
     """The number now, the trend beside it, and the sensor's own knobs at the foot.
@@ -606,7 +612,7 @@ def air_view() -> dict:
         "title": "Zrak",
         "path": "zrak",
         "icon": "mdi:air-filter",
-        "sections": [
+        "sections": [period_toolbar(),
             {
                 "type": "grid",
                 "cards": [
@@ -624,11 +630,11 @@ def air_view() -> dict:
                     {"type": "heading", "heading": "Senzor", "heading_style": "title",
                      "icon": "mdi:tune"},
                     {"type": "tile", "entity": "button.bme280_mux_node_sps30_pokreni_ciscenje",
-                     "name": "Očisti SPS30", "vertical": True,
-                     "grid_options": {"columns": 6}},
+                     "name": "Očisti senzor", "vertical": False,
+                     "grid_options": {"columns": 12, "rows": 1}},
                     {"type": "tile", "entity": "sensor.bme280_mux_node_prosjecna_velicina_cestica",
-                     "name": "Veličina čestica", "vertical": True,
-                     "grid_options": {"columns": 6}},
+                     "name": "Veličina čestica", "vertical": False,
+                     "grid_options": {"columns": 12, "rows": 1}},
                 ],
             },
             {
@@ -640,11 +646,10 @@ def air_view() -> dict:
                     # A section spanning two columns has a 24-wide grid, so
                     # 12 was half of it: the graph sat in its own left half
                     # with the picker beside it and the right half empty.
-                    period_picker(columns=8),
                     *period_graphs([
                         ("sensor.bme280_mux_node_kvaliteta_zraka_pm2_5", "PM2.5"),
                         ("sensor.bme280_mux_node_kvaliteta_zraka_pm10", "PM10"),
-                    ], rows=7, columns=24),
+                    ], rows=8, columns=24),
                 ],
             },
         ],
@@ -1181,6 +1186,8 @@ async def main():
             tv_view(),
             system_view(),
             conversation_view(),
+            climate_extremes_view(),
+            *room_views(by_area, area_names),
         ]
 
         await call(ws, 9, {"type": "lovelace/config/save", "url_path": BOARD, "config": cfg})

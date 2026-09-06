@@ -1,5 +1,27 @@
 # Home Assistant Integration Notes
 
+## Zidni dashboard Jarvis
+
+Generator je `tools/build_dashboard.py`. Panel ima 1024 × 600 piksela;
+`deploy/rpi/panel-kiosk.sh` koristi skaliranje 0,8, odnosno viewport 1280 × 750.
+Pri provjeri visine treba sklopiti bočnu traku kao na panelu.
+
+- **Sobe:** jednaka kartica za svaku sobu; dodir naziva ili ikone otvara komande
+  i mjerenja te sobe. Strelica vraća na popis. Otvaranje sobe ne pali uređaj.
+- **Klima i Zrak:** zajednički izbor razdoblja iznad grafova. Ako helper još nije
+  dostupan, dnevni graf ostaje prikazan. Dnevni temperaturni ekstremi dostupni su
+  preko gumba **Današnji min / max** na Klimi.
+- **Mjesec:** naziv i ikona dolaze iz `sensor.moon_phase`. Animiranu pozadinu i
+  položaj Mjeseca i dalje crta `www/jarvis-sky.js`; Mjesec može biti ispod horizonta
+  ili iza kartica, neovisno o prikazanom nazivu mijene.
+
+Prije pokretanja generatora postaviti `HA_URL`, `HA_TOKEN` i `DASHBOARD_BACKUP`
+(putanju postojeće mape za sigurnosnu kopiju). Generator sprema prethodnu
+konfiguraciju prije upisa nove. Za obnovu se spremljeni JSON šalje preko HA
+WebSocket naredbe `lovelace/config/save` za `url_path: jarvis-dom`.
+Kopija prije uređenja 6. 9. 2026. spremljena je na Piju u
+`~/google_claude/data/dashboard-backups/jarvis-dom-20260906-100501.json`.
+
 ## Recommended Architecture
 
 If Home Assistant already exists in your setup, keep this project as a separate service on the Raspberry Pi and integrate it with HA over LAN.
