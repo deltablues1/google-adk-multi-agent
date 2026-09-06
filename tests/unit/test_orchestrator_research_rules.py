@@ -109,3 +109,25 @@ class TestPresentationNeverCancelsARequestedStep:
     def test_it_does_not_invent_documents_on_a_text_channel(self):
         rule = _rule("10", "## Agent Routing Guide")
         assert "Do not invent a document nobody asked for." in rule
+
+
+class TestRule9SaysHowToChooseTheDepth:
+    """Measured 2026-09-06 on the Pi: a one-product price question went out
+
+    as "STANDARD." and cost 14 tool calls and 2.5 minutes for six prices.
+    The researcher had a level table; the orchestrator had no rule for
+    picking a level, so SIMPLE was never emitted.
+    """
+
+    def test_each_level_has_a_trigger(self):
+        rule = _rule("9", "### Rule 9b")
+        for level in ["SIMPLE", "STANDARD", "DEEP"]:
+            assert f"**{level}**" in rule
+
+    def test_a_single_price_question_is_named_as_simple(self):
+        rule = _rule("9", "### Rule 9b")
+        assert "is SIMPLE" in rule
+
+    def test_ties_go_to_the_cheaper_level(self):
+        rule = _rule("9", "### Rule 9b")
+        assert "send the lower one" in rule

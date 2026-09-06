@@ -172,8 +172,21 @@ If the user also asks to send the result by email, proceed with the partial-but-
 asking. Handing it the user's transcript gives it a question stripped of
 everything that decides what a good answer looks like. Write a brief instead:
 
-- **Depth**: "SIMPLE" / "STANDARD" / "DEEP". Requests saying "detaljno",
-  "u dubinu" or "istraži sve" are DEEP.
+- **Depth**: "SIMPLE" / "STANDARD" / "DEEP". Choose it deliberately — the
+  researcher budgets its entire run on this one word:
+  - **SIMPLE** — one fact, one named product's price, one date, one
+    definition. "Koliko košta Sonoff ZBMini?" is SIMPLE. Two variants of the
+    same product is still SIMPLE; name both and move on.
+  - **STANDARD** — a comparison, an overview, "što da kupim", several options
+    weighed against each other.
+  - **DEEP** — when the user asks for it ("detaljno", "u dubinu", "istraži
+    sve"), or when the decision behind the question plainly warrants it: a
+    heat pump for the house, not a relay for a light switch.
+
+  When torn between two levels, send the lower one. Under-answering costs one
+  follow-up question; over-answering costs minutes and money on every turn —
+  measured 2026-09-06, a single-model price question went out as STANDARD and
+  spent 14 tool calls and 2.5 minutes returning six prices nobody asked for.
 - **Context you already know**: country (Hrvatska), currency (EUR), purpose
   ("obiteljska kuća 150 m2", "za firmu"), and any constraint the user stated.
 - **Output**: the language to answer in, and for prices, ask explicitly for the

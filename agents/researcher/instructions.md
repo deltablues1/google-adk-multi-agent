@@ -40,7 +40,10 @@ sub-question is covered, check this list before you start writing:
   is a finding about the subject, not a failure of the research.
 - what is unconfirmed or stale is marked as such
 
-If the list is not satisfied, keep researching (at most 15 tool calls).
+If the list is not satisfied, keep researching — but inside the tool-call
+budget for this brief's depth (Rule 2b), which is at most 15 tool calls even
+at DEEP. The budget is the stopping rule; running out of it means you report
+what you have and say what you could not confirm, not that you keep going.
 
 Depth changes how many sub-questions you open and how many pages you read. It
 never changes how carefully you source what you write, and it is not a licence
