@@ -524,3 +524,62 @@ class TestSttEngineDispatch:
             service.transcribe_audio(b"RIFF....", "audio/wav", "test")
         )
         assert result.transcript == "upali svjetlo"
+
+
+class TestBrevityNeverHidesTheDifference:
+    """"U redu." and silence both mean "done".
+
+    The Pi runs VOICE_SMART_HOME_RESPONSE_MODE=ok, which answers every
+    smart-home command with those two words. Right for a light that just came
+    on; wrong for one that was already on — and on 2026-09-06 it flattened
+    both into the same reply, so a command that changed nothing sounded
+    exactly like one that worked. The state-honesty fix in mqtt_confirm was
+    invisible to the person listening.
+    """
+
+    def test_a_real_success_may_be_shortened(self):
+        from services.voice_fast_path import resolve_voice_smart_home_response
+
+        assert resolve_voice_smart_home_response("Ukljucio sam svjetlo.", "ok") == "U redu."
+        assert resolve_voice_smart_home_response("Ukljucio sam svjetlo.", "none") == ""
+
+    def test_anything_else_is_spoken_in_full(self):
+        from services.voice_fast_path import speak_in_full
+
+        for mode in ("ok", "none", "full", None):
+            assert speak_in_full("svjetlo u kuhinji je već upaljeno.", mode) == (
+                "svjetlo u kuhinji je već upaljeno."
+            )
+
+    @pytest.mark.asyncio
+    async def test_already_on_is_not_reported_as_u_redu(self, monkeypatch):
+        import services.voice_fast_path as fast_path
+
+        async def already(device_name, state):
+            return {"status": "already_in_state", "devices": {}}
+
+        monkeypatch.setattr(fast_path, "mqtt_switch_control", already)
+        monkeypatch.setenv("VOICE_SMART_HOME_RESPONSE_MODE", "ok")
+
+        said = await fast_path.execute_fast_smart_home_command(
+            "upali svjetlo u kuhinji"
+        )
+
+        assert said != "U redu."
+        assert "već" in said
+
+    @pytest.mark.asyncio
+    async def test_a_confirmed_change_still_gets_the_short_reply(self, monkeypatch):
+        import services.voice_fast_path as fast_path
+
+        async def confirmed(device_name, state):
+            return {"status": "confirmed", "devices": {}}
+
+        monkeypatch.setattr(fast_path, "mqtt_switch_control", confirmed)
+        monkeypatch.setenv("VOICE_SMART_HOME_RESPONSE_MODE", "ok")
+
+        said = await fast_path.execute_fast_smart_home_command(
+            "upali svjetlo u kuhinji"
+        )
+
+        assert said == "U redu."

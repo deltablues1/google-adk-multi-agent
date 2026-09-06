@@ -164,6 +164,12 @@ def resolve_voice_smart_home_response(
     base_response: str,
     response_mode: Optional[str] = None,
 ) -> str:
+    """Shorten a routine confirmation to the configured brevity.
+
+    Only for an action that actually happened and was verified. "U redu." and
+    silence both mean "done"; using them for anything else tells the user
+    something that is not true.
+    """
     mode = (
         response_mode
         or os.getenv("VOICE_SMART_HOME_RESPONSE_MODE", "ok")
@@ -172,6 +178,21 @@ def resolve_voice_smart_home_response(
         return ""
     if mode == "ok":
         return "U redu."
+    return base_response
+
+
+def speak_in_full(base_response: str, response_mode: Optional[str] = None) -> str:
+    """Say the whole sentence, whatever the brevity setting.
+
+    The Pi runs VOICE_SMART_HOME_RESPONSE_MODE=ok, which answers every
+    smart-home command with "U redu." That is right for a light that just came
+    on, and wrong for everything else — on 2026-09-06 it flattened "svjetlo je
+    već upaljeno" into the same two words as success, so a command that
+    changed nothing sounded exactly like one that worked.
+
+    Silence ("none") is the same problem: the user asked for no chatter on
+    success, not for a wrong answer delivered quietly.
+    """
     return base_response
 
 
@@ -197,9 +218,7 @@ def _scene_outcome_response(
     if status in _SUCCESS_STATUSES:
         return resolve_voice_smart_home_response(success_text, response_mode)
     if status in _ALREADY_STATUSES:
-        return resolve_voice_smart_home_response(
-            "Sve je već bilo u tom stanju.", response_mode
-        )
+        return speak_in_full("Sve je već bilo u tom stanju.", response_mode)
     if status == "sent":
         return f"Poslao sam naredbe za scenu.{_SENT_SUFFIX}"
     if status == "partial":
@@ -281,12 +300,13 @@ async def execute_fast_smart_home_command(
     if status in _ALREADY_STATUSES:
         # Truthful and useful: if it is NOT already on, this sentence is
         # visibly wrong and sends someone looking — which is exactly what
-        # should have happened three days ago.
+        # should have happened three days ago. Spoken in full, because the
+        # short form is the same "U redu." as a real success.
         already_text = (
             f"{spoken_name} je već upaljeno." if state == "ON"
             else f"{spoken_name} je već ugašeno."
         )
-        return resolve_voice_smart_home_response(already_text, response_mode)
+        return speak_in_full(already_text, response_mode)
     if status == "sent":
         return f"Poslao sam naredbu za {spoken_name}.{_SENT_SUFFIX}"
     if status in ("timeout", "unconfirmed"):
