@@ -14,8 +14,13 @@ import asyncio
 
 import pytest
 
-from interfaces.base_interface import BaseInterface
+from interfaces.base_interface import BaseInterface, TurnContext
 from services import late_answer
+
+
+def _ctx(helper=None, session_id="voice-session", user_id="ha-assist"):
+    """The turn's context, as _prepare_turn would have built it."""
+    return TurnContext(session_id=session_id, user_id=user_id, helper=helper)
 
 
 class _StubSystem:
@@ -26,9 +31,11 @@ class _StubSystem:
         self.answer = answer
         self.error = error
         self.prompts = []
+        self.helpers = []
 
-    async def run_orchestration(self, prompt):
+    async def run_orchestration(self, prompt, helper=None, user_id=None):
         self.prompts.append(prompt)
+        self.helpers.append(helper)
         if self.delay:
             await asyncio.sleep(self.delay)
         if self.error:
@@ -69,7 +76,7 @@ class TestDeferral:
         iface = _VoiceInterface(_StubSystem(answer="Upalio sam svjetlo."))
 
         result = await iface._run_orchestration_for_voice(
-            "prompt", user_id="ha-assist", question="upali svjetlo"
+            "prompt", user_id="ha-assist", question="upali svjetlo", ctx=_ctx()
         )
 
         assert result == "Upalio sam svjetlo."
@@ -83,7 +90,8 @@ class TestDeferral:
         iface = _VoiceInterface(system)
 
         result = await iface._run_orchestration_for_voice(
-            "prompt", user_id="ha-assist", question="istraži dizalice topline"
+            "prompt", user_id="ha-assist", question="istraži dizalice topline",
+            ctx=_ctx(),
         )
 
         assert result == "Javit ću ti."
@@ -96,7 +104,9 @@ class TestDeferral:
         monkeypatch.setenv("VOICE_DEFER_AFTER_SECONDS", "0.05")
         iface = _VoiceInterface(_StubSystem(delay=0.2, error=RuntimeError("Gmail 403")))
 
-        await iface._run_orchestration_for_voice("p", user_id="ha-assist", question="pošalji mail")
+        await iface._run_orchestration_for_voice(
+            "p", user_id="ha-assist", question="pošalji mail", ctx=_ctx()
+        )
         await asyncio.sleep(0.5)
 
         assert len(delivered) == 1 and "Gmail 403" in delivered[0][1]
@@ -108,7 +118,7 @@ class TestDeferral:
 
         # The speaker is in the room and the wake loop waits for it.
         result = await iface._run_orchestration_for_voice(
-            "p", user_id="rpi-voice-1", question="istraži nešto"
+            "p", user_id="rpi-voice-1", question="istraži nešto", ctx=_ctx()
         )
 
         assert result == "spori odgovor"
@@ -120,10 +130,64 @@ class TestDeferral:
         iface = _VoiceInterface(_StubSystem(delay=0.1, answer="spori odgovor"))
 
         result = await iface._run_orchestration_for_voice(
-            "p", user_id="ha-assist", question="istraži nešto"
+            "p", user_id="ha-assist", question="istraži nešto", ctx=_ctx()
         )
 
         assert result == "spori odgovor"
+
+
+class TestTheDeferredTaskKeepsItsOwnRunner:
+    """The reason the context is passed rather than read off self.
+
+    `ensure_future` queues the coroutine; its body runs minutes later. Reading
+    `self.system.orchestrator_helper` at that point picks up whichever runner
+    the NEXT turn installed — so a slow research answer could be written into
+    somebody else's session, under somebody else's user id.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_later_turn_cannot_steal_the_deferred_run(
+        self, monkeypatch, delivered
+    ):
+        monkeypatch.setenv("VOICE_DEFER_AFTER_SECONDS", "0.05")
+        system = _StubSystem(delay=0.3, answer="gotovo")
+        iface = _VoiceInterface(system)
+
+        mine = object()
+        result = await iface._run_orchestration_for_voice(
+            "p", user_id="ha-assist", question="istraži nešto",
+            ctx=_ctx(helper=mine, session_id="session-A"),
+        )
+        assert result != "gotovo"  # deferred
+
+        # A second turn arrives and installs its own runner while the first
+        # is still working.
+        system.orchestrator_helper = object()
+        await asyncio.sleep(0.5)
+
+        assert system.helpers == [mine], (
+            "the deferred run used a runner it was not given"
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_binding_happens_when_the_callable_is_made(self):
+        # Sharper than the test above, which records the helper before any
+        # waiting and so mostly proves the argument was passed. Here the
+        # shared runner is replaced BETWEEN making the callable and running
+        # it — the exact scheduling gap that ensure_future opens, since a
+        # queued coroutine reads self.* only when its body finally executes.
+        system = _StubSystem(answer="gotovo")
+        iface = _VoiceInterface(system)
+
+        mine = object()
+        run = iface._orchestrate(_ctx(helper=mine, session_id="session-A"))
+
+        # A later turn arrives and installs its own runner.
+        system.orchestrator_helper = object()
+
+        await run("p")
+
+        assert system.helpers == [mine]
 
 
 class TestNotificationPayload:

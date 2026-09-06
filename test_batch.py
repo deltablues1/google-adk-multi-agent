@@ -203,10 +203,9 @@ async def run_tests(start_from: int = 1, only_ids: list = None):
         for attempt in range(max_retries):
             try:
                 # Route based on philosophy or orchestrator
-                query_lower = query.lower()
-                is_philosophy = any(kw in query_lower for kw in system.philosophy_keywords)
+                from interfaces.base_interface import looks_philosophical
 
-                if is_philosophy:
+                if looks_philosophical(query):
                     logger.info("Routing to Philosophy Classroom (Socrates)")
                     socrates_response = await system.socrates.run_with_fallback(query)
                     result_text = socrates_response

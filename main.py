@@ -133,14 +133,11 @@ class WorkspaceADKSystem:
         self.session_id = f"cli-session-{int(time.time())}"
         self.user_id = "cli-user"
 
-        # Philosophy keyword set for routing (replaces LLM-based MasterRouter)
-        self.philosophy_keywords = {
-            "sokrat", "socrates", "platon", "plato", "aristotel", "aristotle",
-            "kant", "nietzsche", "hegel", "descartes", "filozofij", "philosophy",
-            "sokratova metoda", "socratic method", "filozofski", "philosophical",
-            "metafizik", "epistemolog", "ontolog", "etik", "logik",
-            "stoiciz", "epikur", "seneca", "marcus aurelius",
-        }
+        # Philosophy routing lives in interfaces.base_interface.looks_philosophical,
+        # which matches whole words. The set that used to sit here held bare
+        # stems ("etik", "logik") matched as substrings, so "napravi etiketu"
+        # and "provjeri logiku" both routed to Socrates and flipped active_mode
+        # for the whole process.
 
         # State
         self.active_mode = "LEGACY" # or "CLASSROOM"
@@ -262,24 +259,34 @@ class WorkspaceADKSystem:
         else:
             logger.info("Scheduler startup skipped (start_scheduler=False). Use run_scheduler.py for background jobs.")
 
-    async def run_orchestration(self, message: str) -> str:
+    async def run_orchestration(
+        self, message: str, helper=None, user_id: Optional[str] = None
+    ) -> str:
         """Single entry point for orchestrating a user request.
 
         When USE_PLAN_EXECUTE is enabled, genuine multi-step chains are decomposed
         and executed deterministically step-by-step (plan-execute), while single /
         special requests fall back to the Smart Orchestrator. When the flag is off,
         every request goes straight to the Smart Orchestrator (legacy behavior).
+
+        `helper` is the runner for THIS request, passed in rather than read off
+        self. A deferred voice run executes its body long after it was queued,
+        and by then `self.orchestrator_helper` belonged to a later turn — in
+        another session, possibly for another user. Omitting it keeps the CLI
+        working, which really does have exactly one session.
         """
+        helper = helper or self.orchestrator_helper
+        user_id = user_id or self.user_id
         if os.getenv("USE_PLAN_EXECUTE", "false").lower() == "true":
             return await run_plan_execute(
                 message,
                 self.worker_agents,
-                fallback=self.orchestrator_helper.run,
-                session_id=self.orchestrator_helper.session_id,
-                user_id=self.user_id,
-                record_turn=self.orchestrator_helper.record_exchange,
+                fallback=helper.run,
+                session_id=helper.session_id,
+                user_id=user_id,
+                record_turn=helper.record_exchange,
             )
-        return await self.orchestrator_helper.run(message)
+        return await helper.run(message)
 
     def verify_authentication(self) -> bool:
         """
@@ -355,6 +362,11 @@ class WorkspaceADKSystem:
                     print("Exiting Philosophy Classroom. Back to normal mode.")
                     continue
 
+                elif user_input.lower() in ('classroom', 'enter classroom'):
+                    self.active_mode = "CLASSROOM"
+                    print("Entering Philosophy Classroom. Type 'leave classroom' to exit.")
+                    continue
+
                 # Procesuiraj zahtjev
                 logger.info(f"Processing request: {user_input}")
 
@@ -379,16 +391,14 @@ class WorkspaceADKSystem:
                     result = socrates_response
 
                 else:
-                    # Check if query is about philosophy (keyword match, no LLM call needed)
-                    query_lower = user_input.lower()
-                    is_philosophy = any(kw in query_lower for kw in self.philosophy_keywords)
+                    # Philosophy question -> Socrates for THIS turn only.
+                    # Entering the classroom for good is the explicit
+                    # 'classroom' command: a keyword that flips active_mode
+                    # changes the mode for every channel sharing this system.
+                    from interfaces.base_interface import looks_philosophical
 
-                    if is_philosophy:
-                        self.active_mode = "CLASSROOM"
-                        print(sanitize_emojis("\n🏛️ Entering Philosophy Classroom..."))
+                    if looks_philosophical(user_input):
                         print(sanitize_emojis("🤔 Socrates is thinking..."))
-
-                        # Run Socrates for first response
                         socrates_response = await self.socrates.run_with_fallback(user_input)
                         print(sanitize_emojis(f"\n🏛️ Socrates:\n{socrates_response}"))
                         result = socrates_response

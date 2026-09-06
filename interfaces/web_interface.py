@@ -106,6 +106,15 @@ class WebInterface(BaseInterface):
                 logger.info("WebInterface: using InMemorySessionService (shared)")
         return self._adk_session_service
 
+    def _session_service_for_runner(self):
+        """Web binds every RunnerHelper to the one shared ADK session service.
+
+        Streaming already did this; chat() kept whatever the previous helper
+        carried, so the two paths could end up on different stores for the
+        same conversation.
+        """
+        return self._get_adk_session_service()
+
     async def _get_lock(self, session_id: str) -> asyncio.Lock:
         """Get or create processing lock for a session."""
         if session_id not in self.processing_locks:
@@ -203,61 +212,82 @@ class WebInterface(BaseInterface):
             )
         session_id = self.get_or_create_session(user_id)
         lock = await self._get_lock(session_id)
-        persistence = self._get_persistence()
 
         async with lock:
-            # Record user message
-            user_ts = time.time()
-            self.message_history[session_id].append({
-                "role": "user",
-                "content": message,
-                "timestamp": user_ts
-            })
-            _fire_and_forget(persistence.save_message(
-                session_id=session_id, role="user",
-                content=message, timestamp=user_ts,
-            ))
-
-            # Auto-set session title from first message
-            if len(self.message_history[session_id]) == 1:
-                title = message[:100].strip()
-                _fire_and_forget(
-                    persistence.update_session_title(session_id, title)
-                )
-
-            # Process through BaseInterface.process_message
-            response = await self.process_message(
-                user_id=user_id,
-                message=message,
-                session_id=session_id,
-                route_hint=route_hint,
-                response_mode=response_mode,
+            return await self._chat_locked(
+                user_id, message, session_id, route_hint, response_mode
             )
 
-            # Record assistant message
-            timestamp = time.time()
-            self.message_history[session_id].append({
-                "role": "assistant",
-                "content": response,
-                "timestamp": timestamp
-            })
-            _fire_and_forget(persistence.save_message(
-                session_id=session_id, role="assistant",
-                content=response, timestamp=timestamp,
-            ))
+    async def _chat_locked(
+        self,
+        user_id: str,
+        message: str,
+        session_id: str,
+        route_hint: Optional[str] = None,
+        response_mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One non-streaming turn, with this session's lock ALREADY held.
 
-            # Audit log
-            _fire_and_forget(persistence.log_audit(
-                session_id=session_id, user_id=user_id,
-                agent_name="orchestrator", action_type="chat_response",
-                action_description=f"Response to: {message[:80]}",
-            ))
+        chat_stream's CLASSROOM fallback used to call chat() while holding
+        that very lock. asyncio.Lock is not reentrant, so the request blocked
+        on itself and never released it — the session stayed wedged until a
+        restart. Both callers now share this body and each takes the lock
+        exactly once.
+        """
+        persistence = self._get_persistence()
 
-            return {
-                "response": response,
-                "session_id": session_id,
-                "timestamp": timestamp
-            }
+        # Record user message
+        user_ts = time.time()
+        self.message_history[session_id].append({
+            "role": "user",
+            "content": message,
+            "timestamp": user_ts
+        })
+        _fire_and_forget(persistence.save_message(
+            session_id=session_id, role="user",
+            content=message, timestamp=user_ts,
+        ))
+
+        # Auto-set session title from first message
+        if len(self.message_history[session_id]) == 1:
+            title = message[:100].strip()
+            _fire_and_forget(
+                persistence.update_session_title(session_id, title)
+            )
+
+        # Process through BaseInterface.process_message
+        response = await self.process_message(
+            user_id=user_id,
+            message=message,
+            session_id=session_id,
+            route_hint=route_hint,
+            response_mode=response_mode,
+        )
+
+        # Record assistant message
+        timestamp = time.time()
+        self.message_history[session_id].append({
+            "role": "assistant",
+            "content": response,
+            "timestamp": timestamp
+        })
+        _fire_and_forget(persistence.save_message(
+            session_id=session_id, role="assistant",
+            content=response, timestamp=timestamp,
+        ))
+
+        # Audit log
+        _fire_and_forget(persistence.log_audit(
+            session_id=session_id, user_id=user_id,
+            agent_name="orchestrator", action_type="chat_response",
+            action_description=f"Response to: {message[:80]}",
+        ))
+
+        return {
+            "response": response,
+            "session_id": session_id,
+            "timestamp": timestamp
+        }
 
     async def chat_stream(
         self, user_id: str, message: str,
@@ -281,33 +311,23 @@ class WebInterface(BaseInterface):
             if self.system is None:
                 self.initialize_system()
 
-            # CLASSROOM mode doesn't support streaming - fallback
+            # CLASSROOM mode doesn't support streaming - fallback.
+            # _chat_locked, not chat(): we already hold this session's lock.
+            # It runs process_message, which prepares the turn itself, so this
+            # branch must come BEFORE _prepare_turn — arming the same turn
+            # twice would consume the user's "da" before the tool sees it.
             if self.system.active_mode == "CLASSROOM":
-                result = await self.chat(user_id, message)
+                result = await self._chat_locked(user_id, message, session_id)
                 yield {"event": "text", "data": result["response"], "author": "socrates"}
                 yield {"event": "done", "data": {"session_id": session_id}}
                 return
 
-            # Update system session context
-            self.system.session_id = session_id
-            self.system.user_id = user_id
+            # Same preparation as the non-streaming path: session binding,
+            # approval arming, runner binding. Streaming used to do its own
+            # half of this and skip the approvals half, so nothing ever armed
+            # and a "da" in the web UI could not authorise anything.
+            ctx = await self._prepare_turn(user_id, message, session_id)
 
-            # Inject session context for HITL web approval flow
-            os.environ['CURRENT_SESSION_ID'] = session_id
-            os.environ['CURRENT_USER_ID'] = user_id
-
-            # Recreate RunnerHelper if session changed (same as BaseInterface lines 107-119)
-            # Pass the shared session_service so ADK context is preserved across switches.
-            if self.system.orchestrator_helper:
-                if self.system.orchestrator_helper.session_id != session_id:
-                    from agents.adk_agents.runner_utils import RunnerHelper
-                    self.system.orchestrator_helper = RunnerHelper(
-                        agent=self.system.orchestrator,
-                        session_id=session_id,
-                        user_id=user_id,
-                        app_name="agents",
-                        session_service=self._get_adk_session_service(),
-                    )
 
             # Record user message
             user_ts = time.time()
@@ -328,6 +348,87 @@ class WebInterface(BaseInterface):
                 _fire_and_forget(
                     persistence.update_session_title(session_id, title)
                 )
+
+            # Explicit mode commands belong to every door, not only the
+            # non-streaming one — /classroom typed in the browser used to go
+            # to the runner as an ordinary message. Placed after _prepare_turn
+            # so the turn is still prepared exactly once, and after the user
+            # message is recorded so the history reads straight.
+            explicit_mode_reply = self._handle_classroom_command(message)
+            if explicit_mode_reply is not None:
+                reply_ts = time.time()
+                self.message_history[session_id].append({
+                    "role": "assistant",
+                    "content": explicit_mode_reply,
+                    "timestamp": reply_ts,
+                })
+                _fire_and_forget(persistence.save_message(
+                    session_id=session_id, role="assistant",
+                    content=explicit_mode_reply, timestamp=reply_ts,
+                ))
+                yield {"event": "text", "data": explicit_mode_reply, "author": "system"}
+                yield {"event": "done", "data": {"session_id": session_id}}
+                return
+
+            # The streaming path drives the runner directly, so it does not
+            # pass through _orchestrate and needs the same check: opening this
+            # conversation in the browser while a voice job is still writing
+            # to it would interleave the two.
+            busy = self.session_busy_answer(session_id)
+            if busy is not None:
+                reply_ts = time.time()
+                self.message_history[session_id].append({
+                    "role": "assistant",
+                    "content": busy,
+                    "timestamp": reply_ts,
+                })
+                _fire_and_forget(persistence.save_message(
+                    session_id=session_id, role="assistant",
+                    content=busy, timestamp=reply_ts,
+                ))
+                yield {"event": "text", "data": busy, "author": "system"}
+                yield {"event": "done", "data": {"session_id": session_id}}
+                return
+
+            # USE_PLAN_EXECUTE only ever applied to the non-streaming path,
+            # so the same request was decomposed in HA Assist and run in one
+            # pass in the browser. Plan-execute has no token stream to forward
+            # — each step runs in its own isolated session — so it is
+            # delivered as one message, with a note first because it takes a
+            # while.
+            # Attachments stay on the streaming path. Plan-execute takes a
+            # plain string, so routing an image here would drop it silently —
+            # "analiziraj priloženu sliku pa napravi dokument" would arrive as
+            # text alone. Better one request handled the old way than a
+            # request quietly missing half its input.
+            if attachments:
+                logger.info(
+                    "Plan-execute skipped for a request with %d attachment(s)",
+                    len(attachments),
+                )
+            if not attachments and self._plan_execute_applies(message):
+                yield {
+                    "event": "text",
+                    "data": os.getenv(
+                        "PLAN_EXECUTE_ACK_TEXT",
+                        "Ovo ima više koraka — radim ih redom, javim kad završim.",
+                    ) + "\n\n",
+                    "author": "orchestrator",
+                }
+                planned = await self._orchestrate(ctx)(message)
+                reply_ts = time.time()
+                self.message_history[session_id].append({
+                    "role": "assistant",
+                    "content": planned,
+                    "timestamp": reply_ts,
+                })
+                _fire_and_forget(persistence.save_message(
+                    session_id=session_id, role="assistant",
+                    content=planned, timestamp=reply_ts,
+                ))
+                yield {"event": "text", "data": planned, "author": "orchestrator"}
+                yield {"event": "done", "data": {"session_id": session_id}}
+                return
 
             full_text = ""
             trace_events = []
@@ -359,9 +460,9 @@ class WebInterface(BaseInterface):
             for _attempt in range(len(_RETRY_DELAYS) + 1):
                 try:
                     if _multimodal_content is not None:
-                        event_stream = self.system.orchestrator_helper.stream_content(_multimodal_content)
+                        event_stream = ctx.helper.stream_content(_multimodal_content)
                     else:
-                        event_stream = self.system.orchestrator_helper.stream(message)
+                        event_stream = ctx.helper.stream(message)
 
                     async for event in event_stream:
                         author = getattr(event, 'author', 'unknown')
@@ -617,7 +718,22 @@ class WebInterface(BaseInterface):
         logger.info("WebInterface system initialized")
 
     async def stop(self) -> None:
-        """Cleanup persistence connection."""
+        """Cleanup persistence connections.
+
+        Two different stores, and only the first was ever closed: the ADK
+        session service writes conversation history in the background, and
+        its close() had no callers at all — so a shutdown dropped whatever
+        was still in flight and the history came back short.
+        """
         if self._persistence is not None:
             await self._persistence.close()
+
+        if self._adk_session_service is not None:
+            closer = getattr(self._adk_session_service, "close", None)
+            if callable(closer):
+                try:
+                    await closer()
+                except Exception:
+                    logger.warning("ADK session service close failed", exc_info=True)
+
         logger.info("WebInterface stopped")

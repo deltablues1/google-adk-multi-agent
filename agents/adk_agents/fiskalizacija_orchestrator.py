@@ -375,8 +375,13 @@ class FiskalizacijaOrchestrator:
                         from services.hitl_firestore_service import (
                             HITLFirestoreService, generate_confirmation_id
                         )
-                        session_id = os.environ.get('CURRENT_SESSION_ID', 'unknown')
-                        user_id = os.environ.get('CURRENT_USER_ID', 'web-user')
+                        # These were process-global env vars, written only by
+                        # the streaming path — so an approval raised from HA
+                        # Assist was filed under whichever browser session had
+                        # streamed last. The turn context is per request.
+                        from services import approvals
+                        session_id = approvals.current_session()
+                        user_id = approvals.current_user() or 'web-user' 
                         conf_id = generate_confirmation_id(session_id)
 
                         # Build a compact invoice summary for the dashboard card

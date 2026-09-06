@@ -75,7 +75,15 @@ def test_wakeword_flow_reaches_fast_path_end_to_end(monkeypatch):
     interface = WakeWordInterface()
     interface.system = SimpleNamespace(
         active_mode="LEGACY",
-        orchestrator_helper=None,
+        # A runner bound to THIS interface's session. _helper_for refuses to
+        # hand back one belonging to another session, so a stub that leaves
+        # this None now fails loudly instead of silently running the turn in
+        # whatever session the seed happened to carry.
+        orchestrator_helper=SimpleNamespace(
+            session_id=interface.session_id,
+            user_id=interface.user_id,
+            session_service=None,
+        ),
         philosophy_keywords=set(),
         session_id=None,
         user_id=None,

@@ -13,6 +13,7 @@ import time
 import uuid
 import unicodedata
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Dict, Any
 from zoneinfo import ZoneInfo
@@ -22,6 +23,28 @@ from services.voice_fast_path import execute_fast_smart_home_command
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TurnContext:
+    """Everything one request needs, carried instead of shared.
+
+    `system.session_id`, `system.user_id` and `system.orchestrator_helper`
+    were one set of attributes serving every caller of a single system
+    object. Two conversations rebound them under each other, and a deferred
+    voice task was worse than that: `ensure_future` queues the coroutine, and
+    the attribute is read when its body finally runs — by which time the
+    runner belonged to a later turn, in a different session, possibly for a
+    different user.
+
+    Passing the context makes that impossible instead of unlikely. Nothing
+    here is read off `self`.
+    """
+
+    session_id: str
+    user_id: str
+    helper: Any
+
 
 SMART_HOME_KEYWORDS = {
     "svjetlo", "upal", "ugas", "ukljuc", "uključi", "iskljuc", "isključi",
@@ -37,6 +60,80 @@ SMART_HOME_KEYWORDS = {
 
 # Word-boundary match for the bare word "tv" ("upali tv", "tv u dnevnoj").
 _TV_WORD_RE = re.compile(r"\btv\b")
+
+
+def _fold_text(text: str) -> str:
+    """Lowercase and strip diacritics, so "poštuj" and "postuj" match alike."""
+    normalized = unicodedata.normalize("NFKD", text.lower())
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+# Philosophy routing, WHOLE WORDS only. The old set held bare stems "etik"
+# and "logik" matched as substrings, so "napravi etiketu" and "provjeri
+# logiku" both scored as philosophy — and the caller flipped the whole
+# process into CLASSROOM on them. Same lesson as _TV_WORD_RE, plus one step
+# further: "logika" is gone entirely. Even as a whole word it is ordinary
+# Croatian ("logika rasporeda", "logika koda"), and no boundary separates
+# that from the discipline.
+_PHILOSOPHY_WORD_RE = re.compile(
+    r"\b("
+    r"sokrat\w*|socrates|platon\w*|plato|aristotel\w*|aristotle|"
+    r"kant|kantov\w*|nietzsche|niceov\w*|hegel\w*|descartes|dekart\w*|"
+    r"filozof\w*|philosoph\w*|metafizi\w*|epistemolog\w*|ontolog\w*|"
+    r"etika|etike|etici|etiku|etikom|etick\w*|"
+    r"stoicizm\w*|stoick\w*|epikur\w*|seneka|seneca|"
+    r"marko aurelije|marcus aurelius"
+    r")\b"
+)
+
+
+def looks_philosophical(text: str) -> bool:
+    """Does this message ask for the philosophy lane?
+
+    Routing only — it picks the agent for ONE turn. Entering CLASSROOM for
+    the whole process takes an explicit command, because active_mode is
+    global: a keyword that flips it from one channel strands every other
+    channel in the wrong mode.
+    """
+    return bool(_PHILOSOPHY_WORD_RE.search(_fold_text(text)))
+
+
+# Explicit entry/exit for the global Philosophy Classroom. The exit already
+# existed (Telegram /leave, CLI "leave classroom"); the entry was a keyword
+# side effect, which is exactly what let an ordinary request flip the mode.
+# Whole-utterance phrases asking after a deferred job, ASCII-folded.
+JOB_STATUS_QUESTIONS = frozenset({
+    "je li gotovo", "jel gotovo", "jeli gotovo", "je l gotovo",
+    "jesi li zavrsio", "jesi zavrsio", "jesi li gotov", "jesi gotov",
+    "ima li novosti", "sto je s onim", "sta je s onim",
+    "kako napreduje", "jesi li nasao", "jesi nasao",
+})
+
+
+def _close_background_job(job_id: str, task) -> None:
+    """Mark a deferred job finished once its task settles."""
+    from services import background_jobs
+
+    try:
+        if task.cancelled():
+            background_jobs.finish(job_id, failed=True)
+            return
+        error = task.exception()
+        if error is not None:
+            background_jobs.finish(job_id, answer=str(error)[:500], failed=True)
+            return
+        background_jobs.finish(job_id, answer=task.result() or "")
+    except Exception:
+        logger.warning("Could not close background job %s", job_id, exc_info=True)
+
+
+CLASSROOM_ENTER_COMMANDS = frozenset({
+    "/classroom", "classroom", "philosophy classroom",
+    "udji u ucionicu", "filozofska ucionica",
+})
+CLASSROOM_LEAVE_COMMANDS = frozenset({
+    "/leave", "leave classroom", "izadi iz ucionice", "napusti ucionicu",
+})
 
 CHRISTIAN_KEYWORDS = {
     "krsc", "kršć", "biblij", "katekiz", "molitv", "duhovn", "augustin",
@@ -182,6 +279,10 @@ class BaseInterface(ABC):
     - Format output
     """
 
+    # How many session runners to keep. Building one is cheap; a long-lived
+    # web process just must not keep every session it has ever seen.
+    _MAX_CACHED_HELPERS = 32
+
     def __init__(self, session_prefix: str = "interface"):
         """
         Initialize base interface.
@@ -196,8 +297,34 @@ class BaseInterface(ABC):
         # replies in the same direct voice lane (write confirmations).
         self._voice_pinned_lane: Dict[str, tuple] = {}
 
+        # session_id -> RunnerHelper. A cache, not a "current" runner: two
+        # sessions can be mid-turn at once, and neither may overwrite the
+        # other's. Insertion-ordered, so the oldest entry is evicted first.
+        self._runner_helpers: Dict[str, Any] = {}
+
+        # Last session/user seen. Display only — nothing dispatches on these.
+        self.last_session_id: Optional[str] = None
+        self.last_user_id: Optional[str] = None
+
         # Lazy import to avoid circular dependencies
         self._system_class = None
+
+    def _reclaim_orphaned_jobs(self) -> None:
+        """Release sessions claimed by jobs whose process is gone.
+
+        Without this, one crash during a long research task would claim that
+        conversation forever: every later orchestrator turn in it would be
+        told to wait for a job that no longer exists.
+        """
+        try:
+            from services import background_jobs
+            # Name this process's notepad before touching it. Sharing one file
+            # meant any interface starting up could declare another's live job
+            # interrupted and release a session still being written to.
+            background_jobs.set_owner(self.session_prefix)
+            background_jobs.mark_orphans_interrupted()
+        except Exception:
+            logger.debug("Could not reclaim orphaned jobs", exc_info=True)
 
     def _get_system_class(self):
         """Lazy load WorkspaceADKSystem to avoid import issues."""
@@ -230,6 +357,7 @@ class BaseInterface(ABC):
         SystemClass = self._get_system_class()
         self.system = SystemClass()
         self.system.initialize_agents()
+        self._reclaim_orphaned_jobs()
 
         logger.info(f"System initialized for {self.session_prefix} interface")
 
@@ -244,8 +372,7 @@ class BaseInterface(ABC):
 
     @staticmethod
     def _normalize_voice_text(text: str) -> str:
-        normalized = unicodedata.normalize("NFKD", text.lower())
-        return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        return _fold_text(text)
 
     def _should_use_voice_direct_routing(self, user_id: str) -> bool:
         """Enable direct routing only for voice-tagged users when the feature is on.
@@ -269,7 +396,7 @@ class BaseInterface(ABC):
     def _match_direct_voice_agent(self, message: str) -> Optional[str]:
         """Pick direct voice target before orchestrator fallback."""
         msg_lower = message.lower()
-        if any(kw in msg_lower for kw in self.system.philosophy_keywords):
+        if looks_philosophical(message):
             return "socrates"
         if any(kw in msg_lower for kw in SMART_HOME_KEYWORDS) or _TV_WORD_RE.search(msg_lower):
             return "smart_home"
@@ -307,8 +434,92 @@ class BaseInterface(ABC):
         except Exception:
             logger.debug("Working-ack hook failed", exc_info=True)
 
+    @staticmethod
+    def _plan_execute_applies(message: str) -> bool:
+        """Would this request be decomposed instead of run in one pass?
+
+        Streaming has to ask before it starts: plan-execute runs each step in
+        its own isolated session and produces no token stream to forward, so
+        the two cannot be mixed. Asking here is what stops the same request
+        behaving differently in the browser and everywhere else.
+        """
+        if os.getenv("USE_PLAN_EXECUTE", "false").lower() != "true":
+            return False
+        try:
+            from agents.adk_agents.plan_execute import _looks_multi_step
+            return _looks_multi_step(message)
+        except Exception:
+            logger.debug("Plan-execute prefilter failed", exc_info=True)
+            return False
+
+    @staticmethod
+    def _is_job_status_question(message: str) -> bool:
+        """Is the user asking about the long task, rather than asking for one?
+
+        Deliberately a small phrase list, matched against the whole utterance
+        like the time/date lane: a loose match here would swallow ordinary
+        questions and answer them with a status report.
+        """
+        text = _fold_text(message).strip(" ?!.,")
+        return text in JOB_STATUS_QUESTIONS
+
+    def _answer_job_status(self, session_id: str) -> Optional[str]:
+        """What the last long job for this conversation is doing, if any."""
+        from services import background_jobs
+
+        job = background_jobs.latest_for_session(session_id)
+        if job is None:
+            return None
+        return background_jobs.describe(job)
+
+    @staticmethod
+    def session_busy_answer(session_id: str) -> Optional[str]:
+        """What to say instead of starting a second run in this conversation.
+
+        A deferred job keeps writing to its ADK session long after the turn
+        that started it returned, and the session lock went with that turn.
+        A second orchestrator run in the same session interleaves two
+        conversations into one transcript.
+
+        The check has to sit on every orchestrator entry, not just the voice
+        one that creates these jobs: opening the same conversation in the
+        browser while a voice job runs reaches the same session.
+        """
+        try:
+            from services import background_jobs
+            holding = background_jobs.active_for_session(session_id)
+        except Exception:
+            logger.debug("Could not check for a running job", exc_info=True)
+            return None
+        if holding is None:
+            return None
+        logger.info(
+            "Session '%s' is held by job %s; not starting a second run",
+            session_id, holding.get("job_id"),
+        )
+        from services import background_jobs as jobs
+        return jobs.describe(holding)
+
+    def _orchestrate(self, ctx: "TurnContext"):
+        """A callable that runs the orchestrator for THIS request.
+
+        Binding the context here means a caller cannot accidentally reach for
+        the shared runner, including a caller that only executes later. It is
+        also the one place every orchestrator run passes through, which is
+        why the busy check lives here rather than at each call site.
+        """
+        async def run(prompt: str) -> str:
+            busy = self.session_busy_answer(ctx.session_id)
+            if busy is not None:
+                return busy
+            return await self.system.run_orchestration(
+                prompt, helper=ctx.helper, user_id=ctx.user_id
+            )
+
+        return run
+
     async def _run_orchestration_for_voice(
-        self, prompt: str, user_id: str, question: str
+        self, prompt: str, user_id: str, question: str, ctx: "TurnContext"
     ) -> str:
         """Run the orchestrator without betting the answer on the window staying open.
 
@@ -321,18 +532,30 @@ class BaseInterface(ABC):
 
         Only Assist defers. The wake word has a speaker in the room and a loop
         patient enough to use it, and text channels have no window to lose.
+
+        The runner comes from `ctx`, and this is the one place where that is
+        not merely tidier. The deferred task runs its body minutes after it was
+        queued; reading `self.system.orchestrator_helper` inside it would pick
+        up whichever runner the NEXT turn installed, so a long research answer
+        could land in someone else's session.
         """
+        run = self._orchestrate(ctx)
+
+        # `run` refuses on its own when a job still holds this conversation,
+        # so a busy session answers here without ever starting a task.
+        from services import background_jobs
+
         if not user_id.startswith(HA_ASSIST_USER_PREFIX):
-            return await self.system.run_orchestration(prompt)
+            return await run(prompt)
 
         try:
             grace = float(os.getenv("VOICE_DEFER_AFTER_SECONDS", "25"))
         except ValueError:
             grace = 25.0
         if grace <= 0:
-            return await self.system.run_orchestration(prompt)
+            return await run(prompt)
 
-        task = asyncio.ensure_future(self.system.run_orchestration(prompt))
+        task = asyncio.ensure_future(run(prompt))
         try:
             # shield, not wait_for on the task itself: the timeout must end the
             # waiting, never the work.
@@ -342,8 +565,19 @@ class BaseInterface(ABC):
 
         from services.late_answer import deliver_when_done
 
+        # Written down before the promise is spoken. The work is still an
+        # asyncio.Task and still cannot be resumed, but a job dropped by a
+        # restart now leaves a record instead of silence.
+        job_id = background_jobs.start(ctx.session_id, ctx.user_id, question)
+        task.add_done_callback(
+            lambda finished: _close_background_job(job_id, finished)
+        )
+
         deliver_when_done(task, question)
-        logger.info("Voice task deferred after %.0fs; answer will go to the phone", grace)
+        logger.info(
+            "Voice task deferred after %.0fs as job %s; answer goes to the phone",
+            grace, job_id,
+        )
         return os.getenv(
             "VOICE_DEFER_ACK_TEXT",
             "Ovo će potrajati. Nastavljam raditi i poslat ću ti odgovor na mobitel čim bude gotov.",
@@ -565,9 +799,19 @@ class BaseInterface(ABC):
         approvals.set_session(session_id)
 
         # Asking once per turn is fine; it is the repeat inside one turn that
-        # cannot succeed and must be interrupted.
-        from services.approval_gate import reset_holds
-        reset_holds(session_id)
+        # cannot succeed and must be interrupted. The ids come back rather
+        # than being thrown away: a bare "da" may arm only what the gate
+        # actually stopped to ask about.
+        from services.approval_gate import take_holds
+        held_actions = take_holds(session_id)
+
+        # Same idea for a worker that keeps coming back empty: the count is
+        # per turn, so a new message gives it a clean start.
+        try:
+            from agents.adk_agents.control_callbacks import reset_empty_results
+            reset_empty_results(session_id)
+        except Exception:
+            logger.debug("Could not reset empty-result counters", exc_info=True)
 
         # Read before arming: on_user_turn consumes and cancels.
         had_pending = approvals.has_pending(session_id)
@@ -580,7 +824,9 @@ class BaseInterface(ABC):
         # arm on any turn (choosing IS the answer), yes/no approvals only on a
         # yes — and only the most recent one, so a single "da" cannot authorise
         # a queue of pending writes.
-        armed = approvals.on_user_turn(session_id, affirmative=affirmative)
+        armed = approvals.on_user_turn(
+            session_id, affirmative=affirmative, held_actions=held_actions
+        )
 
         if not had_pending:
             return
@@ -667,6 +913,7 @@ class BaseInterface(ABC):
         user_id: str,
         session_id: str,
         message: str,
+        ctx: "TurnContext",
         route_hint: Optional[str] = None,
         response_mode: Optional[str] = None,
     ) -> str:
@@ -687,17 +934,11 @@ class BaseInterface(ABC):
                 agent_name,
             )
             from config.voice_persona import wrap_agent_voice_message
-            return await self.system.orchestrator_helper.run(
-                wrap_agent_voice_message(message)
-            )
+            return await ctx.helper.run(wrap_agent_voice_message(message))
 
         from agents.adk_agents.runner_utils import run_agent_simple
 
-        session_service = None
-        if self.system.orchestrator_helper:
-            session_service = getattr(
-                self.system.orchestrator_helper, "session_service", None
-            )
+        session_service = getattr(ctx.helper, "session_service", None)
 
         # Keep per-agent ADK sessions isolated. Voice follow-up continuity is
         # handled at the wakeword/router layer; sharing one ADK session across
@@ -774,6 +1015,138 @@ class BaseInterface(ABC):
 
         return response
 
+    def _session_service_for_runner(self):
+        """ADK session service a freshly built RunnerHelper should use.
+
+        The base keeps whatever the system's seed helper has, so a channel
+        that never configured one is unaffected. WebInterface overrides this
+        with its shared service.
+        """
+        return getattr(
+            getattr(self.system, "orchestrator_helper", None), "session_service", None
+        )
+
+    def _helper_for(self, session_id: str, user_id: str):
+        """This session's runner, built once and kept.
+
+        A cache rather than a single "current" attribute: two sessions have
+        two runners at the same time, and neither can overwrite the other.
+        Bounded, because sessions are cheap to make and a long-lived web
+        process would otherwise keep every one it ever saw.
+        """
+        helper = self._runner_helpers.get(session_id)
+        if helper is not None:
+            return helper
+
+        seed = getattr(self.system, "orchestrator_helper", None)
+        if seed is not None and seed.session_id == session_id:
+            self._runner_helpers[session_id] = seed
+            return seed
+
+        orchestrator = getattr(self.system, "orchestrator", None)
+        if orchestrator is None:
+            # Nothing to build a runner from, and the seed belongs to another
+            # session. Handing it back would quietly run this request in that
+            # session — exactly the confusion this cache exists to end. A
+            # half-initialised system is a bug, so say so here rather than
+            # letting it surface as a conversation in the wrong place.
+            raise RuntimeError(
+                f"No orchestrator to build a runner for session '{session_id}' "
+                f"(system has no agents initialised)"
+            )
+
+        from agents.adk_agents.runner_utils import RunnerHelper
+        logger.info("Creating RunnerHelper for session '%s'", session_id)
+        helper = RunnerHelper(
+            agent=orchestrator,
+            session_id=session_id,
+            user_id=user_id,
+            app_name="agents",
+            session_service=self._session_service_for_runner(),
+        )
+
+        while len(self._runner_helpers) >= self._MAX_CACHED_HELPERS:
+            self._runner_helpers.pop(next(iter(self._runner_helpers)))
+        self._runner_helpers[session_id] = helper
+        return helper
+
+    async def _prepare_turn(
+        self,
+        user_id: str,
+        message: str,
+        session_id: Optional[str] = None,
+    ) -> "TurnContext":
+        """Everything a turn needs before the agent runs — for every channel.
+
+        Streaming used to do its own half of this and skip the approval half
+        entirely: the session ContextVar was never set, so nothing ever armed
+        and a "da" in the web UI could not authorise anything. One function,
+        every door, so a protected action behaves the same whichever one the
+        request came through.
+
+        Returns the context to pass down. Callers must use what they are given
+        rather than reading `self.system.*` — see TurnContext.
+        """
+        if self.system is None:
+            self.initialize_system()
+
+        if session_id is None:
+            session_id = self.generate_session_id(user_id)
+
+        # Protected-action approvals are session-bound and require an
+        # EXPLICIT positive reply: "da"/"može" arms this session's pending
+        # approvals; "ne"/anything else cancels them. The model can never
+        # self-approve — only a real user message routes through here.
+        # Meeting slot proposals are armed by any new user turn (choosing a
+        # slot is free-text, so the create-gate itself checks the match).
+        try:
+            self._process_turn_approvals(session_id, message)
+        except Exception:
+            logger.debug("Turn approval processing failed", exc_info=True)
+
+        try:
+            from services import approvals
+            approvals.set_user(user_id)
+        except Exception:
+            logger.debug("Could not bind turn user", exc_info=True)
+
+        # Start the run ledger here, at the boundary every channel crosses.
+        # It only ever started in the scheduler, so in ordinary chat nothing
+        # recorded what the gate held or what a tool reported — and the step
+        # contract that reads it was measuring an empty ledger.
+        try:
+            from services import run_effects
+            run_effects.start_run()
+        except Exception:
+            logger.debug("Could not start the run ledger", exc_info=True)
+
+        # Display only. Nothing dispatches on this.
+        self.last_session_id = session_id
+        self.last_user_id = user_id
+
+        return TurnContext(
+            session_id=session_id,
+            user_id=user_id,
+            helper=self._helper_for(session_id, user_id),
+        )
+
+    def _handle_classroom_command(self, message: str) -> Optional[str]:
+        """Explicit entry/exit for the global Philosophy Classroom.
+
+        Returns the reply when the message IS the command, otherwise None.
+        """
+        command = self._normalize_voice_text(message).strip(" ?!.,")
+        if command in CLASSROOM_ENTER_COMMANDS:
+            self.system.active_mode = "CLASSROOM"
+            return (
+                "Ulazim u filozofsku učionicu. Sokrat vodi razgovor — "
+                "za izlaz reci „izađi iz učionice”."
+            )
+        if command in CLASSROOM_LEAVE_COMMANDS:
+            self.system.active_mode = "LEGACY"
+            return "Izlazim iz filozofske učionice. Natrag na normalan rad."
+        return None
+
     async def process_message(
         self,
         user_id: str,
@@ -793,44 +1166,8 @@ class BaseInterface(ABC):
         Returns:
             Agent response string
         """
-        if self.system is None:
-            self.initialize_system()
-
-        # Get or create session
-        if session_id is None:
-            session_id = self.generate_session_id(user_id)
-
-        # Protected-action approvals are session-bound and require an
-        # EXPLICIT positive reply: "da"/"može" arms this session's pending
-        # approvals; "ne"/anything else cancels them. The model can never
-        # self-approve — only a real user message routes through here.
-        # Meeting slot proposals are armed by any new user turn (choosing a
-        # slot is free-text, so the create-gate itself checks the match).
-        try:
-            self._process_turn_approvals(session_id, message)
-        except Exception:
-            logger.debug("Turn approval processing failed", exc_info=True)
-
-        # Update system session
-        self.system.session_id = session_id
-        self.system.user_id = user_id
-
-        # CRITICAL: Recreate RunnerHelper with correct session for this interface
-        # The original RunnerHelper was created with CLI session, we need one for Telegram
-        if self.system.orchestrator_helper:
-            current_helper_session = self.system.orchestrator_helper.session_id
-            if current_helper_session != session_id:
-                logger.info(f"Creating new RunnerHelper for session '{session_id}' (was '{current_helper_session}')")
-                from agents.adk_agents.runner_utils import RunnerHelper
-                # Reuse existing session_service from current helper so ADK context is shared
-                existing_service = getattr(self.system.orchestrator_helper, 'session_service', None)
-                self.system.orchestrator_helper = RunnerHelper(
-                    agent=self.system.orchestrator,
-                    session_id=session_id,
-                    user_id=user_id,
-                    app_name="agents",
-                    session_service=existing_service,
-                )
+        ctx = await self._prepare_turn(user_id, message, session_id)
+        session_id = ctx.session_id
 
         _token_marker = None
         try:
@@ -841,16 +1178,23 @@ class BaseInterface(ABC):
             _token_marker = None
 
         try:
+            explicit_mode_reply = self._handle_classroom_command(message)
+            if explicit_mode_reply is not None:
+                return explicit_mode_reply
+
             # Check for mode routing (CLASSROOM vs LEGACY)
             if self.system.active_mode == "CLASSROOM" and not self._should_use_voice_direct_routing(user_id):
                 result = await self._process_classroom_mode(message)
             else:
-                msg_lower = self._normalize_voice_text(message)
-                direct_agent = "socrates" if any(
-                    kw in msg_lower for kw in self.system.philosophy_keywords
-                ) else None
+                direct_agent = "socrates" if looks_philosophical(message) else None
 
                 if self._should_use_voice_direct_routing(user_id):
+                    # Asking after a long task must never start another one.
+                    if self._is_job_status_question(message):
+                        status = self._answer_job_status(session_id)
+                        if status is not None:
+                            return status
+
                     if route_hint in {"smart_home", "voice_qa", "christian_guide", "socrates", "secretary", "skladistar"}:
                         route_type, route_target = "agent", route_hint
                         logger.info("Pinned voice route -> %s", route_target)
@@ -872,6 +1216,7 @@ class BaseInterface(ABC):
                             user_id=user_id,
                             session_id=session_id,
                             message=message,
+                            ctx=ctx,
                             route_hint=route_hint,
                             response_mode=response_mode,
                         )
@@ -885,12 +1230,16 @@ class BaseInterface(ABC):
                             wrap_agent_voice_message(message),
                             user_id=user_id,
                             question=message,
+                            ctx=ctx,
                         )
                 elif direct_agent == "socrates":
-                    self.system.active_mode = "CLASSROOM"
-                    result = await self._process_classroom_mode(message, first_entry=True)
+                    # One turn in the philosophy lane, not a mode switch.
+                    # active_mode is global, so a keyword flipping it from one
+                    # channel left every other channel answering as Socrates —
+                    # and the web stream deadlocked on the way in.
+                    result = await self._process_classroom_mode(message)
                 else:
-                    result = await self.system.run_orchestration(message)
+                    result = await self._orchestrate(ctx)(message)
 
             return result
 
@@ -956,7 +1305,9 @@ class BaseInterface(ABC):
             "status": "running",
             "interface": self.session_prefix,
             "active_mode": self.system.active_mode,
-            "session_id": self.system.session_id,
+            # The interface's own last session. system.session_id is the
+            # CLI's, and no longer follows web or voice traffic.
+            "session_id": self.last_session_id or self.system.session_id,
             "total_agents": stats['total_agents'],
             "worker_agents": stats['worker_agents'],
             "adk_migration": stats['adk_migration_progress']
