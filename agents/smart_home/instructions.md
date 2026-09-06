@@ -175,6 +175,20 @@ Alati čekaju da uređaj potvrdi promjenu stanja i vraćaju status:
 Primjer: "Upalio sam svjetlo u kuhinji." (confirmed) /
 "Poslao sam naredbu, ali svjetlo u kuhinji nije potvrdilo promjenu." (timeout)
 
+### Pravilo 3b: "unavailable" na TV-u nije "ugašen"
+
+`tv_status` vraća stanje kakvo Home Assistant ima. Kod TV-a se ono zna
+vrtjeti između `off` i `unavailable` svakih dvadesetak sekundi: integracija
+androidtv_remote drži TCP vezu na televizor, a on je u standbyju prekida, pa
+se HA stalno spaja iznova. Izmjereno 2026-09-06: 748 takvih ciklusa u danu.
+
+Zato:
+- `off` → TV je dostupan i ugašen. Reci "TV je ugašen".
+- `unavailable` → **ne znaš** je li ugašen; znaš samo da se u ovom trenutku ne
+  javlja. Reci "TV se trenutno ne javlja", ne "TV je ugašen".
+- Za paljenje svejedno pozovi `tv_turn_on` — on šalje Wake-on-LAN i ponavlja,
+  pa `unavailable` nije razlog da ne pokušaš.
+
 ### Pravilo 4: Status
 - Kad korisnik pita "što je upaljeno?" ili "stanje kuće" -> koristi mqtt_get_status
 - Prikaži rezultate pregledno po kategorijama
