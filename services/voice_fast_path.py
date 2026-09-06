@@ -175,11 +175,15 @@ def resolve_voice_smart_home_response(
     return base_response
 
 
-# Statuses that mean "the device is verifiably in the target state":
-# confirmed = device echoed the new state; already_in_state = baseline
-# already matched. "sent" (confirm layer disabled) is handled separately —
-# it must not SOUND like a verified success.
-_SUCCESS_STATUSES = ("confirmed", "already_in_state")
+# Only one status means "the device told us it did it".
+_SUCCESS_STATUSES = ("confirmed",)
+
+# The device did not report back; it was already sitting in the requested
+# state as far as the broker knows. Usually that just means the light was
+# already on. It is also what a device that has silently dropped off MQTT
+# looks like, because its last state stays retained on the broker — so this
+# must never be spoken as though we had just done something.
+_ALREADY_STATUSES = ("already_in_state",)
 _SENT_SUFFIX = " Napomena: potvrda stanja je isključena, uređaj nije provjeren."
 
 
@@ -192,6 +196,10 @@ def _scene_outcome_response(
     status = result.get("status")
     if status in _SUCCESS_STATUSES:
         return resolve_voice_smart_home_response(success_text, response_mode)
+    if status in _ALREADY_STATUSES:
+        return resolve_voice_smart_home_response(
+            "Sve je već bilo u tom stanju.", response_mode
+        )
     if status == "sent":
         return f"Poslao sam naredbe za scenu.{_SENT_SUFFIX}"
     if status == "partial":
@@ -270,6 +278,15 @@ async def execute_fast_smart_home_command(
             else f"Ugasio sam {spoken_name}."
         )
         return resolve_voice_smart_home_response(success_text, response_mode)
+    if status in _ALREADY_STATUSES:
+        # Truthful and useful: if it is NOT already on, this sentence is
+        # visibly wrong and sends someone looking — which is exactly what
+        # should have happened three days ago.
+        already_text = (
+            f"{spoken_name} je već upaljeno." if state == "ON"
+            else f"{spoken_name} je već ugašeno."
+        )
+        return resolve_voice_smart_home_response(already_text, response_mode)
     if status == "sent":
         return f"Poslao sam naredbu za {spoken_name}.{_SENT_SUFFIX}"
     if status in ("timeout", "unconfirmed"):

@@ -147,8 +147,12 @@ class TestTimeoutAndPartial:
         result = asyncio.run(publish_and_confirm([_switch_cmd("svjetlo_kuhinja", "ON")]))
 
         assert result["devices"]["svjetlo_kuhinja"]["status"] == "already_in_state"
-        # aggregate treats it as success (device presumably already there)
-        assert result["status"] == "confirmed"
+        # And the aggregate says the same thing. It used to fold this into
+        # "confirmed" — the test name already said that was wrong, and the
+        # assertion recorded it anyway. On 2026-09-06 that collapse is what
+        # let a light report success for three days after its ESP32 dropped
+        # off MQTT, because the broker kept serving the stale retained "ON".
+        assert result["status"] == "already_in_state"
 
     def test_baseline_match_invalidated_by_contradicting_echo(self, monkeypatch):
         # THE review bug: broker retains "ON" (baseline matches), but after
@@ -341,3 +345,53 @@ class TestVoiceOutcomeResponses:
         result = asyncio.run(vfp.execute_fast_smart_home_command("ugasi sve"))
         assert result is not None
         assert "MQTT" in result or "pametnu kuću" in result
+
+
+class TestTheAggregateKeepsTheDistinction:
+    """"Confirmed" has to mean a device said something.
+
+    The per-device layer separates an echo from a stale baseline and calls the
+    second a weaker signal. Summing them under the strong word threw that away,
+    and a house whose controller had silently left the broker answered "u redu"
+    to every command for three days.
+    """
+
+    def test_all_echoed_is_confirmed(self, monkeypatch):
+        _use_client(monkeypatch, FakeMqttClient(
+            echo_topics=["esp32-io/switch/svjetlo_kuhinja/command"],
+        ))
+
+        result = asyncio.run(publish_and_confirm([_switch_cmd("svjetlo_kuhinja", "ON")]))
+
+        assert result["status"] == "confirmed"
+
+    def test_all_baseline_is_not_confirmed(self, monkeypatch):
+        _use_client(monkeypatch, FakeMqttClient(
+            echo_topics=[],
+            retained={
+                "esp32-io/switch/svjetlo_kuhinja/state": "ON",
+                "esp32-io/switch/svjetlo_hodnik/state": "ON",
+            },
+        ))
+
+        result = asyncio.run(publish_and_confirm([
+            _switch_cmd("svjetlo_kuhinja", "ON"),
+            _switch_cmd("svjetlo_hodnik", "ON"),
+        ]))
+
+        assert result["status"] == "already_in_state"
+        assert result["confirmed"] == 2  # nothing was refused
+
+    def test_one_echo_one_baseline_is_not_confirmed(self, monkeypatch):
+        _use_client(monkeypatch, FakeMqttClient(
+            echo_topics=["esp32-io/switch/svjetlo_kuhinja/command"],
+            retained={"esp32-io/switch/svjetlo_hodnik/state": "ON"},
+        ))
+
+        result = asyncio.run(publish_and_confirm([
+            _switch_cmd("svjetlo_kuhinja", "ON"),
+            _switch_cmd("svjetlo_hodnik", "ON"),
+        ]))
+
+        # One device told us; the other did not. That is not a confirmed set.
+        assert result["status"] == "already_in_state"

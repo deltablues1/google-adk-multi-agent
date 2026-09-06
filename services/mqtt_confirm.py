@@ -302,12 +302,27 @@ async def publish_and_confirm(
                 "devices": {},
             }
 
-    confirmed_count = sum(
-        1 for d in devices.values()
-        if d["status"] in ("confirmed", "already_in_state")
-    )
-    if confirmed_count == total:
+    # The per-device layer is careful to separate "the device echoed the new
+    # state" from "the retained baseline already matched", and says in its own
+    # docstring that the second is a weaker signal. Summing them and calling
+    # the total "confirmed" threw that away — so when the ESP32 dropped off
+    # MQTT on 2026-09-03 and left its state retained, every command came back
+    # "confirmed" and Jarvis said "u redu" for three days while nothing moved.
+    #
+    # A device that only matched its baseline has told us nothing about this
+    # command. The aggregate now says so.
+    echoed = sum(1 for d in devices.values() if d["status"] == "confirmed")
+    baseline_only = sum(1 for d in devices.values() if d["status"] == "already_in_state")
+    confirmed_count = echoed + baseline_only
+
+    if echoed == total:
         status = "confirmed"
+    elif confirmed_count == total:
+        # Nothing was refused, but nothing reported back either: every device
+        # was already sitting in the requested state, as far as the broker
+        # knows. True when the house is already as you want it, and also true
+        # when the device is gone and its last state is stale.
+        status = "already_in_state"
     elif confirmed_count > 0:
         status = "partial"
     else:
