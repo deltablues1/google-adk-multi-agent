@@ -32,7 +32,7 @@ above, do NOT try to call it; tell the user that capability is unavailable here.
 | marketing | Marketing campaigns and copy | Creative marketing content |
 | socrates | Socratic philosophical dialogue | Asks questions, never gives direct answers |
 | christian_guide | Christian reflection, doctrine, prayer guidance | Uses Christian RAG and answers in Croatian |
-| smart_home | Lights, outlets, dimmer and scenes (MQTT); **TV** — power, volume, launching apps (YouTube, Netflix, A1 Xplore TV), switching channels, YouTube playback, remote keys; house sensors and their history (temperature, humidity, pressure, air quality, power) | Only smart-home / TV / sensor commands, does NOT answer general questions |
+| smart_home | Lights, outlets, dimmer and scenes (MQTT); **TV** — power, volume, launching apps (YouTube, Netflix, A1 Xplore TV), switching channels, YouTube playback, remote keys; house sensors and their history (temperature, humidity, pressure, air quality, power); **the household shopping list** — add, show, mark bought, remove, and "bought everything except X" | Only smart-home / TV / sensor commands, does NOT answer general questions |
 | fiskalizacija | Croatian invoice fiscalization | Complete pipeline: prepare, validate, execute FINA, PDF |
 
 `voice_qa` is deliberately absent: it runs in front of you on the voice lane,
@@ -321,6 +321,7 @@ requests that produced a report. Never read a table out loud.
 | Professional rewrite | synthesizer | "prepiši profesionalno", "rewrite", "executive summary" |
 | Marketing content | marketing | "marketing kampanja", "ad copy", "campaign" |
 | Philosophy dialogue | socrates | "Sokrat", "filozofija", "Socrates" |
+| Lista za kupovinu | smart_home | "dodaj na listu", "što trebam kupiti", "kupio sam sve osim..." |
 | Christian spirituality / doctrine | christian_guide | "krscanstvo", "krscanski", "molitva", "Biblija", "Katekizam", "duhovne vjezbe", "razlucivanje" |
 | Croatian invoice | fiskalizacija | "fiskaliziraj", "račun", "faktura", "invoice" |
 | Research + Doc | researcher -> scribe | "istraži i napravi dokument" |

@@ -112,3 +112,32 @@ class TestTheKeywordSetItself:
     def test_it_stays_tight(self):
         """Over-routing costs a slow answer; this set must not creep."""
         assert len(RESEARCH_VOICE_KEYWORDS) <= 15
+
+
+class TestShoppingListReachesTheHouseAgent:
+    """The list is an HA todo entity, so smart_home owns it.
+
+    Nothing in SMART_HOME_KEYWORDS matched a shopping phrase, so the voice
+    lane would have dropped these into voice_qa -- which has no tools and
+    would have answered as though it had written something down.
+    """
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Stavi ulje i brasno na listu za kupovinu",
+            "Dodaj mlijeko na popis",
+            "Sto trebam kupiti?",
+            "Kupio sam sve osim mlijeka",
+            "Makni kruh s liste",
+        ],
+    )
+    def test_shopping_phrases_route_to_smart_home(self, iface, message):
+        _, target = iface._classify_voice_route(message)
+        assert target == "smart_home", f"{message!r} would reach an agent with no list"
+
+    def test_a_task_list_still_goes_to_the_orchestrator(self, iface):
+        """"lista zadataka" is Google Tasks, not the shopping list."""
+        route, target = iface._classify_voice_route("Dodaj na listu zadataka nazvati Antu")
+        assert target != "smart_home"
+        assert route == ORCHESTRATOR_VOICE_ROUTE

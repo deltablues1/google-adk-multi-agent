@@ -56,6 +56,14 @@ SMART_HOME_KEYWORDS = {
     "televizor", "youtube", "jutjub", "netflix", "pojačaj", "pojacaj",
     "stišaj", "stisaj", "glasnoć", "glasnoc", "kanal", "pauziraj",
     "aplikacij", "xplore", "program", "hrt", "arena sport", "sportklub",
+    # Shopping list. It lives on the smart_home agent (the list is an HA todo
+    # entity), but nothing above matches "stavi ulje na listu" or "kupio sam
+    # sve osim mlijeka", so the voice lane would have handed those to voice_qa,
+    # which has no tools and would have answered as if it had done something.
+    "listu za kupovinu", "lista za kupovinu", "liste za kupovinu",
+    "na listu", "s liste", "na popis", "s popisa", "popis za kupovinu",
+    "za kupovinu", "kupio sam", "kupila sam", "kupili smo", "za ducan",
+    "za trgovinu", "sto trebam kupiti", "sta trebam kupiti",
 }
 
 # Word-boundary match for the bare word "tv" ("upali tv", "tv u dnevnoj").

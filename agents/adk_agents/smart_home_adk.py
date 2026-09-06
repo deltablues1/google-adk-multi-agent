@@ -38,11 +38,23 @@ def create_smart_home_agent(
     if os.getenv("HA_URL", "").strip() and os.getenv("HA_TOKEN", "").strip():
         from tools.adk_tools.ha_adk_tools import get_ha_adk_tools
         from tools.adk_tools.ha_sensor_tools import get_ha_sensor_tools
+        from tools.adk_tools.ha_shopping_tools import get_shopping_list_tools
         # Sklopke idu preko MQTT-a, ali mjerenja (temperatura, vlaga, tlak,
         # kvaliteta zraka, potrošnja) postoje samo u HA — bez ovih read-only
         # alata agent ih nema odakle pročitati.
-        tools = tools + get_ha_adk_tools() + get_ha_sensor_tools()
-        logger.info("Smart Home agent: Home Assistant TV + sensor tools enabled")
+        #
+        # Lista za kupovinu je isti slučaj: živi kao todo entitet u HA, a
+        # ovdje je zato što je svi kanali (web, Telegram, glas) dosežu kroz
+        # ovog agenta — jedan skup alata, tri ulaza.
+        tools = (
+            tools
+            + get_ha_adk_tools()
+            + get_ha_sensor_tools()
+            + get_shopping_list_tools()
+        )
+        logger.info(
+            "Smart Home agent: Home Assistant TV + sensor + shopping list tools enabled"
+        )
 
     agent = create_adk_agent(
         name="smart_home",
@@ -57,7 +69,10 @@ def create_smart_home_agent(
             "apps (YouTube, Netflix, and learned ones such as A1 Xplore TV), "
             "switch channels by name or number, play from YouTube, remote keys. "
             "Reads sensors: temperature, humidity, pressure per room, air quality, "
-            "power consumption, and their history (daily min/max/average)."
+            "power consumption, and their history (daily min/max/average). "
+            "Also owns the household SHOPPING LIST (lista za kupovinu, popis za "
+            "ducan): add items, show it, mark them bought, put one back, remove "
+            "them, and mark everything bought except named items."
         ),
         tools=tools,
         instruction=instruction,
