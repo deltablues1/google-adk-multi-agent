@@ -599,19 +599,40 @@ class BaseInterface(ABC):
 
         # `run` refuses on its own when a job still holds this conversation,
         # so a busy session answers here without ever starting a task.
+        return await self._defer_to_phone_if_slow(
+            lambda: run(prompt), user_id=user_id, question=question, ctx=ctx
+        )
+
+    async def _defer_to_phone_if_slow(
+        self, start, *, user_id: str, question: str, ctx: "TurnContext"
+    ) -> str:
+        """Await the work; past the grace period, promise it to the phone.
+
+        Extracted so the DIRECT voice lanes get the same net. They were
+        assumed fast because they skip the orchestrator, but smart_home can
+        sit for half a minute: measured 2026-09-06, "pusti Arena Sport 1"
+        took 40s, 23.6s of it waiting for the A1 Xplore app to load. Assist
+        on the phone stopped listening long before that, and because no job
+        was ever created there was no notification either -- the request
+        succeeded on the TV and the user heard nothing at all.
+
+        `start` is a callable returning the coroutine, not the coroutine
+        itself: on the non-Assist path it must never be created if it is
+        not awaited.
+        """
         from services import background_jobs
 
         if not user_id.startswith(HA_ASSIST_USER_PREFIX):
-            return await run(prompt)
+            return await start()
 
         try:
             grace = float(os.getenv("VOICE_DEFER_AFTER_SECONDS", "25"))
         except ValueError:
             grace = 25.0
         if grace <= 0:
-            return await run(prompt)
+            return await start()
 
-        task = asyncio.ensure_future(run(prompt))
+        task = asyncio.ensure_future(start())
         try:
             # shield, not wait_for on the task itself: the timeout must end the
             # waiting, never the work.
@@ -1100,13 +1121,24 @@ class BaseInterface(ABC):
                 "smart home, scheduling, invoices), reply with exactly [[ESCALATE]] per your instructions.\n\n"
                 f"User question: {message}"
             )
-        response = await run_agent_simple(
-            agent,
-            worker_message,
-            session_id=worker_session_id,
+        # Same net as the orchestrator path. This lane is the FAST one, but
+        # fast is not guaranteed: "pusti Arena Sport 1" spent 23.6s waiting
+        # for the A1 Xplore app alone and answered after 40s, by which time
+        # Assist on the phone had stopped listening -- and with no job
+        # created, no notification came either. The TV had switched; the
+        # user just never heard about it.
+        response = await self._defer_to_phone_if_slow(
+            lambda: run_agent_simple(
+                agent,
+                worker_message,
+                session_id=worker_session_id,
+                user_id=user_id,
+                session_service=session_service,
+                app_name="agents",
+            ),
             user_id=user_id,
-            session_service=session_service,
-            app_name="agents",
+            question=message,
+            ctx=ctx,
         )
         # NOTE: the LLM agent's answer is returned verbatim — response-mode
         # squashing ("U redu.") applies only to fast-path success texts.
