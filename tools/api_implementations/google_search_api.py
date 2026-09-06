@@ -154,15 +154,26 @@ async def google_search_grounding(
         )
 
         # Generate content with grounding
-        # The model will automatically search and cite sources
-        response = client.models.generate_content(
+        # The model will automatically search and cite sources.
+        #
+        # In a THREAD, because client.models.generate_content is the genai
+        # SDK's synchronous surface: called bare inside this async function it
+        # holds the single event loop for the whole request, and a grounding
+        # call here takes 60-90 seconds. Measured 2026-09-06 on the Pi, three
+        # of them back to back froze the entire web process for 2.5 minutes --
+        # "upali svjetlo u hodniku" arrived at 17:16:10 and the MQTT publish
+        # went out at 17:18:41, the moment the last grounding call returned.
+        # A house that stops answering its light switches because someone
+        # asked a research question is the user-visible half of this.
+        response = await asyncio.to_thread(
+            client.models.generate_content,
             model=grounding_model,
             contents=query,
             config=types.GenerateContentConfig(
                 tools=[google_search_tool],
                 response_modalities=["TEXT"],
                 system_instruction=_grounding_system_instruction(query),
-            )
+            ),
         )
 
         # Extract search results and grounding metadata
