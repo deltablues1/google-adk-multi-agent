@@ -62,3 +62,44 @@ class TestResearchLoop:
         assert "sub-questions" in rule2
         assert "2 independent sources" in rule2
         assert "at most 15 tool calls" in rule2
+
+
+class TestDepthScopesTheRun:
+    """The orchestrator has always sent SIMPLE/STANDARD/DEEP in its brief.
+
+    The researcher prompt never defined those words, so the scope rules were
+    absolute: three independent sources per category and five priced models,
+    for "koliko kosta ovaj model?" as much as for a market survey.
+    """
+
+    def test_the_levels_are_defined(self):
+        assert "### Rule 2b:" in PROMPT
+        section = PROMPT.split("### Rule 2b:")[1].split("### Rule 3")[0]
+        for level in ["SIMPLE", "STANDARD", "DEEP"]:
+            assert level in section
+
+    def test_an_unlabelled_brief_has_a_default(self):
+        section = PROMPT.split("### Rule 2b:")[1].split("### Rule 3")[0]
+        assert "work as STANDARD" in section
+
+    def test_depth_never_relaxes_the_evidence_rules(self):
+        section = PROMPT.split("### Rule 2b:")[1].split("### Rule 3")[0]
+        assert "never the standard of evidence" in section
+
+    def test_the_price_stop_condition_scales(self):
+        section = PROMPT.split("## Nacin rada: cijene i proizvodi".replace("Nacin", "Način"))[1]
+        assert "Stani prema razini" in section
+        for level in ["SIMPLE:", "STANDARD:", "DEEP:"]:
+            assert level in section
+
+
+class TestDisagreementIsReported:
+    """"Two sources that agree" quietly rewarded dropping the third."""
+
+    def test_it_no_longer_demands_agreement(self):
+        assert "2 independent sources that agree" not in PROMPT
+
+    def test_it_asks_for_both_readings(self):
+        rule2 = PROMPT.split("### Rule 2:")[1].split("### Rule 2b")[0]
+        assert "report **both** readings" in rule2
+        assert "Never average" in rule2
