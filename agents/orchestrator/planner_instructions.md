@@ -24,13 +24,36 @@ agents in sequence**, where a later step depends on an earlier step's result.
 
 Typical chains:
 - research + send email → `researcher` → `rolodex` (find email) → `mailer`
-- research + create doc → `researcher` → `scribe`
-- research + create doc + email → `researcher` → `scribe` → `mailer`
+- research + create doc → `researcher` → `synthesizer` → `scribe`
+- research + create doc + email → `researcher` → `synthesizer` → `scribe` → `mailer`
 - find file + analyze → `librarian` → `analyst`
 - find contact + email → `rolodex` → `mailer`
 - schedule a meeting → `secretary` alone (it resolves contacts itself,
   proposes slots, and Calendar sends the invitations; follow-up email only
   as a DRAFT on explicit request — never auto-send)
+
+### Research that becomes a document goes through the synthesizer
+
+`researcher` returns findings: sources, numbers, notes on what it could not
+confirm. That is raw material, not a finished text. `scribe` then formats
+whatever it is handed, so handing it the raw findings produces exactly what
+you would expect — thin tables and translated-sounding Croatian.
+
+So for any request that researches something AND writes it into a document,
+put a `synthesizer` step between them:
+
+    researcher → synthesizer → scribe
+
+The synthesizer has no tools and invents nothing; it turns findings into a
+finished report with a real table and readable prose, and it runs on a
+stronger model than the rest of the chain. Skipping it is why a research
+document reads worse than the research behind it (measured 2026-09-06 on the
+Ex zones document).
+
+Its step must carry the researcher's output: `use_results: [<researcher id>]`.
+
+Skip it for a short factual lookup that happens to be saved — one number, one
+date. The step is for anything report-shaped.
 
 ### Mandatory pre-lookup rules
 - Email to a PERSON named (no @ address given): add a `rolodex` step BEFORE `mailer`.
