@@ -115,6 +115,27 @@ RPI_HOME_ALLOWED_AGENTS = {
     "skladistar",
 }
 
+# Agents that are loaded and routable, but must never be CALLED by an
+# execution path. voice_qa sits in front of the orchestrator on the voice lane:
+# it has no tools, and when a request needs one it answers with the
+# [[ESCALATE]] sentinel that only base_interface knows how to unwrap -- and only
+# when voice_qa was the routed agent. Called as a tool, or scheduled as a
+# plan-execute step, that sentinel is just text nobody acts on.
+#
+# It stays in get_worker_agent_names() because the voice lane looks it up in
+# system.worker_agents. Both execution paths filter it out through here, so a
+# future addition cannot be closed on one path and left open on the other.
+NON_CALLABLE_WORKER_AGENTS = frozenset({"voice_qa"})
+
+
+def callable_worker_agents(worker_agents):
+    """The subset of loaded workers an execution path may invoke."""
+    return [
+        a for a in worker_agents
+        if getattr(a, "name", "") not in NON_CALLABLE_WORKER_AGENTS
+    ]
+
+
 _deployment_config: DeploymentConfig | None = None
 
 

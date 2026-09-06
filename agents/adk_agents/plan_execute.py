@@ -40,6 +40,7 @@ from agents.adk_agents.adk_agent_factory import (
     create_adk_agent,
 )
 from agents.adk_agents.runner_utils import run_agent_simple
+from config.deployment_config import callable_worker_agents
 
 logger = logging.getLogger(__name__)
 
@@ -55,9 +56,15 @@ _FAILURE_MARKERS = ("⚠️ TOOL FAILURE", "No response generated")
 # ---------------------------------------------------------------------------
 
 def _build_available_agents(worker_agents: List[Any]) -> str:
-    """Render the worker list the planner is allowed to choose from."""
+    """Render the worker list the planner is allowed to choose from.
+
+    Filtered here as well as in run_plan_execute, because this is the single
+    place the list is rendered: create_workflow_planner is public, and a caller
+    that skips run_plan_execute must not be able to advertise an agent no
+    execution path can act on.
+    """
     parts = []
-    for agent in worker_agents:
+    for agent in callable_worker_agents(worker_agents):
         name = getattr(agent, "name", "unknown")
         desc = getattr(agent, "description", "") or ""
         parts.append(f"- **{name}**: {desc}")
@@ -524,6 +531,10 @@ async def run_plan_execute(
         logger.info("[PLAN] Short single-action request — skipping planner.")
         return await fallback(user_message)
 
+    # The planner advertises these and _validate_plan accepts them, so a worker
+    # that must never be invoked has to be filtered out HERE too, not only in
+    # the orchestrator's tool list. Same list for both execution paths.
+    worker_agents = callable_worker_agents(worker_agents)
     agents_by_name = {getattr(a, "name", ""): a for a in worker_agents}
     valid_agents = set(agents_by_name)
 
