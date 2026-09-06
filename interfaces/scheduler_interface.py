@@ -13,6 +13,7 @@ import os
 import logging
 import asyncio
 import time
+import uuid
 from typing import Optional, Dict, List
 
 from dotenv import load_dotenv
@@ -26,8 +27,9 @@ from apscheduler.triggers.date import DateTrigger
 from .base_interface import BaseInterface
 from config.scheduler_config import (
     ScheduledJob, JobTrigger, SchedulerConfig,
-    load_jobs, save_jobs
+    load_jobs, save_jobs, load_results, save_results
 )
+from services import run_effects
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +48,38 @@ class SchedulerInterface(BaseInterface):
 
         self.scheduler = AsyncIOScheduler(timezone="Europe/Zagreb")
         self.config: SchedulerConfig = SchedulerConfig()
-        self.job_results: Dict[str, dict] = {}
+        # Last outcome per job, loaded from disk. In memory only, nobody could
+        # tell after a restart whether last night's job had run at all.
+        self.job_results: Dict[str, dict] = load_results()
+        # One ADK session service for the life of the process. A RunnerHelper
+        # builds its own when given none, so a helper per attempt meant a new
+        # Firestore client per attempt, none of them ever closed.
+        self._adk_session_service = None
 
         logger.info("SchedulerInterface initialized")
+
+    def _get_adk_session_service(self):
+        """Lazily build the one session service this process will use."""
+        if self._adk_session_service is None:
+            use_persistent = os.environ.get(
+                "USE_PERSISTENT_ADK_SESSIONS", "false"
+            ).lower() == "true"
+            if use_persistent:
+                from services.adk_session_service import FirestoreADKSessionService
+                self._adk_session_service = FirestoreADKSessionService()
+                logger.info("[SCHEDULER] using FirestoreADKSessionService (shared)")
+            else:
+                from google.adk.sessions import InMemorySessionService
+                self._adk_session_service = InMemorySessionService()
+        return self._adk_session_service
+
+    def _record_result(self, job_id: str, result: dict) -> None:
+        """Remember how a run ended, on disk as well as in memory."""
+        self.job_results[job_id] = result
+        try:
+            save_results(self.job_results)
+        except Exception:
+            logger.warning("[SCHEDULER] Could not persist job results", exc_info=True)
 
     def _build_trigger(self, trigger: JobTrigger):
         """Build APScheduler trigger from JobTrigger config."""
@@ -116,7 +147,7 @@ class SchedulerInterface(BaseInterface):
             delivered = await self._deliver_to_telegram(
                 text, getattr(job_config, "deliver_chat_id", "") or ""
             )
-            self.job_results[job_id] = {
+            self._record_result(job_id, {
                 # A briefing nobody received is not a success.
                 "status": "SUCCESS" if delivered else "SUCCESS_NOT_DELIVERED",
                 "result_preview": text[:200],
@@ -124,16 +155,16 @@ class SchedulerInterface(BaseInterface):
                 "elapsed": round(time.time() - start_time, 1),
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "attempt": 1,
-            }
+            })
             logger.info(f"[SCHEDULER] Briefing job '{job_id}' done (delivered={delivered})")
         except Exception as e:
-            self.job_results[job_id] = {
+            self._record_result(job_id, {
                 "status": "FAILED",
                 "error": str(e)[:200],
                 "elapsed": round(time.time() - start_time, 1),
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "attempt": 1,
-            }
+            })
             logger.error(f"[SCHEDULER] Briefing job '{job_id}' failed: {e}")
 
     async def _execute_job(self, job_config: ScheduledJob) -> None:
@@ -154,28 +185,47 @@ class SchedulerInterface(BaseInterface):
         # mark it autonomous, so a tool that needs a user's confirmation is
         # refused outright rather than left pending under the default "global"
         # session, where a "da" typed later in Telegram could arm it.
+        # One id per execution. The session used to be a stable
+        # "scheduler-{job_id}", so yesterday's conversation was still in
+        # context when today's run started — and attempt 2 replayed into
+        # attempt 1's history.
+        run_id = uuid.uuid4().hex[:8]
+        run_session = f"scheduler-{job_id}-{run_id}"
+
         from services import approvals
-        approvals.set_session(f"scheduler-{job_id}")
+        approvals.set_session(run_session)
         approvals.set_autonomous(True)
+
+        from services import run_effects
 
         start_time = time.time()
         attempt = 0
         max_attempts = job_config.max_retries + 1
 
+        helper = None
+
         while attempt < max_attempts:
             attempt += 1
+            # Each attempt starts a fresh ledger of what it did. Replaying is
+            # only safe while that ledger is empty.
+            run_effects.start_run()
             try:
                 if self.system is None:
                     self.initialize_system()
 
-                # Create/get RunnerHelper for this job's session
-                from agents.adk_agents.runner_utils import RunnerHelper
-                helper = RunnerHelper(
-                    agent=self.system.orchestrator,
-                    session_id=f"scheduler-{job_id}",
-                    user_id="system:scheduler",
-                    app_name="agents"
-                )
+                # One helper for the whole execution, built once: the attempts
+                # of a single run share a session so a second attempt can see
+                # what the first already did, and the process keeps one ADK
+                # session service instead of one per attempt.
+                if helper is None:
+                    from agents.adk_agents.runner_utils import RunnerHelper
+                    helper = RunnerHelper(
+                        agent=self.system.orchestrator,
+                        session_id=run_session,
+                        user_id="system:scheduler",
+                        app_name="agents",
+                        session_service=self._get_adk_session_service(),
+                    )
 
                 result = await helper.run(job_config.agent_request)
                 elapsed = time.time() - start_time
@@ -196,16 +246,42 @@ class SchedulerInterface(BaseInterface):
 
                 self._forget_one_shot(job_config)
 
-                self.job_results[job_id] = {
+                # `helper.run()` returning without raising is not the same as
+                # the work being done. Two things it cannot mean:
+                #   - the gate refused because the job needed a person;
+                #   - the answer never reached anyone.
+                # Both used to be filed as SUCCESS.
+                #
+                # There is deliberately no PARTIAL here. Knowing which steps
+                # finished needs step-level results, which the workflow does
+                # not produce yet; inventing the status would only make the
+                # dashboard look more certain than the system is.
+                # Action ids are "tool:digest" — unique, but not something
+                # to put on a dashboard. The tool name is the readable half.
+                needed = [
+                    run_effects.action_label(a)
+                    for a in run_effects.confirmations_needed()
+                ]
+                if needed:
+                    status = "NEEDS_CONFIRMATION"
+                elif not delivered:
+                    status = "SUCCESS_NOT_DELIVERED"
+                else:
+                    status = "SUCCESS"
+
+                self._record_result(job_id, {
                     "delivered": delivered,
-                    "status": "SUCCESS",
+                    "status": status,
+                    "needs_confirmation": list(dict.fromkeys(needed)),
                     "result_preview": result[:200] if result else "",
+                    "tools_ran": list(dict.fromkeys(run_effects.tool_calls())),
+                    "run_id": run_id,
                     "elapsed": round(elapsed, 1),
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "attempt": attempt
-                }
+                })
 
-                logger.info(f"[SCHEDULER] Job '{job_id}' completed in {elapsed:.1f}s (attempt {attempt})")
+                logger.info(f"[SCHEDULER] Job '{job_id}' finished {status} in {elapsed:.1f}s (attempt {attempt})")
                 logger.info(f"[SCHEDULER] Result preview: {result[:200] if result else 'empty'}")
                 return
 
@@ -214,7 +290,31 @@ class SchedulerInterface(BaseInterface):
                 error_str = str(e)
                 logger.error(f"[SCHEDULER] Job '{job_id}' failed (attempt {attempt}/{max_attempts}): {e}")
 
+                # A retry re-runs the ENTIRE natural-language request. If a
+                # tool already ran, the agent has no memory of it and would do
+                # it again — that is how one failed job sent two mails. Stop,
+                # and say honestly that the outcome is not known: some of the
+                # work happened, some did not, and nothing here can tell which.
+                effects = run_effects.tool_calls()
+                if effects:
+                    logger.error(
+                        "[SCHEDULER] Job '%s' will NOT be retried — %d tool(s) "
+                        "already ran: %s",
+                        job_id, len(effects), ", ".join(dict.fromkeys(effects)),
+                    )
+                    self._record_result(job_id, {
+                        "status": "UNKNOWN",
+                        "error": error_str[:200],
+                        "tools_ran": list(dict.fromkeys(effects)),
+                        "run_id": run_id,
+                        "elapsed": round(elapsed, 1),
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "attempt": attempt,
+                    })
+                    return
+
                 if attempt < max_attempts:
+                    # Nothing happened yet, so starting over is safe.
                     # Retry with backoff for rate limits
                     if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
                         wait = 60 * attempt
@@ -223,13 +323,14 @@ class SchedulerInterface(BaseInterface):
                     else:
                         await asyncio.sleep(5)
                 else:
-                    self.job_results[job_id] = {
+                    self._record_result(job_id, {
                         "status": "FAILED",
                         "error": error_str[:200],
+                        "run_id": run_id,
                         "elapsed": round(elapsed, 1),
                         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "attempt": attempt
-                    }
+                    })
 
     def _schedule(self, job: ScheduledJob) -> None:
         """Register a job with APScheduler only — no persistence side effects.
@@ -475,8 +576,22 @@ class SchedulerInterface(BaseInterface):
     async def stop(self) -> None:
         """Stop the scheduler interface."""
         logger.info("Stopping Scheduler interface...")
-        self.scheduler.shutdown(wait=False)
+        # Tolerate a scheduler that never started or is already down: the rest
+        # of this — saving jobs, flushing session writes — still has to happen.
+        if self.scheduler.running:
+            self.scheduler.shutdown(wait=False)
         save_jobs(self.config)
+
+        # Session writes are backgrounded, so leaving without waiting drops
+        # whatever the last job was still recording.
+        if self._adk_session_service is not None:
+            closer = getattr(self._adk_session_service, "close", None)
+            if callable(closer):
+                try:
+                    await closer()
+                except Exception:
+                    logger.warning("ADK session service close failed", exc_info=True)
+
         logger.info("Scheduler stopped, jobs saved")
 
     def format_response(self, response: str) -> str:

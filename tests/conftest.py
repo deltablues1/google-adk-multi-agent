@@ -107,6 +107,32 @@ def mock_orchestrator():
 def sample_markdown():
     return """# Heading 1\n**bold** and *italic*"""
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_state(tmp_path, monkeypatch):
+    """Keep every test's job bookkeeping in its own directory.
+
+    These stores are written by ordinary code paths under test — a deferred
+    voice request records a job, a scheduled run records its outcome — so
+    without this the suite scribbles real files into the working tree.
+    """
+    monkeypatch.setenv("BACKGROUND_JOBS_FILE", str(tmp_path / "background_jobs.json"))
+    monkeypatch.setenv("SCHEDULER_RESULTS_FILE", str(tmp_path / "job_results.json"))
+
+    import config.scheduler_config as scheduler_config
+    monkeypatch.setattr(
+        scheduler_config, "RESULTS_FILE", tmp_path / "job_results.json"
+    )
+
+    # The reservation table is in-process state, so it leaks between tests
+    # just as the files would.
+    from services import background_jobs
+    background_jobs.reset()
+    try:
+        yield
+    finally:
+        background_jobs.reset()
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "unit: Unit tests")
     config.addinivalue_line("markers", "integration: Integration tests")

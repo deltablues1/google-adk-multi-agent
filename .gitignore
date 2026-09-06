@@ -175,3 +175,7 @@ data/known_recipients.json
 
 # Daily model-spend ledger (local accounting, not config).
 data/llm_budget.json
+
+# Deferred voice jobs and scheduled-run outcomes (runtime state, not config).
+data/background_jobs.json
+data/scheduled_jobs_results.json

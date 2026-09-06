@@ -28,6 +28,22 @@ def _resolve_jobs_file() -> Path:
 # Default path for job persistence
 JOBS_FILE = _resolve_jobs_file()
 
+def _resolve_results_file() -> Path:
+    """Where run outcomes are recorded.
+
+    data/, not config/: the jobs themselves are configuration a person wrote,
+    their outcomes are runtime state the machine wrote. It used to live only
+    in memory, so after a restart nobody could tell whether last night's job
+    had run, failed, or stopped half way.
+    """
+    return Path(
+        os.getenv("SCHEDULER_RESULTS_FILE", "")
+        or Path(__file__).resolve().parents[1] / "data" / "scheduled_jobs_results.json"
+    )
+
+
+RESULTS_FILE = _resolve_results_file()
+
 
 class JobTrigger(BaseModel):
     """Trigger configuration for a scheduled job."""
@@ -89,6 +105,47 @@ def load_jobs(file_path: Path = JOBS_FILE) -> SchedulerConfig:
     except Exception as e:
         logger.error(f"Failed to load jobs from {file_path}: {e}")
         return SchedulerConfig()
+
+
+def load_results(file_path: Optional[Path] = None) -> dict:
+    """Last recorded outcome per job id. Empty when there is nothing yet.
+
+    The path is resolved on the call, not baked into the default argument:
+    a default is bound when the function is defined, so redirecting the
+    location afterwards — a test, a second deployment — had no effect and the
+    writes went to the real file anyway.
+    """
+    file_path = file_path or _resolve_results_file()
+    if not file_path.exists():
+        return {}
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.error(f"Failed to load job results from {file_path}: {e}")
+        return {}
+
+
+def save_results(results: dict, file_path: Optional[Path] = None) -> None:
+    """Write the outcomes atomically, same reasoning as save_jobs.
+
+    Path resolved per call, for the reason in load_results.
+    """
+    file_path = file_path or _resolve_results_file()
+    tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, file_path)
+    except Exception as e:
+        logger.error(f"Failed to save job results to {file_path}: {e}")
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def save_jobs(config: SchedulerConfig, file_path: Path = JOBS_FILE) -> None:

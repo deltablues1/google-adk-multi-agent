@@ -149,6 +149,9 @@ def _interface():
     iface.scheduler = MagicMock()
     iface.config = SchedulerConfig()
     iface.job_results = {}
+    # __init__ is skipped here on purpose, so anything a run reads has to be
+    # set by hand. One session service for the process, built lazily.
+    iface._adk_session_service = None
     return iface
 
 
