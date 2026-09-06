@@ -455,6 +455,9 @@ _UNTRUSTED_CONTENT_AGENTS = {
     "mailer", "librarian", "analyst", "scribe", "researcher",
     "smart_orchestrator", "scraper", "synthesizer",
     "secretary", "tracker", "rolodex", "expense", "briefing_summarizer",
+    # Built outside this factory (christian_guide_adk.py) but reads a RAG
+    # corpus, so it applies the rule itself by calling the helper below.
+    "christian_guide",
 }
 
 

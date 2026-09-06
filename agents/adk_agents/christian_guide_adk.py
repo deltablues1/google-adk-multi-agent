@@ -39,7 +39,17 @@ def create_christian_guide_agent(
             "izvore, ali odgovori formuliraj prirodno i razgovorno."
         )
 
-    from agents.adk_agents.adk_agent_factory import _build_model, _make_usage_callback
+    from agents.adk_agents.adk_agent_factory import (
+        _append_untrusted_content_rule,
+        _build_model,
+        _make_usage_callback,
+    )
+
+    # The RAG corpus is external content: a document in it can carry text that
+    # reads like an instruction. This agent is built here rather than through
+    # create_adk_agent, so the boundary every other content-reading agent gets
+    # for free has to be applied explicitly.
+    instruction = _append_untrusted_content_rule("christian_guide", instruction)
 
     _model = model or "gemini-3-flash-preview"
     _kwargs = dict(
