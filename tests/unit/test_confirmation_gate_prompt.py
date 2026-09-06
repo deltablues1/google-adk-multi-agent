@@ -106,3 +106,38 @@ class TestUngatedDestructiveToolsStillAskFirst:
             f"{tool} has no gate in code; {agent}'s prompt is the only thing "
             "standing between it and the user's data"
         )
+
+
+class TestTheSharedTextDoesNotFightLocalRules:
+    """The fragment is appended AFTER each agent's own rules.
+
+    analyst deliberately exempts two writes from confirmation - a spreadsheet it
+    just created, and a cell the user dictated. A blanket "confirm everything
+    that overwrites" underneath that gives the model two rules and reintroduces
+    the friction the exemption exists to remove.
+    """
+
+    def test_the_fragment_defers_to_local_rules(self):
+        fragment = load_shared_fragment("confirmation_gate")
+        assert "imaju prednost pred ovim odlomkom" in fragment
+
+    def test_it_does_not_open_the_door_to_invented_exceptions(self):
+        fragment = load_shared_fragment("confirmation_gate")
+        assert "nemoj izmišljati nove" in fragment
+
+    def test_the_analyst_exception_is_marked_exhaustive(self):
+        text = _instruction("analyst")
+        assert "they are exhaustive" in text
+        assert "do not ask again on top of it" in text
+
+
+class TestRefusalIsScopedToTheHeldAction:
+    """"Nothing was changed" is false when three earlier steps succeeded."""
+
+    def test_the_fragment_scopes_it(self):
+        fragment = load_shared_fragment("confirmation_gate")
+        assert "zadržana radnja** nije izvršena" in fragment
+
+    def test_it_names_the_wrong_claim(self):
+        fragment = load_shared_fragment("confirmation_gate")
+        assert "je netočno kad je mail" in fragment
