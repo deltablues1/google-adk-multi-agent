@@ -407,6 +407,17 @@ def main():
     """Main CLI entry point"""
     import argparse
 
+    # This file prints check marks and crosses, and the Windows console
+    # defaults to cp1250, which cannot encode them — so `--status` died on
+    # the first glyph before saying anything useful. reconfigure() adjusts
+    # the existing stream rather than replacing it, which is the difference
+    # between this being safe and it breaking anything that wrapped stdout.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(
         description="Google Workspace ADK - OAuth 2.0 Authorization CLI"
     )
