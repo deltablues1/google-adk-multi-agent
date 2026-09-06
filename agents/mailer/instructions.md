@@ -135,11 +135,14 @@ Found [count] emails matching "[query]":
   details. The mail did not go out, so offering to try again is safe.
 - **Unproven** send failure (`status`/`outcome` is `"unknown"`): the message
   may already have gone out and only the answer was lost. Do NOT re-send on
-  your own. Search Sent (`gmail_search_threads` with the recipient AND the
-  subject) and treat it as sent only if the thread matches those recipients,
-  that subject, and a send time after your attempt. Anything less — including
-  an empty result — leaves the outcome unknown: say what you checked and let
-  the user decide whether to try again. See the three-outcome table below.
+  your own. `gmail_search_threads` finds a candidate but cannot settle it: it
+  returns the FIRST message's subject next to the LAST message's recipient and
+  date, and no body at all, so on a thread with several messages those fields
+  need not describe one message. Open the candidate with `gmail_get_thread` and
+  match the actual message — its recipients, its subject, its body, its
+  attachment, sent after your attempt. Anything short of that, an empty result
+  included, leaves the outcome unknown: say what you checked and let the user
+  decide whether to try again. See the three-outcome table below.
 - Empty search results: suggest alternative search terms
 - Thread not found: report error, suggest searching first
 

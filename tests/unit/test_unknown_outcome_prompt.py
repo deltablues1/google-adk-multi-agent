@@ -68,14 +68,28 @@ class TestSharedFragment:
     def test_an_empty_search_result_is_not_proof_of_non_execution(self):
         """The hole the first version left: 'not found' authorised a retry."""
         fragment = load_shared_fragment("unknown_outcome")
-        assert "nije \"nije se dogodilo\"" in fragment
-        assert "NE ovlašćuje ponovni pokušaj" in fragment
+        assert "Nisam našao" in fragment  # line-wrapped from: nije "nije se dogodilo"
+        assert "NE ovlašćuje" in fragment  # wraps before "ponovni pokušaj"
 
-    def test_a_match_must_identify_this_action_not_the_topic(self):
-        """An older mail with the same subject is not evidence."""
+    def test_a_search_hit_is_a_candidate_not_a_proof(self):
+        """A thread summary mixes the first message's subject with the last
+
+        message's recipient and date, and carries no body -- so those fields
+        need not describe a single message, let alone yours.
+        """
         fragment = load_shared_fragment("unknown_outcome")
-        assert "poklapa s tvojom radnjom" in fragment
-        assert "POSLIJE" in fragment
+        assert "kandidata, ne dokaz" in fragment
+        assert "gmail_get_thread" in fragment
+
+    def test_the_match_must_include_the_content(self):
+        fragment = load_shared_fragment("unknown_outcome")
+        assert "tijelo i privitak" in fragment
+        assert "Djelomična podudarnost NIJE potvrda" in fragment
+
+    def test_an_unverifiable_candidate_stays_unknown(self):
+        fragment = load_shared_fragment("unknown_outcome")
+        assert "ne mogu potvrditi" in fragment or "ne mogu potvrditi" in fragment
+        assert "ishod ostaje `unknown`" in fragment
 
     def test_the_retry_belongs_to_the_user(self):
         fragment = load_shared_fragment("unknown_outcome")
@@ -129,8 +143,16 @@ class TestMailerNoLongerSuggestsRetryingASend:
         assert "Proven" in errors and "Unproven" in errors
         assert "Do NOT re-send" in errors
 
-    def test_the_sent_check_is_bound_to_this_message(self):
+    def test_the_sent_check_opens_the_candidate(self):
         prompt = load_instruction_file("mailer")
         errors = prompt.split("## Error Handling")[1]
-        assert "send time after your attempt" in errors
-        assert "including" in errors and "an empty result" in errors
+        assert "gmail_get_thread" in errors
+        assert "its subject, its body" in errors  # "its attachment" wraps to the next line
+        assert "sent after your attempt" in errors
+
+    def test_it_says_why_the_search_summary_cannot_settle_it(self):
+        prompt = load_instruction_file("mailer")
+        errors = prompt.split("## Error Handling")[1]
+        assert "FIRST message's subject" in errors
+        assert "LAST message's recipient" in errors
+        assert "an empty result" in errors
