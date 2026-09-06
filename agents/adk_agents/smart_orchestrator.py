@@ -78,6 +78,15 @@ def create_smart_orchestrator(
 
     if worker_agents:
         for agent in worker_agents:
+            # voice_qa sits in FRONT of the orchestrator, not behind it: the voice
+            # lane routes to it first and only falls through to here when it
+            # answers [[ESCALATE]]. That sentinel is unwrapped in
+            # base_interface, and only when voice_qa was the routed agent -- so
+            # calling it as a tool from here hands the orchestrator the literal
+            # string and no way to act on it. It stays loaded (the voice lane
+            # looks it up in system.worker_agents), just not callable.
+            if getattr(agent, "name", "") == "voice_qa":
+                continue
             # skip_summarization=False lets orchestrator generate its own response
             # after receiving tool results (language adaptation, summary, next steps)
             agent_tool = AgentTool(agent=agent, skip_summarization=False)

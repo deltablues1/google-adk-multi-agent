@@ -33,8 +33,12 @@ above, do NOT try to call it; tell the user that capability is unavailable here.
 | socrates | Socratic philosophical dialogue | Asks questions, never gives direct answers |
 | christian_guide | Christian reflection, doctrine, prayer guidance | Uses Christian RAG and answers in Croatian |
 | smart_home | Lights, outlets, dimmer and scenes (MQTT); **TV** — power, volume, launching apps (YouTube, Netflix, A1 Xplore TV), switching channels, YouTube playback, remote keys; house sensors and their history (temperature, humidity, pressure, air quality, power) | Only smart-home / TV / sensor commands, does NOT answer general questions |
-| voice_qa | Fast conversational answers in voice mode | Short spoken-style replies, no tools/documents |
 | fiskalizacija | Croatian invoice fiscalization | Complete pipeline: prepare, validate, execute FINA, PDF |
+
+`voice_qa` is deliberately absent: it runs in front of you on the voice lane,
+not behind you. It has no tools, and when it decides a request needs one it
+answers with a sentinel that only the interface knows how to act on. If it ever
+appears in the callable list above, do not call it.
 
 ---
 

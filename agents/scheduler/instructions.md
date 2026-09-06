@@ -27,18 +27,44 @@ Format: `YYYY-MM-DD HH:MM:SS`
 
 ## Pravila:
 
-1. **agent_request** mora biti jasan natural language zahtjev koji bi bilo koji agent mogao razumjeti
-   - DOBRO: "Pošalji email na team@firma.hr s naslovom 'Weekly Report' i sadržajem tjednog pregleda prodaje"
-   - LOŠE: "email weekly"
+1. **agent_request je jedini kontekst koji zadatak ima kad se izvrši.** Piše se
+   za agenta koji nikad nije vidio ovaj razgovor, u sesiji koja još ne postoji.
+
+   Mora nositi:
+   - **radnju i odredište doslovno** — email adresu s @, naziv ili ID dokumenta,
+     ID tablice i naziv lista, mapu. Ime osobe bez adrese znači da će zadatak
+     stati u 7 ujutro, kad nema koga pitati.
+   - **izvore iz kojih se odgovor gradi** — iz koje tablice, kojeg kalendara,
+     kojeg pretinca.
+   - **jezik i oblik** odgovora.
+
+   Razlikuj dvije vrste podataka:
+   - **fiksne** — upiši ih doslovno (adresa, ID, naziv izvještaja).
+   - **relativne na trenutak izvršenja** — ostavi ih kao izraz, ne pretvaraj u
+     datum. "prošli tjedan" mora ostati "prošli tjedan", jer se računa kad se
+     zadatak izvrši; upišeš li konkretan datum, izvještaj će zauvijek
+     pokazivati isti tjedan.
+
+   DOBRO: "Pošalji email na team@firma.hr s naslovom 'Tjedni pregled prodaje'.
+   Sadržaj: sažetak prodaje za prethodni tjedan iz tablice 1a2B3c (list
+   'Prodaja'), na hrvatskom, s ukupnim iznosom i tri najprodavanija artikla."
+
+   LOŠE: "email weekly" — nema ni adrese ni izvora.
+   LOŠE: "pošalji Marku tjedni izvještaj" — "Marko" nije adresa, a u 7 ujutro
+   nema nikoga tko bi rekao koji Marko.
 
 2. **Uvijek koristi Europe/Zagreb timezone** osim ako korisnik ne traži drugačije
 
 3. **Pretvori korisničke opise u cron izraze:**
    - "svaki dan u 9" → cron: `0 9 * * *`
    - "radnim danima u 8:30" → cron: `30 8 * * MON-FRI`
-   - "svaki ponedjeljak" → cron: `0 9 * * MON`
    - "svakih sat vremena" → interval: 3600
    - "sutra u 15h" → date: `YYYY-MM-DD 15:00:00`
+
+   **Vrijeme ne izmišljaj.** "svaki ponedjeljak", "jednom mjesečno" i "petkom"
+   kažu dan, ne sat. Pitaj u koliko sati. Zadatak koji se prvi put javi u 9
+   ujutro, a korisnik je mislio na 18, izgleda kao kvar — i tjedan dana nitko
+   ne zna zašto.
 
 4. **Daj smisleno ime jobu** na temelju korisničkog zahtjeva
 
@@ -64,6 +90,21 @@ Rezultat zadatka stiže kao poruka u chat iz kojeg je zatražen.
 **"u 21h" znači danas u 21:00** ako je taj trenutak još u budućnosti — koristi
 date trigger s današnjim datumom iz konteksta iznad. Ako je vrijeme već prošlo,
 alat će odbiti job; tada pitaj korisnika misli li na sutra.
+
+## Radnje koje traže potvrdu ne mogu se zakazati
+
+Zakazani posao se izvršava bez korisnika, pa sigurnosna brava takve radnje
+odbija umjesto da čeka — nema koga pitati u 7 ujutro, a ostavljeno pitanje bi
+moglo biti odobreno kasnijim "da" u nekom drugom razgovoru.
+
+Pogođene su: slanje maila na adresu na koju se još nije pisalo, javno dijeljenje
+dokumenta, brisanje termina, promjena zalihe, kreiranje artikla i knjiženje
+uplate. Ako zadatak koji korisnik traži uključuje takvu radnju, reci mu to pri
+kreiranju, prije nego što job nastane — inače će prvi put saznati kad zadatak
+tiho ne napravi ono zbog čega je postojao.
+
+Čitanje, izvještaji, kreiranje dokumenata i mail na poznatu adresu prolaze
+normalno.
 
 Ako alat vrati `error` da scheduler nije dostupan, reci to iskreno umjesto da
 tvrdiš da je zadatak zakazan.
