@@ -149,6 +149,37 @@ def create_workflow_summarizer(model: str = FLASH_MODEL):
 # Ledger
 # ---------------------------------------------------------------------------
 
+# What a step can come back as. The point is that each of these is decided by
+# something the code observed, not by reading the agent's prose:
+#
+#   COMPLETED           the worker answered and nothing stopped it
+#   NEEDS_CONFIRMATION  the approval gate held an action inside this step
+#   FAILED              it raised, or came back empty
+#   UNKNOWN             it broke in a way that may have happened anyway
+#
+# Before this, everything except "empty" counted as done, so a worker replying
+# "trebam tvoju potvrdu prije slanja" was recorded as a finished step and the
+# next one carried on as if the mail had gone.
+COMPLETED = "completed"
+NEEDS_CONFIRMATION = "needs_confirmation"
+FAILED = "failed"
+UNKNOWN = "unknown"
+
+
+@dataclass
+class StepOutcome:
+    """One step's result, with the status kept apart from the prose."""
+
+    status: str
+    text: str = ""
+    detail: str = ""
+    pending: List[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.status == COMPLETED
+
+
 @dataclass
 class WorkflowLedger:
     """Side store for step results so the main context never bloats."""
@@ -158,6 +189,7 @@ class WorkflowLedger:
     results: Dict[int, Dict[str, Any]] = field(default_factory=dict)  # id -> {agent, task, result}
     done: List[int] = field(default_factory=list)
     failure: Optional[Dict[str, Any]] = None  # {id, agent, reason}
+    waiting: Optional[Dict[str, Any]] = None  # {id, agent, actions}
 
     def record(self, step: Dict[str, Any], result: str) -> None:
         sid = step["id"]
@@ -187,11 +219,26 @@ class WorkflowLedger:
             "",
             "REZULTATI KORAKA:",
         ]
+        if self.waiting or self.failure:
+            # Telling the user to "confirm and ask again" would replay every
+            # step that already finished — including the writes. The summary
+            # has to name what is done before it names what is missing.
+            lines.insert(2, (
+                "VAŽNO: lanac je stao prije kraja. U odgovoru NAJPRIJE navedi "
+                "što je već izvršeno (ti su koraci gotovi i NE treba ih "
+                "ponavljati), pa tek onda što je ostalo i što ti treba od "
+                "korisnika. Nemoj tražiti da ponovi cijeli zahtjev."
+            ))
         for step in self.plan:
             sid = step["id"]
             entry = self.results.get(sid)
             if entry:
                 lines.append(f"\n[Korak {sid} - {step['agent']}] OK\n{entry['result']}")
+            elif self.waiting and self.waiting["id"] == sid:
+                lines.append(
+                    f"\n[Korak {sid} - {step['agent']}] ČEKA POTVRDU: "
+                    f"{', '.join(self.waiting['actions']) or 'radnja traži potvrdu'}"
+                )
             elif self.failure and self.failure["id"] == sid:
                 lines.append(
                     f"\n[Korak {sid} - {step['agent']}] NEUSPJEH: {self.failure['reason']}"
@@ -239,7 +286,18 @@ def _validate_plan(plan: dict, valid_agents: set) -> Optional[List[Dict[str, Any
         # Fewer than 2 steps is not a chain — let the orchestrator handle it.
         return None
 
+    try:
+        max_steps = int(os.getenv("PLAN_EXECUTE_MAX_STEPS", "8"))
+    except ValueError:
+        max_steps = 8
+    if max_steps > 0 and len(steps) > max_steps:
+        # Each step is its own agent run. A planner that emits thirty of them
+        # is not describing this request any more.
+        logger.warning("[PLAN] Rejecting a %d-step plan (max %d)", len(steps), max_steps)
+        return None
+
     clean: List[Dict[str, Any]] = []
+    seen_ids: set = set()
     for i, raw in enumerate(steps, start=1):
         if not isinstance(raw, dict):
             return None
@@ -248,12 +306,34 @@ def _validate_plan(plan: dict, valid_agents: set) -> Optional[List[Dict[str, Any
         if agent not in valid_agents or not isinstance(task, str) or not task.strip():
             logger.warning(f"[PLAN] Invalid step {i}: agent={agent!r}")
             return None
+
+        step_id = int(raw.get("id", i))
+        if step_id in seen_ids:
+            # Two steps with the same id write to the same ledger slot, so the
+            # second silently replaces the first and the summary prints it twice.
+            logger.warning("[PLAN] Duplicate step id %s", step_id)
+            return None
+
+        refs = [int(r) for r in (raw.get("use_results") or []) if str(r).isdigit()]
+        for ref in refs:
+            if ref not in seen_ids:
+                # A reference forward or to nothing renders as an empty context
+                # block, and the step runs on its task alone — the exact
+                # "never feed an empty result downstream" failure this module
+                # exists to prevent, arriving quietly.
+                logger.warning(
+                    "[PLAN] Step %s uses result %s, which is not an earlier step",
+                    step_id, ref,
+                )
+                return None
+
+        seen_ids.add(step_id)
         clean.append(
             {
-                "id": int(raw.get("id", i)),
+                "id": step_id,
                 "agent": agent,
                 "task": task.strip(),
-                "use_results": [int(r) for r in (raw.get("use_results") or []) if str(r).isdigit()],
+                "use_results": refs,
             }
         )
     return clean
@@ -264,6 +344,86 @@ def _looks_failed(result: str) -> bool:
         return True
     head = result.strip()[:80]
     return any(marker in head for marker in _FAILURE_MARKERS)
+
+
+# What a tool says about itself, mapped to what it means for the step.
+_UNKNOWN_TOOL_STATUSES = {"unknown", "unconfirmed", "timeout"}
+_FAILED_TOOL_STATUSES = {"failed", "error", "aborted", "not_permitted"}
+
+
+def _classify_step(
+    result: str,
+    pending: List[str],
+    outcomes: Optional[List[tuple]] = None,
+) -> StepOutcome:
+    """What actually happened in this step.
+
+    Two kinds of evidence, both recorded by code rather than read out of the
+    worker's prose:
+
+    * `pending` — actions the approval gate held while the step ran;
+    * `outcomes` — statuses the tools reported in their own results.
+
+    That distinction is the whole point. The final text is written by a model,
+    and a tool result saying `{"status": "unknown"}` becomes an ordinary
+    sentence by the time it gets there — which is how a write nobody could
+    confirm used to count as a finished step.
+
+    `completed` is still the absence of trouble, but the trouble it now has to
+    be absent of includes what the tools themselves said.
+    """
+    outcomes = outcomes or []
+
+    unknown = [name for name, status in outcomes
+               if status.lower() in _UNKNOWN_TOOL_STATUSES]
+    if unknown:
+        return StepOutcome(
+            status=UNKNOWN,
+            text=result or "",
+            detail=(
+                "alat nije mogao potvrditi ishod: " + ", ".join(sorted(set(unknown)))
+            ),
+        )
+
+    if pending:
+        return StepOutcome(
+            status=NEEDS_CONFIRMATION,
+            text=result or "",
+            detail="radnja traži potvrdu korisnika",
+            pending=list(pending),
+        )
+
+    failed = [name for name, status in outcomes
+              if status.lower() in _FAILED_TOOL_STATUSES]
+    if failed:
+        return StepOutcome(
+            status=FAILED,
+            text=result or "",
+            detail="alat je prijavio neuspjeh: " + ", ".join(sorted(set(failed))),
+        )
+
+    if _looks_failed(result):
+        return StepOutcome(
+            status=FAILED,
+            text=result or "",
+            detail="agent je vratio prazan rezultat — korak nije dovršen",
+        )
+    return StepOutcome(status=COMPLETED, text=result)
+
+
+def _classify_error(error: Exception) -> StepOutcome:
+    """A raised step: did it definitely not happen, or is that unknown?"""
+    try:
+        from tools.resilience.retry_handler import is_retryable_error
+        unknown = bool(is_retryable_error(error))
+    except Exception:  # pragma: no cover - defensive
+        unknown = False
+    if unknown:
+        return StepOutcome(
+            status=UNKNOWN,
+            detail=f"veza je pukla, ne znam je li korak izvršen: {error}",
+        )
+    return StepOutcome(status=FAILED, detail=f"greška: {error}")
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +518,8 @@ async def run_plan_execute(
     Returns:
         Final user-facing answer text.
     """
+    from services import run_effects
+
     if not _looks_multi_step(user_message):
         logger.info("[PLAN] Short single-action request — skipping planner.")
         return await fallback(user_message)
@@ -391,10 +553,20 @@ async def run_plan_execute(
     )
 
     # --- 2. EXECUTE (deterministic loop, fresh context per step) ---
+    # ensure_run, not start_run: a scheduled job already started a ledger and
+    # resetting it would erase what that job needs to decide whether replaying
+    # is safe. This only covers the case where nothing upstream tracked.
+    run_effects.ensure_run()
+
     for step in steps:
         sid, agent_name = step["id"], step["agent"]
         agent = agents_by_name[agent_name]
         composed = step["task"] + ledger.context_for(step)
+
+        # Where the ledger stood before this step, so the deltas below belong
+        # to this step alone and not to something earlier in the run.
+        before = set(run_effects.confirmations_needed())
+        before_outcomes = len(run_effects.tool_outcomes())
 
         logger.info("[STEP %s] -> %s", sid, agent_name)
         try:
@@ -406,20 +578,44 @@ async def run_plan_execute(
             )
         except Exception as e:
             logger.error("[STEP %s] %s raised: %s", sid, agent_name, e)
-            ledger.failure = {"id": sid, "agent": agent_name, "reason": f"greška: {e}"}
-            break
+            outcome = _classify_error(e)
+        else:
+            pending = [
+                a for a in run_effects.confirmations_needed() if a not in before
+            ]
+            outcome = _classify_step(
+                result,
+                pending,
+                list(run_effects.tool_outcomes()[before_outcomes:]),
+            )
 
-        if _looks_failed(result):
-            logger.error("[STEP %s] %s returned empty/failed result.", sid, agent_name)
-            ledger.failure = {
-                "id": sid,
-                "agent": agent_name,
-                "reason": "agent je vratio prazan rezultat — korak nije dovršen",
+        if outcome.status == NEEDS_CONFIRMATION:
+            # Stop here rather than carrying on as if it had run. The steps
+            # after this one were written expecting it to be done.
+            logger.info(
+                "[STEP %s] %s is waiting for confirmation: %s",
+                sid, agent_name, ", ".join(outcome.pending),
+            )
+            ledger.waiting = {
+                "id": sid, "agent": agent_name, "actions": outcome.pending,
             }
             break
 
-        ledger.record(step, result)
-        logger.info("[STEP %s] %s OK (%d chars)", sid, agent_name, len(result))
+        if not outcome.ok:
+            # UNKNOWN stops the chain for the same reason FAILED does: the
+            # steps after this one were written assuming it finished, and
+            # "maybe it did" is not a foundation to send a mail on.
+            logger.error("[STEP %s] %s -> %s", sid, agent_name, outcome.status)
+            ledger.failure = {
+                "id": sid,
+                "agent": agent_name,
+                "reason": outcome.detail,
+                "status": outcome.status,
+            }
+            break
+
+        ledger.record(step, outcome.text)
+        logger.info("[STEP %s] %s OK (%d chars)", sid, agent_name, len(outcome.text))
 
     # --- 3. SUMMARIZE ---
     answer: Optional[str] = None

@@ -14,7 +14,7 @@ None keeps the original response unchanged.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +48,32 @@ def _is_empty_result(tool_response: Any) -> bool:
     return False
 
 
+# How many times one worker has come back empty inside the current run.
+# Same reasoning as the approval gate's hold counter: an instruction in a tool
+# result is advice, and a model that ignores it once will ignore it twice.
+_empty_results_this_run: Dict[tuple, int] = {}
+
+
+def _count_empty(tool_name: str) -> int:
+    from services import approvals
+
+    key = (approvals.current_session(), tool_name)
+    count = _empty_results_this_run.get(key, 0) + 1
+    _empty_results_this_run[key] = count
+    if len(_empty_results_this_run) > 2048:  # bounded memory
+        _empty_results_this_run.clear()
+    return count
+
+
+def reset_empty_results(session_id: Optional[str] = None) -> None:
+    """A new user message starts the count over."""
+    from services import approvals
+
+    session = session_id or approvals.current_session()
+    for key in [k for k in _empty_results_this_run if k[0] == session]:
+        del _empty_results_this_run[key]
+
+
 def validate_worker_result(
     *,
     tool: Any,
@@ -69,12 +95,31 @@ def validate_worker_result(
         return None
 
     if _is_empty_result(tool_response):
+        attempts = _count_empty(tool_name)
         logger.error(
-            "[CONTROL] Worker '%s' returned an empty result (args=%s) — "
+            "[CONTROL] Worker '%s' returned an empty result (args=%s, attempt %d) — "
             "overriding with failure instruction to halt workflow.",
             tool_name,
             str(args)[:200],
+            attempts,
         )
+
+        if attempts >= 3:
+            # Telling the model to stop is advice, and advice is what the
+            # approval gate already watched a model ignore four times in one
+            # turn. An "error" key is the shape the loop guard counts and the
+            # model treats as terminal, so this ends the turn instead of
+            # spending more round-trips on a worker that keeps coming back
+            # empty.
+            return {
+                "error": (
+                    f"STOP: agent '{tool_name}' je {attempts} puta vratio prazan "
+                    f"rezultat. Ne zovi ga više i ne zovi alate koji ovise o "
+                    f"njemu. Javi korisniku da taj korak nije uspio i završi "
+                    f"odgovor."
+                )
+            }
+
         return {
             "result": (
                 f"⚠️ TOOL FAILURE: agent '{tool_name}' je vratio prazan rezultat — "

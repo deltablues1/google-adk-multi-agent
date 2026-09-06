@@ -19,6 +19,23 @@ logger = logging.getLogger(__name__)
 apply_runtime_patches()
 
 
+def _reported_status(response: Any) -> str:
+    """The status a tool put in its own result, if it put one there.
+
+    Looks one level in as well: an ADK tool response is often wrapped as
+    {"result": {...the tool's dict...}}.
+    """
+    for candidate in (response, (response or {}).get("result")
+                      if isinstance(response, dict) else None):
+        if not isinstance(candidate, dict):
+            continue
+        for field in ("outcome", "status"):
+            value = candidate.get(field)
+            if isinstance(value, str) and value:
+                return value
+    return ""
+
+
 async def run_agent_simple(
     agent,
     user_message: str,
@@ -99,6 +116,8 @@ async def run_agent_simple(
     function_calls_made = []
     last_function_responses = []
 
+    from services import run_effects
+
     try:
         # Call run_async with RunConfig to allow multi-step workflows
         run_config = RunConfig(max_llm_calls=30)
@@ -128,6 +147,9 @@ async def run_agent_simple(
                         func_call = part.function_call
                         func_name = getattr(func_call, 'name', 'unknown')
                         function_calls_made.append(func_name)
+                        # Tells the scheduler whether replaying this request is
+                        # still safe. Inert outside a tracked run.
+                        run_effects.note_tool_call(func_name)
                         logger.info(f"[TOOL_CALL] {func_name}")
 
                     # Handle function_response parts - capture FULL response
@@ -136,6 +158,12 @@ async def run_agent_simple(
                         func_name = getattr(func_resp, 'name', 'unknown')
                         resp_data = getattr(func_resp, 'response', None)
                         if resp_data:
+                            # A tool that reported its own status says so here.
+                            # The final text will not carry it, and "unknown"
+                            # must not reach the caller looking like success.
+                            run_effects.note_tool_outcome(
+                                func_name, _reported_status(resp_data)
+                            )
                             # Extract 'result' key if it's a dict, otherwise use full response
                             if isinstance(resp_data, dict) and 'result' in resp_data:
                                 result_text = str(resp_data['result'])
