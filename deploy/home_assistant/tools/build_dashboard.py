@@ -23,6 +23,7 @@ wants to see while looking at a room.
 import asyncio
 import json
 import os
+import pathlib
 import sys
 from collections import defaultdict
 
@@ -31,6 +32,8 @@ import websockets
 URL = os.environ["HA_URL"].replace("http://", "ws://") + "/api/websocket"
 TOKEN = os.environ["HA_TOKEN"]
 BOARD = "jarvis-dom"
+# Repo root, for reading the agent's own stores (learned TV channels).
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 PIPELINE = "01m0qf25e4jzkgg20eterh9jbf"
 BACKUP = os.getenv("DASHBOARD_BACKUP", "/tmp/jarvis-dom-backup.json")
 
@@ -349,8 +352,13 @@ def overview_view(all_light_ids: list[str],
                         "time_zone": "Europe/Zagreb",
                         "grid_options": {"columns": 12, "rows": 2},
                     },
+                    # "auto", not a fixed two rows: the line renders sunrise,
+                    # sunset, the moon phase, UV and a countdown, and on the
+                    # panel's narrow column that wraps past two rows. The moon
+                    # was being clipped off the bottom, which read as the moon
+                    # having disappeared (2026-09-06).
                     {"type": "markdown", "content": SUN_LINE,
-                     "grid_options": {"columns": 12, "rows": 2}},
+                     "grid_options": {"columns": 12, "rows": "auto"}},
                     {
                         "type": "weather-forecast", "entity": "weather.forecast_dom",
                         "forecast_type": "daily", "show_current": True,
@@ -374,8 +382,14 @@ def overview_view(all_light_ids: list[str],
                      "vertical": True, "grid_options": {"columns": 4}},
                     {"type": "tile", "entity": "person.tomislav", "name": "Tomislav",
                      "vertical": True, "grid_options": {"columns": 4}},
+                    # A tile shows a todo entity's STATE, which is the number
+                    # of open items -- useful at a glance, useless to shop
+                    # from, and its more-info dialog opens the logbook. The
+                    # count stays; the tap goes to a subview with the real list.
                     {"type": "tile", "entity": "todo.shopping_list", "name": "Kupovina",
-                     "vertical": True, "grid_options": {"columns": 4}},
+                     "vertical": True, "grid_options": {"columns": 4},
+                     "tap_action": {"action": "navigate",
+                                    "navigation_path": f"/{BOARD}/kupovina"}},
                     {"type": "button", "name": "Pitaj Jarvisa", "icon": "mdi:microphone",
                      "show_state": False, "grid_options": {"columns": 12},
                      "tap_action": {"action": "assist", "pipeline_id": PIPELINE,
@@ -860,6 +874,9 @@ def appliances_view(sockets: list[tuple[str, str]]) -> dict:
 # explained on screen -- a paragraph about protocols is not something anyone
 # reads while reaching for the volume.
 TV_REMOTE = "remote.tv"
+# The androidtv_remote side: always awake while the TV is on, and the only
+# one that reports which app is in front.
+TV_MEDIA = "media_player.tv"
 TV_PLAYER = "media_player.tv"
 TV_CAST = "media_player.smart_tv_pro"
 
@@ -868,9 +885,14 @@ TV_CAST = "media_player.smart_tv_pro"
 # goes through the small launcher app installed on it -- the same route Jarvis
 # uses, and the reason that app exists. Buttons built on raw package names
 # would look right and do nothing.
+# A1 is deliberately not here: its button opens the channel list instead of
+# the app, because switching to a channel is what anyone actually wants from
+# it. The plain app launch lives at the top of that list.
+A1_ACTIVITY = "jarvis://open?pkg=hr.a1.android.tv.xploretv"
+A1_PACKAGE = "hr.a1.android.tv.xploretv"
+
 TV_APPS = [
     ("YouTube", "mdi:youtube", "https://www.youtube.com"),
-    ("A1 Xplore", "mdi:television-classic", "jarvis://open?pkg=hr.a1.android.tv.xploretv"),
     ("Netflix", "mdi:netflix", "https://www.netflix.com/title"),
 ]
 
@@ -925,6 +947,115 @@ def app_button(name: str, icon: str, package: str) -> dict:
     }
 
 
+def shopping_view() -> dict:
+    """The shopping list itself, reached by tapping the count on the overview."""
+    return {
+        "type": "sections",
+        "title": "Lista za kupovinu",
+        "path": "kupovina",
+        "icon": "mdi:cart-outline",
+        "subview": True,
+        "max_columns": 2,
+        "sections": [{
+            "type": "grid",
+            "cards": [{
+                "type": "todo-list",
+                "entity": "todo.shopping_list",
+                "title": "Lista za kupovinu",
+                "display_order": "none",
+            }],
+        }],
+    }
+
+
+def learned_channels() -> list[tuple[int, str]]:
+    """(number, shortest name) for every channel Jarvis knows a number for.
+
+    Read from the agent's own store, so a channel learned by saying "N1 je 105"
+    appears on the panel the next time this runs. Most entries came from the
+    operator's published list and have no number -- A1 does not publish them --
+    and a button that cannot dial anything is worse than no button.
+
+    Shortest name wins among duplicates: "HRT 1" and "HRT 1 HD" are one channel,
+    and the short one fits the button.
+    """
+    store = ROOT / "config" / "tv_channels.json"
+    try:
+        channels = json.loads(store.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"  upozorenje: ne mogu procitati {store}: {exc}")
+        return []
+
+    best: dict[int, str] = {}
+    for name, data in channels.items():
+        number = (data or {}).get("number")
+        if not number:
+            continue
+        number = int(number)
+        if number not in best or len(name) < len(best[number]):
+            best[number] = name
+    return sorted(best.items())
+
+
+def channels_view() -> dict:
+    """Programmed channels, one button each.
+
+    The button calls script.jarvis_tv_kanal, which mirrors the tv_channel tool:
+    launch the app when it is not already in front, wait out the warm-up, step
+    into live TV, then type the digits. The waits are long because the app is
+    slow to draw and digits sent early are simply lost.
+    """
+    channels = learned_channels()
+    cards = [
+        {"type": "heading", "heading": "A1 Xplore TV — programirani kanali",
+         "heading_style": "title", "icon": "mdi:television-guide"},
+        {"type": "button", "name": "Otvori A1 Xplore", "icon": "mdi:open-in-app",
+         "show_state": False, "grid_options": {"columns": 12},
+         "tap_action": {"action": "perform-action",
+                        "perform_action": "remote.turn_on",
+                        "target": {"entity_id": TV_REMOTE},
+                        "data": {"activity": A1_ACTIVITY}}},
+    ]
+    cards += [
+        {"type": "button", "name": name, "icon": "mdi:television-classic",
+         "show_state": False, "grid_options": {"columns": 6},
+         "tap_action": {"action": "perform-action",
+                        "perform_action": "script.jarvis_tv_kanal",
+                        "data": {"number": str(number)}}}
+        for number, name in channels
+    ]
+    print(f"  kanala s brojem: {len(channels)}")
+    return {
+        "type": "sections",
+        "title": "Kanali",
+        "path": "kanali",
+        "icon": "mdi:television-guide",
+        "subview": True,
+        "max_columns": 3,
+        "sections": [{"type": "grid", "cards": cards}],
+    }
+
+
+def volume_keys() -> list[dict]:
+    """Step volume on the remote entity, for when the cast slider is asleep."""
+    def key_card(name: str, icon: str, action: str, data: dict | None = None) -> dict:
+        card = {"type": "button", "name": name, "icon": icon, "show_state": False,
+                "grid_options": {"columns": 4},
+                "tap_action": {"action": "perform-action",
+                               "perform_action": action,
+                               "target": {"entity_id": TV_MEDIA}}}
+        if data:
+            card["tap_action"]["data"] = data
+        return card
+
+    return [
+        key_card("Tiše", "mdi:volume-minus", "media_player.volume_down"),
+        key_card("Mute", "mdi:volume-off", "media_player.volume_mute",
+                 {"is_volume_muted": True}),
+        key_card("Glasnije", "mdi:volume-plus", "media_player.volume_up"),
+    ]
+
+
 def tv_view() -> dict:
     groups = [
             {
@@ -942,6 +1073,14 @@ def tv_view() -> dict:
                     {"type": "media-control", "entity": TV_CAST},
                     {"type": "tile", "entity": TV_CAST, "name": "Glasnoća",
                      "features": [{"type": "media-player-volume-slider"}]},
+                    # The slider above belongs to the cast side, which is off
+                    # whenever the TV is showing a broadcast channel -- so it
+                    # sits there dead through most of an evening. The remote
+                    # side is always awake but has no absolute volume, only
+                    # steps, which is why these are buttons and not a second
+                    # slider. Mute only mutes: the service takes an explicit
+                    # value and a dashboard button cannot compute a toggle.
+                    *volume_keys(),
                     # Cast falls silent on broadcast channels, so this line is
                     # what still says the set is on and what it is showing.
                     {"type": "markdown", "content": TV_NOW},
@@ -1187,12 +1326,27 @@ async def main():
             system_view(),
             conversation_view(),
             climate_extremes_view(),
+            shopping_view(),
+            channels_view(),
             *room_views(by_area, area_names),
         ]
 
         await call(ws, 9, {"type": "lovelace/config/save", "url_path": BOARD, "config": cfg})
         after = await call(ws, 10, {"type": "lovelace/config", "url_path": BOARD})
         print("  prikazi:", [v.get("title") for v in after["views"]])
+
+        # The same board is written to Overview as well. Opening Home Assistant
+        # from a phone or a laptop lands on the default dashboard, and the
+        # per-user defaultPanel setting is overridden by whatever a browser has
+        # stored locally as "default on this device" -- so the reliable way to
+        # arrive at the wall panel is for Overview to BE the wall panel. Set
+        # MIRROR_TO_OVERVIEW=false to keep them separate.
+        if os.getenv("MIRROR_TO_OVERVIEW", "true").lower() != "false":
+            mirror = await call(ws, 11, {"type": "lovelace/config"})
+            with open(BACKUP + ".overview", "w", encoding="utf-8") as fh:
+                json.dump(mirror, fh, ensure_ascii=False, indent=2)
+            await call(ws, 12, {"type": "lovelace/config/save", "config": cfg})
+            print("  Overview preslikan na zidni panel")
 
 
 if __name__ == "__main__":  # importable, so the pure helpers can be tested

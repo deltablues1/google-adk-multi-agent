@@ -15,6 +15,22 @@ Pri provjeri visine treba sklopiti bočnu traku kao na panelu.
   položaj Mjeseca i dalje crta `www/jarvis-sky.js`; Mjesec može biti ispod horizonta
   ili iza kartica, neovisno o prikazanom nazivu mijene.
 
+- **Lista za kupovinu:** na pregledu je pločica s brojem stavki; dodir otvara
+  podprikaz `kupovina` s pravom listom. Pločica sama prikazuje samo *stanje*
+  entiteta, a to je broj otvorenih stavki — zato dodir vodi dalje.
+- **Kanali:** gumb A1 Xplore otvara podprikaz `kanali` s programiranim
+  kanalima. Popis dolazi iz `config/tv_channels.json` (gitignoriran, uči se
+  govorom: *"N1 je 105"*), pa se novi kanal pojavi na panelu nakon sljedećeg
+  pokretanja generatora. Kanali bez broja nemaju gumb. Dodir zove
+  `script.jarvis_tv_kanal`, koji je HA-ova replika alata `tv_channel` —
+  **skripta se ne generira ovim alatom** i živi u HA-u.
+- **Glasnoća:** klizač pripada cast entitetu i mrtav je dok TV prikazuje
+  program; gumbi Tiše/Mute/Glasnije rade preko `media_player.tv`, koji zna
+  samo korake. Oba su namjerno prisutna.
+- **Overview:** generator preslikava isti board i na zadani dashboard, jer
+  otvaranje HA-a s mobitela ili računala vodi onamo. Isključuje se s
+  `MIRROR_TO_OVERVIEW=false`.
+
 Prije pokretanja generatora postaviti `HA_URL`, `HA_TOKEN` i `DASHBOARD_BACKUP`
 (putanju postojeće mape za sigurnosnu kopiju). Generator sprema prethodnu
 konfiguraciju prije upisa nove. Za obnovu se spremljeni JSON šalje preko HA

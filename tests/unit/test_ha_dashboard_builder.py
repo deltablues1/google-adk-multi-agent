@@ -6,6 +6,7 @@ dump of entity ids.
 """
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 
@@ -280,3 +281,139 @@ def test_moon_names_render_even_when_sun_sensors_are_unavailable(phase, label):
     assert label in result
     assert "<ha-icon" in result
     assert "uštap" not in result
+
+
+def _cards(view):
+    """Every card in a view, whatever section it sits in."""
+    out = []
+    for section in view.get("sections", []):
+        out.extend(section.get("cards", []))
+    return out
+
+
+@pytest.fixture
+def channels(tmp_path, monkeypatch):
+    """A learned-channel store of our own.
+
+    config/tv_channels.json is gitignored: it is what the agent has learned on
+    one installation, not something the repo ships. Reading the real one would
+    make this test pass or fail depending on whose machine it runs on.
+    """
+    store = tmp_path / "config"
+    store.mkdir()
+    (store / "tv_channels.json").write_text(json.dumps({
+        "HRT 1 HD": {"number": 1, "app": "a1 xplore tv"},
+        "HRT 1": {"number": 1, "app": "a1 xplore tv"},
+        "Arena Sport 1 HD": {"number": 201, "app": "a1 xplore tv"},
+        "N1": {"number": None, "app": "a1 xplore tv"},
+    }, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    return store
+
+
+class TestTheEveningOf20260906:
+    """These were applied to the live dashboard through the websocket API.
+
+    The generator rewrites the whole config, so without these tests the next
+    run silently deletes an evening of work -- which is exactly the risk that
+    prompted porting them here.
+    """
+
+    def test_the_shopping_tile_opens_the_list(self):
+        tiles = [
+            c for c in _cards(builder.overview_view([], []))
+            if c.get("entity") == "todo.shopping_list"
+        ]
+        assert tiles, "the overview lost its shopping tile"
+        assert tiles[0]["tap_action"] == {
+            "action": "navigate",
+            "navigation_path": f"/{builder.BOARD}/kupovina",
+        }
+
+    def test_there_is_a_view_at_the_other_end(self):
+        view = builder.shopping_view()
+        assert view["path"] == "kupovina"
+        assert view["subview"] is True, "it must not add a tab to the panel"
+        assert any(c["type"] == "todo-list" for c in _cards(view))
+
+    def test_the_sky_card_is_not_clipped(self):
+        """Two fixed rows cut the moon line off the bottom."""
+        cards = _cards(builder.overview_view([], []))
+        sky = [c for c in cards if c.get("content") is builder.SUN_LINE]
+        assert sky, "the sun/moon line disappeared from the overview"
+        assert sky[0]["grid_options"]["rows"] == "auto"
+
+    def test_the_a1_button_no_longer_just_launches_the_app(self):
+        names = [a[0] for a in builder.TV_APPS]
+        assert "A1 Xplore" not in names
+
+    def test_the_channel_view_can_dial(self, channels):
+        view = builder.channels_view()
+        assert view["path"] == "kanali"
+        assert view["subview"] is True
+        buttons = [
+            c for c in _cards(view)
+            if c.get("tap_action", {}).get("perform_action") == "script.jarvis_tv_kanal"
+        ]
+        assert buttons, "no channel dials anything"
+        for b in buttons:
+            assert b["tap_action"]["data"]["number"].isdigit()
+
+    def test_a_channel_without_a_number_gets_no_button(self, channels):
+        """A1 does not publish most numbers; a dead button is worse than none."""
+        names = [c.get("name") for c in _cards(builder.channels_view())]
+        assert "N1" not in names
+
+    def test_duplicates_collapse_to_the_shorter_name(self, channels):
+        names = [c.get("name") for c in _cards(builder.channels_view())]
+        assert "HRT 1" in names
+        assert "HRT 1 HD" not in names
+
+    def test_a_missing_store_is_survivable(self, tmp_path, monkeypatch):
+        """It is gitignored runtime state; a fresh checkout has none."""
+        monkeypatch.setattr(builder, "ROOT", tmp_path)
+        assert builder.learned_channels() == []
+        view = builder.channels_view()
+        assert view["path"] == "kanali", "the view still builds, just empty"
+
+    def test_the_plain_app_launch_survives_inside_it(self):
+        """The overview button used to launch A1; that must not be lost."""
+        launchers = [
+            c for c in _cards(builder.channels_view())
+            if c.get("tap_action", {}).get("perform_action") == "remote.turn_on"
+        ]
+        assert len(launchers) == 1
+        assert launchers[0]["tap_action"]["data"]["activity"] == builder.A1_ACTIVITY
+
+    def test_only_channels_with_a_number_get_a_button(self, channels):
+        for number, name in builder.learned_channels():
+            assert int(number) > 0
+            assert name
+
+    def test_volume_works_when_the_cast_side_is_asleep(self):
+        cards = _cards(builder.tv_view())
+        actions = {
+            c.get("tap_action", {}).get("perform_action") for c in cards
+        }
+        assert "media_player.volume_up" in actions
+        assert "media_player.volume_down" in actions
+        assert "media_player.volume_mute" in actions
+        stepping = [
+            c for c in cards
+            if c.get("tap_action", {}).get("perform_action", "").startswith("media_player.volume")
+        ]
+        for c in stepping:
+            assert c["tap_action"]["target"]["entity_id"] == builder.TV_MEDIA, (
+                "the cast entity is off during broadcast; these must use the remote side"
+            )
+
+    def test_the_cast_slider_is_still_there_too(self):
+        """It is the better control whenever cast is actually awake."""
+        cards = _cards(builder.tv_view())
+        sliders = [
+            c for c in cards
+            for f in c.get("features", [])
+            if f.get("type") == "media-player-volume-slider"
+        ]
+        assert len(sliders) == 1
+        assert sliders[0]["entity"] == builder.TV_CAST
