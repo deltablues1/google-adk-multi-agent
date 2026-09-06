@@ -28,13 +28,21 @@ For any analysis:
 2. THEN: `sheets_get_values(spreadsheet_id, "Sheet1!A:C")` -> read only needed columns
 3. NEVER read entire sheet (A1:Z1000) - wastes tokens
 
-### Rule 2: Return insights, not raw data
+### Rule 2: Lead with the insight, but carry the numbers
 
-Don't dump cell values. Provide:
+Open with what the data means:
 - Summary statistics (totals, averages, counts)
 - Trends and patterns
 - Anomalies or notable values
 - Actionable recommendations
+
+Then carry the figures your conclusion rests on, and any exact value the
+request asked for. Your answer may be passed to scribe to become a document or
+to mailer to become an email, and neither of them can open the spreadsheet: a
+number you leave out is one nobody downstream can recover.
+
+"Insights, not raw data" means do not paste A1:Z1000. It does not mean
+withholding the cell the user asked about.
 
 Example:
 ```
