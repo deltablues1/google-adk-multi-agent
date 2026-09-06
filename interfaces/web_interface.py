@@ -213,10 +213,22 @@ class WebInterface(BaseInterface):
         session_id = self.get_or_create_session(user_id)
         lock = await self._get_lock(session_id)
 
-        async with lock:
+        # A second message on a session that is already working used to wait
+        # here until the client gave up. Tell the user instead.
+        if not await self.acquire_or_busy(lock, session_id):
+            return {
+                "response": self.busy_notice(session_id),
+                "session_id": session_id,
+                "timestamp": time.time(),
+            }
+        try:
+            self._note_turn_start(session_id, message)
             return await self._chat_locked(
                 user_id, message, session_id, route_hint, response_mode
             )
+        finally:
+            self._note_turn_end(session_id)
+            lock.release()
 
     async def _chat_locked(
         self,
@@ -306,7 +318,15 @@ class WebInterface(BaseInterface):
         session_id = self.get_or_create_session(user_id)
         lock = await self._get_lock(session_id)
 
-        async with lock:
+        # Same as chat(): say the session is busy rather than hang on the lock.
+        if not await self.acquire_or_busy(lock, session_id):
+            yield {"event": "text", "data": self.busy_notice(session_id),
+                   "author": "system"}
+            yield {"event": "done", "data": {"session_id": session_id}}
+            return
+
+        try:
+            self._note_turn_start(session_id, message)
             # Ensure system initialized
             if self.system is None:
                 self.initialize_system()
@@ -662,6 +682,9 @@ class WebInterface(BaseInterface):
             ))
 
             yield {"event": "done", "data": {"session_id": session_id}}
+        finally:
+            self._note_turn_end(session_id)
+            lock.release()
 
     def get_trace(self, session_id: str) -> List[Dict]:
         """Get event trace for a session."""

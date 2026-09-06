@@ -446,10 +446,18 @@ Koristi /classroom za ulazak.
             )
             return
 
-        # Get processing lock for this chat
+        # Get processing lock for this chat. A message arriving while the
+        # previous one is still running gets told so, rather than sitting on
+        # the lock until Telegram's user gives up and assumes it is broken.
+        # (handle_photo/document/voice below still queue: they are rarely the
+        # message someone sends to check whether the assistant is alive.)
         lock = await self._get_processing_lock(chat_id)
+        if not await self.acquire_or_busy(lock, chat_id):
+            await update.message.reply_text(self.busy_notice(chat_id))
+            return
 
-        async with lock:
+        try:
+            self._note_turn_start(chat_id, message_text)
             try:
                 # Show typing indicator
                 await context.bot.send_chat_action(
@@ -491,6 +499,9 @@ Koristi /classroom za ulazak.
                 await update.message.reply_text(
                     f"Greška pri obradi zahtjeva: {str(e)}"
                 )
+        finally:
+            self._note_turn_end(chat_id)
+            lock.release()
 
     # === Photo & Document Handlers ===
 

@@ -62,6 +62,14 @@ SMART_HOME_KEYWORDS = {
 _TV_WORD_RE = re.compile(r"\btv\b")
 
 
+def turn_busy_notice_after_seconds() -> float:
+    """How long a second message waits before being told the session is busy."""
+    try:
+        return max(1.0, float(os.getenv("TURN_BUSY_NOTICE_AFTER_SECONDS", "10")))
+    except ValueError:
+        return 10.0
+
+
 def _fold_text(text: str) -> str:
     """Lowercase and strip diacritics, so "poštuj" and "postuj" match alike."""
     normalized = unicodedata.normalize("NFKD", text.lower())
@@ -321,6 +329,13 @@ class BaseInterface(ABC):
         # sessions can be mid-turn at once, and neither may overwrite the
         # other's. Insertion-ordered, so the oldest entry is evicted first.
         self._runner_helpers: Dict[str, Any] = {}
+
+        # session_id -> what this session is busy with right now. A second
+        # message on a busy session gets told, instead of queueing behind a
+        # lock until the client gives up: measured 2026-09-06, "Je li gotovo?"
+        # sent during a 15-minute research run waited 4.5 minutes and returned
+        # nothing at all. On voice, silence is indistinguishable from a crash.
+        self._inflight_turns: Dict[str, Dict[str, Any]] = {}
 
         # Last session/user seen. Display only — nothing dispatches on these.
         self.last_session_id: Optional[str] = None
@@ -822,6 +837,56 @@ class BaseInterface(ABC):
             and tokens[0] in ("da", "moze", "potvrdujem")
             and len(tokens) <= 6
         )
+
+    def _note_turn_start(self, session_id: str, message: str) -> None:
+        """Record what this session began, so a later message can be told."""
+        self._inflight_turns[session_id] = {
+            "started_at": time.time(),
+            "message": (message or "").strip(),
+        }
+
+    def _note_turn_end(self, session_id: str) -> None:
+        self._inflight_turns.pop(session_id, None)
+
+    def busy_notice(self, session_id: str) -> str:
+        """What to say to someone who wrote while the previous turn runs.
+
+        Says what is running, for how long, and -- the part that matters --
+        that THIS message was not taken. Queueing it silently would answer a
+        question minutes after it stopped being the one on the user's mind.
+        """
+        entry = self._inflight_turns.get(session_id)
+        if not entry:
+            return "Još radim na prethodnom zahtjevu. Javi se ponovno za koji trenutak."
+        elapsed = int(time.time() - entry["started_at"])
+        minutes, seconds = divmod(max(elapsed, 0), 60)
+        how_long = f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
+        what = entry["message"]
+        if len(what) > 60:
+            what = what[:60].rsplit(" ", 1)[0] + "…"
+        return (
+            f"Još radim na prethodnom zahtjevu ({what}) — traje {how_long}. "
+            "Ovu poruku nisam preuzeo; pošalji je ponovno kad javim da sam gotov."
+        )
+
+    async def acquire_or_busy(self, lock, session_id: str) -> bool:
+        """Take the session lock, or give up and let the caller say so.
+
+        The grace period exists so two quick messages still just queue --
+        being told "I'm busy" after three seconds would be worse than waiting.
+        Past it, the honest answer is that the session is occupied.
+        """
+        try:
+            await asyncio.wait_for(
+                lock.acquire(), timeout=turn_busy_notice_after_seconds()
+            )
+            return True
+        except asyncio.TimeoutError:
+            logger.info(
+                "Session %s is busy; answering with a status instead of queueing",
+                session_id,
+            )
+            return False
 
     def _process_turn_approvals(self, session_id: str, message: str) -> None:
         from services import approvals
