@@ -130,6 +130,10 @@ class TestShoppingListReachesTheHouseAgent:
             "Sto trebam kupiti?",
             "Kupio sam sve osim mlijeka",
             "Makni kruh s liste",
+            # What the user actually said on 2026-09-06; the HA entity is
+            # named "Shopping List", so the English word is the natural one.
+            "Dodaj mi na shopping listu ulje, kruh i mlijeko",
+            "Stavi na shoping listu kruh",
         ],
     )
     def test_shopping_phrases_route_to_smart_home(self, iface, message):

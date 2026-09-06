@@ -60,6 +60,11 @@ SMART_HOME_KEYWORDS = {
     # entity), but nothing above matches "stavi ulje na listu" or "kupio sam
     # sve osim mlijeka", so the voice lane would have handed those to voice_qa,
     # which has no tools and would have answered as if it had done something.
+    # "shopping lista" is what the user actually says -- the HA entity is
+    # called Shopping List, so the English word is the natural one. Without it
+    # the phrase fell through to voice_qa and only reached the tools via the
+    # escalation hop. "shoping" is the spelling STT keeps producing.
+    "shopping", "shoping",
     "listu za kupovinu", "lista za kupovinu", "liste za kupovinu",
     "na listu", "s liste", "na popis", "s popisa", "popis za kupovinu",
     "za kupovinu", "kupio sam", "kupila sam", "kupili smo", "za ducan",
