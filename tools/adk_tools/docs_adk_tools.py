@@ -347,6 +347,151 @@ async def format_markdown_for_docs(markdown: str) -> dict:
         return {"error": str(e), "markdown_length": len(markdown)}
 
 
+async def docs_write_markdown(document_id: str, markdown: str) -> dict:
+    """Napisi Markdown u dokument, s PRAVIM tablicama.
+
+    Koristi OVO umjesto format_markdown_for_docs + docs_batch_update kad
+    sadrzaj ima tablicu. Google Docs ne razumije Markdown: tablica ostavljena
+    u tekstu zavrsi kao niz redaka s uspravnim crtama.
+
+    Args:
+        document_id: ID dokumenta
+        markdown: Markdown sadrzaj (naslovi, liste, podebljano, tablice)
+
+    Returns:
+        Broj upisanih blokova i tablica, ili greska.
+    """
+    creds = _get_credentials()
+    if creds is None:
+        return {"error": "Authentication required"}
+
+    from tools.custom_tools.docs_formatter import DocsFormatter, split_markdown_blocks
+    from tools.api_implementations.docs_api import (
+        docs_batch_update as _batch,
+        docs_get_document as _get,
+    )
+
+    async def end_index() -> int:
+        """Where the next append goes: before the body's final newline."""
+        doc = await _get(creds, document_id)
+        content = (doc.get("body") or {}).get("content") or []
+        return max(1, (content[-1].get("endIndex", 2) if content else 2) - 1)
+
+    try:
+        blocks = split_markdown_blocks(markdown)
+        tables_written = 0
+
+        for block in blocks:
+            if block["kind"] == "text":
+                start = await end_index()
+                formatter = DocsFormatter()
+                formatter.current_index = start
+                requests = formatter.markdown_to_docs_requests(block["content"])
+                # The formatter resets current_index to 1 on entry, so re-apply
+                # the offset it should have started from.
+                if start != 1:
+                    requests = _shift_requests(requests, start - 1)
+                if requests:
+                    await _batch(creds, document_id, requests)
+                continue
+
+            header, rows = block["header"], block["rows"]
+            at = await end_index()
+            await _batch(creds, document_id, [{
+                "insertTable": {
+                    "location": {"index": at},
+                    "rows": len(rows) + 1,
+                    "columns": len(header),
+                }
+            }])
+
+            # Read the real cell indices back. Computing them is possible but
+            # every insert shifts what follows, and a silent off-by-one writes
+            # the report into the wrong cells.
+            cells = _last_table_cells(await _get(creds, document_id))
+            values = [header] + rows
+            fills = []
+            for (r, c, index) in cells:
+                if r < len(values) and c < len(values[r]):
+                    text = values[r][c]
+                    if text:
+                        fills.append((index, text))
+
+            # Backwards: an insert never moves anything before it.
+            fills.sort(key=lambda pair: pair[0], reverse=True)
+            if fills:
+                await _batch(creds, document_id, [
+                    {"insertText": {"location": {"index": i}, "text": t}}
+                    for i, t in fills
+                ])
+
+            # Header bold, against freshly read indices.
+            head = _last_table_cells(await _get(creds, document_id))
+            bolds = []
+            for (r, c, index) in head:
+                if r == 0 and c < len(header) and header[c]:
+                    bolds.append({
+                        "updateTextStyle": {
+                            "range": {
+                                "startIndex": index,
+                                "endIndex": index + len(header[c]),
+                            },
+                            "textStyle": {"bold": True},
+                            "fields": "bold",
+                        }
+                    })
+            if bolds:
+                await _batch(creds, document_id, bolds)
+            tables_written += 1
+
+        return {
+            "status": "ok",
+            "document_id": document_id,
+            "blocks": len(blocks),
+            "tables": tables_written,
+        }
+    except UnconfirmedWrite as e:
+        logger.warning("Unconfirmed write in docs_write_markdown: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
+    except Exception as e:
+        logger.error(f"docs_write_markdown failed for {document_id}: {e}")
+        return {"error": str(e), "document_id": document_id}
+
+
+def _shift_requests(requests: List[Dict[str, Any]], offset: int) -> List[Dict[str, Any]]:
+    """Move every index in a request batch by `offset`."""
+    def shift(obj):
+        if isinstance(obj, dict):
+            return {
+                k: (v + offset if k in ("index", "startIndex", "endIndex")
+                    and isinstance(v, int) else shift(v))
+                for k, v in obj.items()
+            }
+        if isinstance(obj, list):
+            return [shift(v) for v in obj]
+        return obj
+    return [shift(r) for r in requests]
+
+
+def _last_table_cells(document: dict) -> List[tuple]:
+    """(row, column, text-insert index) for every cell of the LAST table.
+
+    The last one, because tables are appended in document order and this runs
+    straight after inserting one.
+    """
+    content = (document.get("body") or {}).get("content") or []
+    tables = [el for el in content if "table" in el]
+    if not tables:
+        return []
+    cells = []
+    for r, row in enumerate(tables[-1]["table"].get("tableRows", [])):
+        for c, cell in enumerate(row.get("tableCells", [])):
+            inner = cell.get("content") or []
+            if inner:
+                cells.append((r, c, inner[0].get("startIndex", 0)))
+    return cells
+
+
 def get_docs_adk_tools(credentials=None) -> List:
     """
     Get all Docs ADK tools as plain Python functions.
@@ -367,7 +512,8 @@ def get_docs_adk_tools(credentials=None) -> List:
         docs_insert_text,
         docs_batch_update,
         docs_format_text,
-        format_markdown_for_docs
+        format_markdown_for_docs,
+        docs_write_markdown,
     ]
 
     logger.info(f"Docs ADK tools loaded: {len(tools)} tools")

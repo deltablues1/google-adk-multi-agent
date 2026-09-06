@@ -13,6 +13,81 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _is_table_separator(line: str) -> bool:
+    """The |---|:--:| row that turns two lines into a table."""
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return False
+    cells = _split_row(stripped)
+    return bool(cells) and all(
+        re.fullmatch(r":?-{1,}:?", c.strip()) for c in cells if c.strip()
+    )
+
+
+def _split_row(line: str) -> List[str]:
+    """Cells of one markdown table row, without the outer pipes."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [c.strip() for c in stripped.split("|")]
+
+
+def split_markdown_blocks(markdown: str) -> List[Dict[str, Any]]:
+    """Split markdown into text blocks and table blocks.
+
+    Tables are pulled out because Google Docs has no markdown: a table has
+    to be created as a real table element and its cells filled by index.
+    Left in the text stream they render as rows of pipe characters, which
+    is exactly what a 14,000-character report came out looking like on
+    2026-09-06.
+
+    A table needs a header row, a separator row, and at least one body row;
+    anything less stays text, because a lone pipe is usually just a pipe.
+    """
+    lines = markdown.split("\n")
+    blocks: List[Dict[str, Any]] = []
+    text: List[str] = []
+    i = 0
+
+    def flush_text():
+        if text:
+            blocks.append({"kind": "text", "content": "\n".join(text)})
+            text.clear()
+
+    while i < len(lines):
+        line = lines[i]
+        is_start = (
+            i + 2 < len(lines)
+            and line.strip().startswith("|")
+            and _is_table_separator(lines[i + 1])
+            and lines[i + 2].strip().startswith("|")
+        )
+        if not is_start:
+            text.append(line)
+            i += 1
+            continue
+
+        header = _split_row(line)
+        rows = []
+        j = i + 2
+        while j < len(lines) and lines[j].strip().startswith("|"):
+            cells = _split_row(lines[j])
+            # Pad or trim so every row matches the header width; Docs tables
+            # are rectangular and a ragged row would shift every later cell.
+            cells = (cells + [""] * len(header))[: len(header)]
+            rows.append(cells)
+            j += 1
+
+        flush_text()
+        blocks.append({"kind": "table", "header": header, "rows": rows})
+        i = j
+
+    flush_text()
+    return [b for b in blocks if b["kind"] != "text" or b["content"].strip()]
+
+
 class DocsFormatter:
     """
     Konverter Markdown -> Google Docs API batch update zahtjevi
