@@ -43,6 +43,14 @@ def _instruction(name: str) -> str:
     return load_instruction_file(PROMPT_DIR.get(name, name))
 
 
+def _positions(text: str, needle: str):
+    """Every index where `needle` occurs."""
+    start = text.find(needle)
+    while start != -1:
+        yield start
+        start = text.find(needle, start + 1)
+
+
 class TestSharedFragment:
     def test_it_exists(self):
         assert load_shared_fragment("confirmation_gate")
@@ -87,24 +95,68 @@ class TestEveryGatedLaneKnowsTheProtocol:
             "prompt never receives the confirmation protocol"
         )
 
+    @pytest.mark.parametrize(
+        "tool,lane",
+        sorted((name, rule.lane) for name, rule in RULES.items() if rule.lane),
+    )
+    def test_the_prompt_names_the_gated_tool(self, tool, lane):
+        """The protocol says "your rules list which tools are held".
+
+        Knowing the protocol is not the same as knowing which of your own
+        tools it applies to. A tool added to an already-covered lane would
+        otherwise leave the list silently stale.
+        """
+        assert tool in _instruction(lane), (
+            f"approval_gate holds {tool} in the '{lane}' lane, but that "
+            "agent's prompt never names it as held"
+        )
+
+
+UNGATED_DESTRUCTIVE = [
+    ("librarian", "drive_delete_file"),
+    ("librarian", "drive_move_file"),
+    ("tracker", "tasks_delete_task"),
+    ("analyst", "sheets_clear_values"),
+    ("analyst", "sheets_update_values"),
+    ("secretary", "calendar_update_event"),
+]
+
+# Words that make a mention an instruction rather than a table row.
+CONFIRMATION_WORDS = (
+    "confirm", "confirmation", "explicit yes", "ask", "potvrd", "pitaj",
+)
+
 
 class TestUngatedDestructiveToolsStillAskFirst:
     """The inverse mistake: dropping the only protection a tool has."""
 
-    @pytest.mark.parametrize(
-        "agent,tool",
-        [
-            ("librarian", "drive_delete_file"),
-            ("tracker", "tasks_delete_task"),
-            ("analyst", "sheets_clear_values"),
-            ("secretary", "calendar_update_event"),
-        ],
-    )
-    def test_prompt_names_the_ungated_tool(self, agent, tool):
+    @pytest.mark.parametrize("agent,tool", UNGATED_DESTRUCTIVE)
+    def test_the_premise_holds(self, agent, tool):
+        """If one of these ever gets a gate, it belongs in the other test."""
+        assert tool not in RULES, (
+            f"{tool} is gated now -- move it to the gated-tool test and give "
+            f"{agent}'s prompt the held-tool treatment instead"
+        )
+
+    @pytest.mark.parametrize("agent,tool", UNGATED_DESTRUCTIVE)
+    def test_the_prompt_asks_before_using_it(self, agent, tool):
+        """Naming it in the tool table is not protection.
+
+        The first version asserted only that the string appeared somewhere,
+        which the tool inventory at the top of every prompt satisfies on its
+        own. The mention has to sit inside text that tells the model to ask.
+        """
         text = _instruction(agent)
-        assert tool in text, (
-            f"{tool} has no gate in code; {agent}'s prompt is the only thing "
-            "standing between it and the user's data"
+        assert tool in text, f"{agent}'s prompt never mentions {tool}"
+
+        window = 700
+        for hit in _positions(text, tool):
+            around = text[max(0, hit - window):hit + window].lower()
+            if any(word in around for word in CONFIRMATION_WORDS):
+                return
+        pytest.fail(
+            f"{agent} mentions {tool} but never near an instruction to "
+            "confirm; a tool-table row is not a safeguard"
         )
 
 

@@ -96,13 +96,9 @@ at most three. See "How many options to offer" below.
 - Match user's language (Croatian if user uses Croatian)
 - Use a), b), c) only when there really are several options, and never on voice
 
-**Example:**
+**Example (the usual case — one sentence, two real choices):**
 ```
-Želite li:
-a) Zakazati sastanak u drugo vrijeme?
-b) Zakazati svejedno (dvostruko booking)?
-c) Provjeriti tko ima postojeći sastanak?
-d) Odustati?
+Da tražim drugi termin, ili da zakažem svejedno preko postojećeg?
 ```
 
 ### Step 4: Acknowledge Stopped Actions
@@ -124,66 +120,48 @@ Following actions were blocked:
 
 ## Response Templates
 
+Each shows the smallest honest version. Add a third option only when it is a
+real branch someone would take, never to reach a count.
+
 ### Template 1: Calendar Conflict
 ```
-Termin [TIME] NIJE slobodan
-
-U kalendaru već postoji događaj: "[EVENT_NAME]" ([TIME_RANGE]).
-
-Želite li:
-a) Predložiti alternativni termin?
-b) Zakazati svejedno (dvostruko booking)?
-c) Otkazati postojeći sastanak?
-d) Odustati od novog sastanka?
-
-Nisam [ACTION_NOT_PERFORMED] jer termin nije slobodan.
+U to vrijeme već imate "[EVENT_NAME]" ([TIME_RANGE]), pa nisam
+[ACTION_NOT_PERFORMED]. Da tražim drugi termin, ili da zakažem svejedno preko
+postojećeg?
 ```
 
 ### Template 2: File Not Found
 ```
-Datoteka "[FILENAME]" nije pronađena
-
-Pretražio sam Drive, ali nisam našao datoteku koja odgovara traženoj.
-
-Želite li:
-a) Probati s drugim ključnim riječima?
-b) Pretražiti određenu mapu?
-c) Kreirati novu datoteku s tim imenom?
-d) Odustati?
-
-Email NIJE poslan jer datoteka ne postoji.
+Nisam našao datoteku "[FILENAME]" na Driveu, pa email nije poslan. Znaš li u
+kojoj je mapi, ili da probam s drugim nazivom?
 ```
 
 ### Template 3: Permission Denied
 ```
-Nemate dozvolu za [ACTION]
-
-[RESOURCE] zahtijeva [REQUIRED_PERMISSION] pristup, ali imate samo [CURRENT_PERMISSION].
-
-Želite li:
-a) Zatražiti pristup od vlasnika?
-b) Koristiti alternativni resurs?
-c) Kontaktirati administratora?
-d) Odustati?
-
-Radnja je blokirana zbog nedostatka dozvola.
+[RESOURCE] traži [REQUIRED_PERMISSION] pristup, a imate [CURRENT_PERMISSION], pa
+[ACTION] nije napravljen. Da pripremim zamolbu vlasniku za pristup?
 ```
 
 ### Template 4: Email Reply Not Found
 ```
-[PERSON] još nije odgovorio na vaš email
-
-Pretražio sam inbox, ali nisam našao odgovor od [PERSON] na temu "[SUBJECT]".
-
-Želite li:
-a) Pričekati još i provjeriti ponovno kasnije?
-b) Poslati podsjetnik?
-c) Nastaviti bez odgovora?
-d) Odustati od sljedećih koraka?
-
-Poziv NIJE zakazan jer još nema odgovora.
+[PERSON] još nije odgovorio na "[SUBJECT]", pa poziv nije zakazan. Da pošaljem
+podsjetnik ili da nastavim bez njegove potvrde?
 ```
 
+### Template 5: Several steps, only one blocked
+```
+Istraživanje i dokument su gotovi ([DOC_LINK]). Email nije poslan jer za
+"[NAME]" nemam adresu. Koja je?
+```
+
+The lettered form stays available for a genuine fork with three real options,
+on a text channel only:
+```
+Želiš:
+a) [option]
+b) [option]
+c) [option]
+```
 ## Critical Rules
 
 1. **NEVER use status markers** - no ❌, no [Failed], no [Blocked]. The
@@ -234,53 +212,28 @@ filler — the user can always stop without being invited to.
 
 ## Examples
 
-### Example 1: Calendar Busy (Croatian)
+### Example 1: Calendar busy (Croatian, voice or text)
 ```
-Termin sutra u 11h NIJE slobodan
-
-U kalendaru već postoji događaj: "Sastanak s Tomislavom" (11:00-12:00 CET).
-
-Želite li:
-a) Zakazati sastanak u drugo vrijeme?
-b) Zakazati svejedno (dvostruko booking)?
-c) Odustati?
-
-Nisam poslao email potvrdu jer termin nije slobodan.
+Sutra u 11 već imate "Sastanak s Tomislavom" (11:00-12:00), pa nisam poslao
+potvrdu. Da tražim drugi termin, ili da zakažem svejedno?
 ```
+Two options, one sentence each, no letters — this is answerable out loud.
 
-### Example 2: File Not Found (English)
+### Example 2: File not found (English)
 ```
-File "Q4 Budget Report" not found
-
-Searched Drive but no files matched "Q4 Budget Report".
-
-Would you like to:
-a) Search with different keywords?
-b) Check a specific folder?
-c) Create a new Q4 Budget Report?
-d) Cancel?
-
-Email NOT sent because file doesn't exist.
+I could not find "Q4 Budget Report" on Drive, so nothing was attached or sent.
+Do you know which folder it is in, or should I search for a different name?
 ```
 
-### Example 3: No Email Reply (Croatian)
+### Example 3: A real fork, on a text channel
 ```
-John još nije odgovorio na vašu poruku
-
-Pretražio sam inbox, ali nisam našao odgovor od John na temu "Project Proposal".
-
-Želite li:
-a) Pričekati i provjeriti ponovno sutra?
-b) Poslati podsjetnik Johnu?
-c) Nastaviti bez njegovog odgovora?
-d) Odustati od zakazivanja poziva?
-
-Poziv NIJE zakazan jer još nema odgovora.
+Nemate pristup mapi "Financije", pa izvještaj nije spremljen. Želiš:
+a) da pripremim zamolbu vlasniku,
+b) da spremim u "Moj disk" umjesto toga,
+c) da ti vratim izvještaj ovdje u poruci?
 ```
-
----
-
-**Remember:** You are the safety net when automation cannot continue. Keep the user informed, provide clear options, and ensure they stay in control of the workflow.
+Three options because all three are things someone actually does. There is no
+d) "Odustati?" — the user can stop without being invited to.
 """
 
     # Import factory for agent creation
