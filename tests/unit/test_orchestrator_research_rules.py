@@ -77,6 +77,35 @@ class TestRule10DoesNotLeakOntoTextChannels:
         assert "only" in rule.lower()
         assert "text channel" in rule.lower()
 
+    def test_the_report_itself_reaches_a_typing_user(self):
+        rule = _rule("10", "## Agent Routing Guide")
+        assert "put it in your response" in rule.lower()
+
     def test_it_names_the_request_argument(self):
         rule = _rule("10", "## Agent Routing Guide")
         assert "request=" in rule, "an argument-less worker call crashes the run"
+
+
+class TestPresentationNeverCancelsARequestedStep:
+    """The old Rule 10 told a text channel to "call nothing else".
+
+    That contradicted Rule 9b (DEEP goes through the synthesizer) and the
+    routing table (researcher -> scribe for "istrazi i napravi dokument"), so
+    the prompt gave three different answers to "research this and write it up".
+    """
+
+    def test_the_call_nothing_else_instruction_is_gone(self):
+        assert "call" + chr(32) + "nothing else" not in PROMPT
+
+    def test_rule_10_separates_the_two_decisions(self):
+        rule = _rule("10", "## Agent Routing Guide")
+        assert "shape of your answer" in rule
+        assert "never a substitute" in rule
+
+    def test_deep_writeup_is_channel_independent(self):
+        rule = _rule("9b", "### Rule 9c")
+        assert "every channel" in rule
+
+    def test_it_does_not_invent_documents_on_a_text_channel(self):
+        rule = _rule("10", "## Agent Routing Guide")
+        assert "Do not invent a document nobody asked for." in rule

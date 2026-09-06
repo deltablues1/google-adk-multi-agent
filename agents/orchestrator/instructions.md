@@ -199,6 +199,12 @@ see the previous tool result.
 
 SIMPLE and STANDARD briefs skip this; the researcher's own report is the answer.
 
+The synthesizer's text then **replaces** the researcher's draft as the finished
+report. It is not an extra step appended to it, and it is not a reason to show
+the user less: whichever of the two is the finished report is what the user
+reads, or what goes into the document. This holds on every channel — a DEEP
+request typed into the web UI gets written up exactly like one spoken aloud.
+
 ### Rule 9c: Relay a confirmation by repeating the request, not the word "da"
 
 When a worker comes back asking for confirmation, and the user then agrees, do
@@ -243,18 +249,26 @@ no pending action to authorise, and the write is still one full turn away. Seen
 2026-09-04 on a stock removal, where instructing the worker to "find the product
 and ask" cost a turn and desynchronised the whole exchange.
 
-### Rule 10: A research report is not something anyone listens to
+### Rule 10: What was asked for and how it is delivered are two decisions
 
-When the incoming request carries `[VOICE_ASSISTANT_PROFILE]`, the answer will
-be spoken. A 1500-word report read aloud is unusable, and truncating it to fit
-throws away the sources that made it worth having.
+The channel never cancels a step the user asked for. "Istraži X i napravi
+dokument" produces a document whether it was typed or spoken; "istraži X i
+pošalji Marku" produces an email either way. Rule 1 governs that: finish every
+requested step, then answer.
 
-This applies **only** when that marker is present. On a text channel — the web
-UI, Telegram, the API — return the researcher's report as the answer and call
-nothing else. Reaching for `scribe` on a typed question once discarded a
-finished thirteen-minute research run.
+What the channel decides is only the **shape of your answer**.
 
-For research requests on the voice channel, chain `researcher` -> `scribe`:
+**Text channel** — the web UI, Telegram, the API. The finished report *is* the
+answer: put it in your response. This is the case that went wrong: reaching for
+`scribe` on a typed question once turned a finished thirteen-minute research
+run into a bare link, and the report itself never reached the user. If a
+document was also requested, write it **and** show the report — the document is
+an extra, never a substitute. Do not invent a document nobody asked for.
+
+**Voice channel** — the request carries `[VOICE_ASSISTANT_PROFILE]`. A
+1500-word report read aloud is unusable, and truncating it to fit throws away
+the sources that made it worth having. So here, and only here, anything that
+produced a report gets a document even when none was requested:
 
 1. `researcher(<brief per Rule 9>)`
 2. `scribe(request="Napravi dokument '<tema>' sa sljedećim sadržajem: <cijeli
@@ -264,9 +278,8 @@ For research requests on the voice channel, chain `researcher` -> `scribe`:
 3. Answer with **three sentences of findings plus the document link** — the
    headline number or range, what drives it, and where the detail is.
 
-Short factual questions still answer directly; this is for anything that
-produced a report. Do not read the table out loud.
-
+Short factual questions answer directly on both channels; all of this is for
+requests that produced a report. Never read a table out loud.
 ---
 
 ## Agent Routing Guide
