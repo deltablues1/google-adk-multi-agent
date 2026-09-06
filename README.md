@@ -4,7 +4,7 @@ Enterprise multi-agent system built with [Google Agent Development Kit (ADK)](ht
 
 ## Features
 
-- **15 Specialized Agents** with Smart Orchestrator routing via `transfer_to_agent`
+- **15 Specialized Agents** — the Smart Orchestrator calls workers as `AgentTool`s; only the validator and ask-user agents use `transfer_to_agent`
 - **3-Tier Model Strategy** - Gemini 3.1 Pro (orchestration), 2.5 Pro (precision), 3 Flash (speed)
 - **Pluggable LLM Provider** - Gemini (default) or Anthropic Claude per-agent via LiteLLM (`LLM_PROVIDER` switch). See [LLM Providers](docs/en/llm-providers.md) · [HR](docs/hr/llm-providers.md)
 - **Token Accounting** - Per-agent token/cost stats and `/tokens` command. See [Token Accounting](docs/en/token-accounting.md) · [HR](docs/hr/token-accounting.md)
@@ -13,7 +13,14 @@ Enterprise multi-agent system built with [Google Agent Development Kit (ADK)](ht
 - **Croatian Fiskalizacija 2.0** - B2C (CIS/JIR), B2B (UBL 2.1), B2G (Peppol), EU, International
 - **Firestore Persistence** - Conversations, invoices, audit logs, agent learning
 - **Resilience Stack** - Circuit breakers, rate limiting, retry handling, response caching
-- **Human-in-the-Loop** - Approval workflows for destructive/expensive operations
+- **Human-in-the-Loop** - Consequential tools are gated in code, not by a
+  sentence in a prompt. A held action needs the user's next message, and the
+  approval is bound to the exact call — recipients, subject, body, attachment
+  contents, and any Drive documents the mail would share. See
+  [services/approval_gate.py](services/approval_gate.py).
+- **Honest outcomes** - A write whose answer was lost reports `unknown` rather
+  than a failure, because "it failed" invites a retry of something that may
+  already have happened. Non-idempotent writes carry no automatic retry.
 - **Telegram Bot** - Alternative chat interface
 
 ---
@@ -33,7 +40,7 @@ Enterprise multi-agent system built with [Google Agent Development Kit (ADK)](ht
                     │                               │
                     │  - Analyzes complex requests   │
                     │  - Plans multi-step workflows  │
-                    │  - Delegates to worker agents  │
+                    │  - Calls workers as AgentTools │
                     └──────────────┬────────────────┘
                                    │
           ┌────────────┬───────────┼───────────┬────────────┐
@@ -262,6 +269,22 @@ google-adk-multi-agent/
 > per-agent overrides via `CLAUDE_AGENT_MODELS`). Some agents
 > stay pinned to Gemini for Vertex-only features. Full details:
 > [LLM Providers](docs/en/llm-providers.md) · [HR](docs/hr/llm-providers.md).
+
+### Reproducible installs
+
+`requirements*.txt` declare version ranges, which is right for saying what the
+project needs and wrong for rebuilding a machine that was working. Generate a
+lock file **on the machine it is meant to reproduce**:
+
+```bash
+# on the Pi
+source .venv/bin/activate
+python scripts/freeze_requirements.py requirements-rpi.txt
+pip install -r requirements-rpi.lock.txt   # to restore it later
+```
+
+Versions resolved on a dev box are not the versions a Raspberry Pi gets, so a
+lock generated anywhere else reproduces nothing.
 
 ### Environment Variables
 

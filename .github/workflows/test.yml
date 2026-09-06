@@ -15,7 +15,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -32,28 +32,50 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-    - name: Format check with black
-      run: black --check .
+    # Advisory, not a gate. `black --check .` has never passed on this repo —
+    # it fails on files nobody in this change touched — so as a hard step it
+    # failed the whole workflow before a single test ran, which is why the
+    # test results below have not been read for a while. Adopting black means
+    # one deliberate repo-wide reformat; until someone decides to do that,
+    # reporting is more use than blocking.
+    - name: Format check with black (advisory)
+      run: black --check . || true
 
+    # `!cancelled()` on every suite below: they used to be plain sequential
+    # steps, so a failure in the first one meant the rest never ran and their
+    # state was simply unknown. Each suite reports its own result now, and the
+    # job still goes red if any of them fail.
     - name: Run unit tests
+      if: ${{ !cancelled() }}
       run: |
         echo "Running unit tests..."
         pytest tests/unit/ -v --tb=short
 
     - name: Run integration tests
+      if: ${{ !cancelled() }}
       run: |
         echo "Running integration tests..."
         pytest tests/integration/ -v --tb=short
 
-    - name: Run E2E tests
-      run: |
-        echo "Running E2E tests..."
-        pytest tests/e2e/ -v --tb=short
+    # tests/e2e is not run here, and the honest reason is that nobody has
+    # established which of those files are hermetic. They describe themselves
+    # as "Real API calls, no mocks", and filtering by marker only excludes the
+    # ones that carry a marker — test_full_implementation.py, for instance,
+    # loads real OAuth credentials and builds a Google API client while
+    # carrying none. A step named "hermetic only" that does not guarantee it
+    # is worse than no step at all.
+    #
+    # To bring them back: verify individual files on a machine with NO
+    # credentials, mark them, then list those files explicitly here.
 
     - name: Generate coverage report
+      if: ${{ !cancelled() }}
       run: |
         echo "Generating coverage report..."
-        pytest tests/ --cov=agents --cov=auth --cov=config --cov=sessions --cov=monitoring --cov=tools --cov-report=xml --cov-report=term-missing --cov-report=html
+        # Scoped to the suites this workflow actually runs. `pytest tests/`
+        # pulled in e2e, erp and fiskalizacija through the back door — the
+        # same real-API tests the section above declines to run.
+        pytest tests/unit/ tests/integration/ --cov=agents --cov=auth --cov=config --cov=sessions --cov=monitoring --cov=tools --cov-report=xml --cov-report=term-missing --cov-report=html
       continue-on-error: true
 
     - name: Upload coverage to artifacts

@@ -5,6 +5,9 @@ Collects and reports metrics for monitoring and alerting
 Integrates with Google Cloud Logging for dashboard visualization
 """
 
+import atexit
+import queue
+import threading
 import time
 import logging
 import json
@@ -49,7 +52,34 @@ class MetricsCollector:
             maxlen=max(50, int(os.getenv("MONITORING_EVENT_BUFFER_SIZE", "400")))
         )
         self.cloud_logger = None
-        
+
+        # Cloud Logging goes through a queue and a worker thread. It used to
+        # be one synchronous network call per event, on the caller's thread —
+        # so `record_timing` paid a round trip for every measurement it took.
+        # Measured on 2026-09-05: 500 timings took 8 min 38 s with
+        # USE_CLOUD_LOGGING on and 1.8 s with it off.
+        #
+        # That cost landed at the worst possible moment: cloud logging gets
+        # switched on precisely when someone is investigating something, so
+        # the instrument slowed down the thing under investigation.
+        self._cloud_queue: "queue.Queue" = queue.Queue(
+            maxsize=max(100, int(os.getenv("METRICS_CLOUD_QUEUE_SIZE", "2000")))
+        )
+        self._cloud_batch_size = max(1, int(os.getenv("METRICS_CLOUD_BATCH_SIZE", "50")))
+        self._cloud_flush_seconds = max(
+            0.1, float(os.getenv("METRICS_CLOUD_FLUSH_SECONDS", "5"))
+        )
+        self._cloud_worker = None
+        self._cloud_stop = threading.Event()
+        self._cloud_dropped = 0
+        # Entries taken off the queue but not yet sent. An empty queue is not
+        # delivery: the worker pops a batch and only then makes the network
+        # call, so waiting for the queue alone returned while a send was still
+        # in flight — and the worker is a daemon thread, so the process could
+        # exit out from under it.
+        self._cloud_inflight = 0
+        self._cloud_idle = threading.Condition()
+
         # Initialize Cloud Logging if available and configured
         use_cloud_logging = os.getenv("USE_CLOUD_LOGGING", "").lower() == "true"
         project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
@@ -62,17 +92,126 @@ class MetricsCollector:
                 logger.warning(f"Failed to initialize Cloud Logging: {e}")
 
     def _log_to_cloud(self, event_type: str, payload: Dict[str, Any]):
-        """Log structured data to Google Cloud Logging"""
-        if self.cloud_logger:
+        """Hand a structured entry to the Cloud Logging worker.
+
+        Never blocks and never raises: a metric is not worth slowing the thing
+        it measures, and it is certainly not worth failing it. A full queue
+        drops entries and counts them rather than making anyone wait.
+        """
+        if not self.cloud_logger:
+            return
+        try:
+            payload["event_type"] = event_type
+            payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+            self._ensure_cloud_worker()
+            self._cloud_queue.put_nowait(payload)
+        except queue.Full:
+            self._cloud_dropped += 1
+            if self._cloud_dropped % 100 == 1:
+                logger.warning(
+                    "Cloud Logging queue full — dropped %d metric event(s)",
+                    self._cloud_dropped,
+                )
+        except Exception as e:
+            logger.debug(f"Failed to queue log for Cloud: {e}")
+
+    def _ensure_cloud_worker(self) -> None:
+        if self._cloud_worker is not None and self._cloud_worker.is_alive():
+            return
+        self._cloud_stop.clear()
+        self._cloud_worker = threading.Thread(
+            target=self._cloud_loop, name="metrics-cloud-logging", daemon=True
+        )
+        self._cloud_worker.start()
+        atexit.register(self.flush_cloud)
+
+    def _cloud_loop(self) -> None:
+        """Drain the queue in batches until asked to stop."""
+        while not self._cloud_stop.is_set():
+            self._handle(self._drain(block=True))
+        # Whatever is left when stopping.
+        self._handle(self._drain(block=False))
+
+    def _handle(self, batch: list) -> None:
+        """Send a batch, keeping the in-flight count honest either way."""
+        if not batch:
+            return
+        try:
+            self._send_batch(batch)
+        finally:
+            with self._cloud_idle:
+                self._cloud_inflight -= len(batch)
+                self._cloud_idle.notify_all()
+
+    def _drain(self, *, block: bool) -> list:
+        batch = []
+        try:
+            if block:
+                batch.append(self._cloud_queue.get(timeout=self._cloud_flush_seconds))
+        except queue.Empty:
+            return batch
+        while len(batch) < self._cloud_batch_size:
             try:
-                # Add timestamp and event type
-                payload["event_type"] = event_type
-                payload["timestamp"] = datetime.now(timezone.utc).isoformat()
-                
-                # Log as structured JSON
-                self.cloud_logger.log_struct(payload)
-            except Exception as e:
-                logger.debug(f"Failed to send log to Cloud: {e}")
+                batch.append(self._cloud_queue.get_nowait())
+            except queue.Empty:
+                break
+        # Counted as in flight the moment they leave the queue, so a flush can
+        # see them.
+        with self._cloud_idle:
+            self._cloud_inflight += len(batch)
+        return batch
+
+    def _send_batch(self, batch: list) -> None:
+        """One API call for the whole batch where the client supports it."""
+        try:
+            make_batch = getattr(self.cloud_logger, "batch", None)
+            if callable(make_batch):
+                with make_batch() as cloud_batch:
+                    for entry in batch:
+                        cloud_batch.log_struct(entry)
+            else:
+                for entry in batch:
+                    self.cloud_logger.log_struct(entry)
+        except Exception as e:
+            logger.debug(f"Failed to send log batch to Cloud: {e}")
+
+    def flush_cloud(self, timeout: float = 5.0) -> None:
+        """Wait for the queued send attempts to finish, up to `timeout`.
+
+        Waits on both halves: the queue, and the batch the worker has already
+        taken out of it. Checking the queue alone returned while a send was
+        still on the wire, which at shutdown meant the last measurements went
+        with the process — the worker is a daemon thread and nothing was
+        joining it.
+
+        Deliberately not a delivery guarantee. `_send_batch` swallows its
+        errors and the deadline allows giving up, so what returning means is
+        "the attempts finished or ran out of time", not "the entries arrived".
+        That is the right contract for telemetry: a cloud that is not
+        answering must not hold up a shutdown, and a metric must not be the
+        reason anything fails.
+        """
+        worker = self._cloud_worker
+        if worker is None:
+            return
+
+        deadline = time.time() + timeout
+        with self._cloud_idle:
+            while time.time() < deadline:
+                if self._cloud_queue.empty() and self._cloud_inflight <= 0:
+                    break
+                self._cloud_idle.wait(timeout=0.05)
+
+        self._cloud_stop.set()
+        remaining = deadline - time.time()
+        if remaining > 0 and worker.is_alive():
+            worker.join(timeout=remaining)
+        if worker.is_alive():
+            logger.warning(
+                "Cloud Logging worker did not finish within %.1fs — "
+                "%d queued, %d in flight",
+                timeout, self._cloud_queue.qsize(), self._cloud_inflight,
+            )
 
     def log_event(
         self,

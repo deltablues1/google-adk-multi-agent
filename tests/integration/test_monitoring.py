@@ -10,11 +10,6 @@ import sys
 import asyncio
 from pathlib import Path
 
-# Fix Windows console encoding
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -88,4 +83,16 @@ async def test_monitoring():
 
 
 if __name__ == "__main__":
+    # Windows console encoding, only when this file is run as a script.
+    #
+    # It used to happen at import time, which meant it happened under pytest
+    # too: rebinding sys.stdout out from under pytest's capture broke the
+    # capture teardown, and the failure took the whole session with it. Every
+    # test in tests/integration collected and none of them ran — for as long
+    # as anyone had been reading the CI output.
+    if sys.platform == "win32":
+        import io as _io
+
+        sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+
     asyncio.run(test_monitoring())
