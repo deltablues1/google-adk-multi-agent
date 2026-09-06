@@ -10,7 +10,9 @@ from googleapiclient.errors import HttpError
 from datetime import datetime
 import logging
 
-from tools.resilience.retry_handler import with_retry, RetryConfig
+from tools.resilience.retry_handler import (
+    with_retry, RetryConfig, report_unconfirmed,
+)
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache, invalidates_cache
@@ -223,7 +225,10 @@ async def tasks_get_task(
 
 @with_circuit_breaker("tasks")
 @with_rate_limit("tasks", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — create makes a new task on every call.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("stvaranje zadatka")
 @invalidates_cache("tasks")
 async def tasks_create_task(
     credentials: Credentials,
@@ -300,6 +305,7 @@ async def tasks_create_task(
 
 @with_circuit_breaker("tasks")
 @with_rate_limit("tasks", user_id_param="credentials")
+# Retry is safe: sets a known task id to a known state.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("tasks")
 async def tasks_update_task(
@@ -408,6 +414,7 @@ async def tasks_update_task(
 
 @with_circuit_breaker("tasks")
 @with_rate_limit("tasks", user_id_param="credentials")
+# Retry is safe: a second delete returns 404, which is not retried.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("tasks")
 async def tasks_delete_task(

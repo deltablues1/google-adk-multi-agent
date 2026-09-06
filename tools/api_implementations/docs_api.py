@@ -9,7 +9,9 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 import logging
 
-from tools.resilience.retry_handler import with_retry, RetryConfig
+from tools.resilience.retry_handler import (
+    with_retry, RetryConfig, report_unconfirmed,
+)
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache, invalidates_cache
@@ -24,7 +26,10 @@ logger = logging.getLogger(__name__)
 
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — create makes a new document on every call.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("stvaranje dokumenta")
 @invalidates_cache("docs")
 async def docs_create_document(
     credentials: Credentials,
@@ -157,7 +162,10 @@ async def docs_get_document(
 
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — inserting the same text twice writes it twice.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("umetanje teksta u dokument")
 @invalidates_cache("docs")
 async def docs_insert_text(
     credentials: Credentials,
@@ -220,7 +228,11 @@ async def docs_insert_text(
 
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — replace is idempotent only when the replacement does not contain the
+# search text: A -> AA run twice gives AAAA.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("zamjena teksta u dokumentu")
 @invalidates_cache("docs")
 async def docs_replace_text(
     credentials: Credentials,
@@ -293,7 +305,10 @@ async def docs_replace_text(
 
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — appending the same text twice writes it twice.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("dodavanje teksta u dokument")
 @invalidates_cache("docs")
 async def docs_append_text(
     credentials: Credentials,
@@ -363,7 +378,10 @@ async def docs_append_text(
 
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — caller-supplied requests; insert/append among them are not idempotent.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("batch izmjena dokumenta")
 @invalidates_cache("docs")
 async def docs_batch_update(
     credentials: Credentials,
@@ -419,6 +437,8 @@ async def docs_batch_update(
 
 @with_circuit_breaker("docs")
 @with_rate_limit("docs", user_id_param="credentials")
+# Retry is safe: applying the same style to the same range twice looks
+# identical.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("docs")
 async def docs_format_text(

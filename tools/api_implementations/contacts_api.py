@@ -9,7 +9,9 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 import logging
 
-from tools.resilience.retry_handler import with_retry, RetryConfig
+from tools.resilience.retry_handler import (
+    with_retry, RetryConfig, report_unconfirmed,
+)
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache, invalidates_cache
@@ -141,7 +143,10 @@ async def contacts_get_contact(
 
 @with_circuit_breaker("people")
 @with_rate_limit("people", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — create makes a new contact on every call.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("stvaranje kontakta")
 @invalidates_cache("people")
 async def contacts_create_contact(
     credentials: Credentials,
@@ -225,6 +230,8 @@ async def contacts_create_contact(
 
 @with_circuit_breaker("people")
 @with_rate_limit("people", user_id_param="credentials")
+# Retry is safe: the etag makes a stale repeat fail with 412 rather than
+# apply twice.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("people")
 async def contacts_update_contact(
@@ -348,6 +355,7 @@ async def contacts_update_contact(
 
 @with_circuit_breaker("people")
 @with_rate_limit("people", user_id_param="credentials")
+# Retry is safe: a second delete returns 404, which is not retried.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("people")
 async def contacts_delete_contact(

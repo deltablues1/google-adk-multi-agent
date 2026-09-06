@@ -7,6 +7,7 @@ ADK-compatible wrappers for Google Contacts (People API) operations.
 from typing import Optional
 import logging
 
+from tools.resilience.retry_handler import UnconfirmedWrite
 logger = logging.getLogger(__name__)
 
 
@@ -349,6 +350,13 @@ async def contacts_create_contact(
                 "error": result.get('error', 'Unknown error creating contact')
             }
 
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in contacts_create_contact: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Error creating contact: {e}")
         return {

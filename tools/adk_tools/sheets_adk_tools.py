@@ -34,6 +34,7 @@ from google.oauth2.credentials import Credentials
 import logging
 import os
 
+from tools.resilience.retry_handler import UnconfirmedWrite
 logger = logging.getLogger(__name__)
 
 
@@ -339,6 +340,13 @@ async def sheets_append_values(
         result = await sheets_append_impl(creds, spreadsheet_id, range, values, value_input_option)
         return result
 
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in sheets_append_values: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Error appending values: {e}")
         return {
@@ -427,6 +435,13 @@ async def sheets_create_spreadsheet(
         result = await sheets_create_impl(creds, title, sheet_titles)
         return result
 
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in sheets_create_spreadsheet: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Error creating spreadsheet: {e}")
         return {
@@ -490,6 +505,13 @@ async def sheets_batch_update(
         result = await sheets_batch_impl(creds, spreadsheet_id, requests)
         return result
 
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in sheets_batch_update: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Error in batch update: {e}")
         return {

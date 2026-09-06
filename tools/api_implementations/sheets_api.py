@@ -9,7 +9,9 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 import logging
 
-from tools.resilience.retry_handler import with_retry, RetryConfig
+from tools.resilience.retry_handler import (
+    with_retry, RetryConfig, report_unconfirmed,
+)
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache, invalidates_cache
@@ -24,7 +26,11 @@ logger = logging.getLogger(__name__)
 
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — create makes a new spreadsheet on every call; a retry after a lost
+# answer leaves two.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("stvaranje tablice")
 @invalidates_cache("sheets")
 async def sheets_create_spreadsheet(
     credentials: Credentials,
@@ -162,6 +168,8 @@ async def sheets_get_values(
 
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
+# Retry is safe: writes the given values to an absolute A1 range, so a
+# repeat lands on exactly the same cells.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("sheets")
 async def sheets_update_values(
@@ -234,7 +242,11 @@ async def sheets_update_values(
 
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — append is not idempotent: a timeout after Sheets accepted the rows
+# would add them a second time.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("dodavanje redaka u tablicu")
 @invalidates_cache("sheets")
 async def sheets_append_values(
     credentials: Credentials,
@@ -304,6 +316,7 @@ async def sheets_append_values(
 
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
+# Retry is safe: clearing an already-cleared range is a no-op.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("sheets")
 async def sheets_clear_values(
@@ -358,7 +371,11 @@ async def sheets_clear_values(
 
 @with_circuit_breaker("sheets")
 @with_rate_limit("sheets", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — the caller supplies the requests; insertRows/appendCells among them
+# are not idempotent.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("batch izmjena tablice")
 @invalidates_cache("sheets")
 async def sheets_batch_update(
     credentials: Credentials,

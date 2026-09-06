@@ -268,6 +268,59 @@ def with_retry(config: Optional[RetryConfig] = None):
     return decorator
 
 
+class UnconfirmedWrite(Exception):
+    """A write whose outcome is unknown: it may or may not have been applied."""
+
+
+def report_unconfirmed(what: str):
+    """Mark a NON-IDEMPOTENT write so a lost answer is reported, not repeated.
+
+    These operations deliberately have no @with_retry: retrying a create or an
+    append after a 504 or a client timeout duplicates it, because the write may
+    already have been applied and only the response is gone. Same reasoning as
+    the missing retry on gmail_send_message and calendar_create_event.
+
+    Dropping the retry alone is not enough, though. The agent reads a raw
+    "connection reset" as a plain failure and calls the tool again itself, so
+    the duplicate comes back one level up. The transient errors that used to
+    trigger a retry are therefore surfaced as an explicit "not confirmed",
+    which the ADK wrappers return as status="unknown" rather than "failed".
+
+    Permanent errors (400/401/403/404) pass through unchanged: those really
+    did not happen.
+
+    **What this does and does not do.** It removes the automatic retry and it
+    keeps the unknown outcome structured all the way to the model. It does
+    NOT programmatically stop the agent from calling the tool a second time —
+    nothing here knows that the two calls are the same operation. That needs
+    an operation identity and a recorded pending/completed state, which
+    belongs with the step-result contract, not here. Until then this is a
+    clear signal, not a guard.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except UnconfirmedWrite:
+                raise
+            except Exception as e:
+                if not is_retryable_error(e):
+                    raise
+                logger.warning(
+                    "%s: transient error, outcome unknown: %s", func.__name__, e
+                )
+                raise UnconfirmedWrite(
+                    f"{what}: NIJE POTVRĐENO je li izvršeno — veza je pukla nakon "
+                    f"slanja zahtjeva. Provjeri trenutno stanje prije nego "
+                    f"ponoviš, jer bi ponavljanje moglo napraviti duplikat. "
+                    f"(uzrok: {e})"
+                ) from e
+
+        return wrapper
+    return decorator
+
+
 # Convenience functions for common retry configurations
 
 def with_aggressive_retry():

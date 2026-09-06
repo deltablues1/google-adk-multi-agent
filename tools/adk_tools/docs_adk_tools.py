@@ -13,6 +13,7 @@ Includes Markdown-to-Docs formatter for structured content creation.
 import logging
 from typing import List, Dict, Any, Optional
 
+from tools.resilience.retry_handler import UnconfirmedWrite
 logger = logging.getLogger(__name__)
 
 
@@ -141,6 +142,13 @@ async def docs_create_document(
                 result["share_error"] = str(share_err)
 
         return result
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in docs_create_document: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Document creation failed: {e}")
         return {"error": str(e), "title": title}
@@ -198,6 +206,13 @@ async def docs_insert_text(document_id: str, text: str, index: int = 1) -> dict:
 
         result = await docs_insert_impl(creds, document_id, text, index)
         return result
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in docs_insert_text: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Failed to insert text in {document_id}: {e}")
         return {"error": str(e), "document_id": document_id}
@@ -233,6 +248,13 @@ async def docs_batch_update(document_id: str, requests: List[Dict[str, Any]]) ->
 
         result = await docs_batch_impl(creds, document_id, requests)
         return result
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in docs_batch_update: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Batch update failed for {document_id}: {e}")
         return {"error": str(e), "document_id": document_id}

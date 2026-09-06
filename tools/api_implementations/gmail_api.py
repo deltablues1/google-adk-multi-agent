@@ -13,7 +13,9 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 import logging
 
-from tools.resilience.retry_handler import with_retry, RetryConfig
+from tools.resilience.retry_handler import (
+    with_retry, RetryConfig, report_unconfirmed,
+)
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache, invalidates_cache
@@ -433,7 +435,11 @@ async def gmail_send_message(
 
 @with_circuit_breaker("gmail")
 @with_rate_limit("gmail", cost=50, user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — create makes a new draft every time; a retry leaves duplicates in the
+# drafts folder.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("stvaranje nacrta maila")
 @invalidates_cache("gmail")
 async def gmail_create_draft(
     credentials: Credentials,
