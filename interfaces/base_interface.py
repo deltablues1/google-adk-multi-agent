@@ -65,6 +65,9 @@ SMART_HOME_KEYWORDS = {
     # the phrase fell through to voice_qa and only reached the tools via the
     # escalation hop. "shoping" is the spelling STT keeps producing.
     "shopping", "shoping",
+    # "kupovna lista" / "kupovnu listu" -- another way to say it, and the
+    # one that was actually spoken next.
+    "kupovn",
     "listu za kupovinu", "lista za kupovinu", "liste za kupovinu",
     "na listu", "s liste", "na popis", "s popisa", "popis za kupovinu",
     "za kupovinu", "kupio sam", "kupila sam", "kupili smo", "za ducan",
@@ -1120,6 +1123,12 @@ class BaseInterface(ABC):
                 wrap_agent_voice_message(message),
                 user_id=user_id,
                 question=message,
+                # ctx is required, and omitting it made EVERY voice_qa
+                # escalation raise TypeError before the orchestrator ran:
+                # the user heard "tehnička greška" for any spoken request
+                # that voice_qa handed on. Seen 2026-09-06 on "dodaj mi na
+                # kupovnu listu kruh, ulje i mlijeko".
+                ctx=ctx,
             )
 
         return response
