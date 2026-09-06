@@ -947,6 +947,32 @@ def app_button(name: str, icon: str, package: str) -> dict:
     }
 
 
+DEFAULT_BOARD = "lovelace"
+
+
+def for_default_dashboard(config: dict) -> dict:
+    """The same board, with its internal links pointing at itself.
+
+    Navigation paths carry the dashboard they belong to, so a copy saved to
+    Overview would send anyone tapping the shopping tile over to the wall
+    panel dashboard instead of staying where they are. It still works, which
+    is what makes it easy to miss.
+    """
+    def rewrite(node):
+        if isinstance(node, dict):
+            return {
+                k: (v.replace(f"/{BOARD}/", f"/{DEFAULT_BOARD}/", 1)
+                    if k == "navigation_path" and isinstance(v, str)
+                    else rewrite(v))
+                for k, v in node.items()
+            }
+        if isinstance(node, list):
+            return [rewrite(v) for v in node]
+        return node
+
+    return rewrite(config)
+
+
 def shopping_view() -> dict:
     """The shopping list itself, reached by tapping the count on the overview."""
     return {
@@ -1345,7 +1371,8 @@ async def main():
             mirror = await call(ws, 11, {"type": "lovelace/config"})
             with open(BACKUP + ".overview", "w", encoding="utf-8") as fh:
                 json.dump(mirror, fh, ensure_ascii=False, indent=2)
-            await call(ws, 12, {"type": "lovelace/config/save", "config": cfg})
+            await call(ws, 12, {"type": "lovelace/config/save",
+                                "config": for_default_dashboard(cfg)})
             print("  Overview preslikan na zidni panel")
 
 

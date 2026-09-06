@@ -417,3 +417,39 @@ class TestTheEveningOf20260906:
         ]
         assert len(sliders) == 1
         assert sliders[0]["entity"] == builder.TV_CAST
+
+
+class TestTheOverviewCopyLinksToItself:
+    """The mirror kept the wall panel's paths, so tapping the shopping tile
+
+    on Overview jumped to the other dashboard. It worked, which is exactly
+    why it went unnoticed until the config was read back.
+    """
+
+    def test_navigation_paths_are_rewritten(self):
+        board = {
+            "views": [{"sections": [{"cards": [
+                {"tap_action": {"action": "navigate",
+                                "navigation_path": f"/{builder.BOARD}/kupovina"}},
+            ]}]}]
+        }
+        out = builder.for_default_dashboard(board)
+        card = out["views"][0]["sections"][0]["cards"][0]
+        assert card["tap_action"]["navigation_path"] == "/lovelace/kupovina"
+
+    def test_the_original_is_left_alone(self):
+        """The wall panel keeps its own paths; only the copy is rewritten."""
+        board = {
+            "views": [{"sections": [{"cards": [
+                {"tap_action": {"navigation_path": f"/{builder.BOARD}/kanali"}},
+            ]}]}]
+        }
+        builder.for_default_dashboard(board)
+        kept = board["views"][0]["sections"][0]["cards"][0]
+        assert kept["tap_action"]["navigation_path"] == f"/{builder.BOARD}/kanali"
+
+    def test_everything_else_survives_the_copy(self):
+        view = builder.shopping_view()
+        out = builder.for_default_dashboard({"views": [view]})
+        assert out["views"][0]["path"] == "kupovina"
+        assert out["views"][0]["subview"] is True
