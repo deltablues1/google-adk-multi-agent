@@ -431,6 +431,20 @@ class FirestoreADKSessionService(BaseSessionService):
             )
             return None
 
+        # The blob carries the id it was written with, and the write path
+        # addresses documents by session.id — so migrating a document whose
+        # stored id differs from the one being read wrote the result under the
+        # OTHER document. Usually those agree and nothing shows; the case
+        # where they do not is a copy, and a copy is exactly what you make
+        # when you want to try a migration without touching the original.
+        if session.id != session_id:
+            logger.warning(
+                "[ADKSessionService] Legacy session '%s' carries id '%s' — "
+                "migrating under the id it was read as",
+                session_id, session.id,
+            )
+            session = session.model_copy(update={"id": session_id})
+
         logger.info(
             "[ADKSessionService] Migrating '%s' from the single-document layout "
             "(%d events)", session_id, len(session.events),

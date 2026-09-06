@@ -565,3 +565,52 @@ class TestTheSnapshotGoesAllTheWayDown:
 
         # Failing here rather than at the Firestore call is the point.
         assert _state_doc(db)["state"]["thing"] == "odd"
+
+
+class TestMigrationWritesWhereItWasRead:
+    """The legacy blob carries the id it was written with.
+
+    The write path addresses documents by `session.id`, so migrating a
+    document whose stored id differs from the one being read wrote the result
+    under the OTHER document. Usually they agree and nothing shows. The case
+    where they differ is a copy — and a copy is exactly what you make when you
+    want to try a migration without touching the original, which is how this
+    was found: a verification run against real Firestore migrated the real
+    session it was supposed to be leaving alone.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_copy_migrates_under_its_own_id(self, service, db):
+        # A session written under one id, copied to another.
+        seed = FirestoreADKSessionService(project_id="test")
+        original = await seed.create_session(
+            app_name="agents", user_id="ana", session_id="original"
+        )
+        for n in range(3):
+            await seed.append_event(original, _event(f"e{n}"))
+        await seed.flush()
+
+        legacy = {
+            "session_id": "original",
+            "app_name": "agents",
+            "user_id": "ana",
+            "data": original.model_dump_json(),
+            "event_count": 3,
+        }
+        db.store.clear()
+        db.store[("adk_sessions", "original")] = dict(legacy)
+        db.store[("adk_sessions", "kopija")] = dict(legacy)
+
+        fresh = FirestoreADKSessionService(project_id="test")
+        restored = await fresh.get_session(
+            app_name="agents", user_id="ana", session_id="kopija"
+        )
+
+        assert restored is not None
+        assert restored.id == "kopija"
+        # The copy is migrated...
+        assert "data" not in _state_doc(db, "kopija")
+        assert len(_event_docs(db, "kopija")) == 3
+        # ...and the original is untouched.
+        assert "data" in _state_doc(db, "original")
+        assert _event_docs(db, "original") == []
