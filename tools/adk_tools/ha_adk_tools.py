@@ -29,6 +29,8 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from tools.adk_tools import _offload
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,13 +70,34 @@ def _ha_request(path: str, payload: Optional[dict] = None, timeout: float = 10.0
         },
         method="POST" if payload is not None else "GET",
     )
+    # Never wait longer than the operation has left. A POST is a command, so
+    # record it — that is what separates "nothing happened" from "we do not
+    # know" when the answer is lost. A GET changes nothing, so losing its
+    # answer is an ordinary error.
+    is_command = data is not None
+    timeout = _offload.clamp_timeout(timeout)
+    if is_command:
+        _offload.note_dispatch()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body) if body else None
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HA API {e.code}: {e.read().decode('utf-8')[:200]}")
+        # A 4xx is a rejection: understood, refused, nothing done. A 5xx is
+        # not the same thing — Home Assistant got as far as trying, and a
+        # service call can fail after it has already reached the device.
+        detail = e.read().decode("utf-8")[:200]
+        if is_command and e.code >= 500:
+            raise _offload.OutcomeUnknown(f"HA API {e.code} usred naredbe: {detail}")
+        raise RuntimeError(f"HA API {e.code}: {detail}")
+    except _offload.HAOperationError:
+        raise
     except Exception as e:
+        if is_command and not _offload.proves_nothing_was_sent(e):
+            # The command went out and the reply never came. The TV may
+            # already have acted on it, so reporting a plain failure here
+            # would invite the agent to send it a second time.
+            raise _offload.OutcomeUnknown(f"HA ne odgovara ({e})")
         raise RuntimeError(f"HA API nedostupan ({e})")
 
 
@@ -145,12 +168,15 @@ def tv_turn_on() -> dict:
 
     last_err = None
     for attempt in range(1, retries + 1):
+        # Ask before another round, not after: four attempts at ~35s each
+        # used to outlive any caller's patience by minutes.
+        _offload.check_deadline("paljenje TV-a")
         try:
             _ha_service("media_player", "turn_on", entity)
             _ha_service("remote", "turn_on", _tv_remote())
         except RuntimeError as e:
             last_err = str(e)
-        time.sleep(3)
+        _offload.sleep(3)
         state = _ha_state(entity)
         if state not in ("unavailable", "unknown", "off"):
             return {"success": True, "state": state, "attempts": attempt}
@@ -243,6 +269,10 @@ def _volume_step_to(entity: str, target_percent: int, max_steps: int = 30) -> di
 
     tolerance = 0.02
     for _ in range(max_steps):
+        # 30 steps, each spending up to two 10s HTTP timeouts, is ten minutes
+        # of a frozen event loop. The deadline is what really bounds this
+        # walk; max_steps only stops it overshooting.
+        _offload.check_deadline("postavljanje glasnoće")
         if abs(current - target) <= tolerance:
             break
         _ha_service("media_player", "volume_up" if current < target else "volume_down", entity)
@@ -345,8 +375,8 @@ def _await_app_ready() -> float:
     remaining = _app_warmup_seconds() - waited
     if remaining <= 0:
         return 0.0
-    time.sleep(remaining)
-    return round(remaining, 1)
+    slept = _offload.sleep(remaining)
+    return round(slept, 1)
 
 
 def _proxy_enabled() -> bool:
@@ -491,7 +521,7 @@ def _wait_for_app_change(before: str, expected: str = "", timeout: float = None)
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        time.sleep(1.0)
+        _offload.sleep(1.0)
         try:
             current = (_ha_request(f"/api/states/{_tv_media_player()}") or {})                 .get("attributes", {}).get("app_id", "")
         except RuntimeError:
@@ -598,8 +628,16 @@ def _youtube_first_result(query: str) -> tuple:
         "Accept-Language": "hr-HR,hr;q=0.9,en;q=0.8",
     })
     try:
-        with urllib.request.urlopen(request, timeout=15) as resp:
+        # Same budget as the rest of the operation: without this the search
+        # could spend 15s that tv_play_youtube no longer had.
+        with urllib.request.urlopen(
+            request, timeout=_offload.clamp_timeout(15)
+        ) as resp:
             html = resp.read().decode("utf-8", "ignore")
+    except _offload.HAOperationError:
+        # Out of time. Nothing was played, and the caller must hear that
+        # rather than "no results".
+        raise
     except Exception as e:
         logger.warning("YouTube pretraga nije uspjela: %s", e)
         return None, None
@@ -807,7 +845,7 @@ def tv_channel(name: str, from_app_home: bool = False) -> dict:
             if "error" in result:
                 return {"error": f"Ne mogu otvoriti '{app}': {result['error']}"}
             opened_app = app
-            time.sleep(float(os.getenv("TV_CHANNEL_APP_DELAY_SECONDS", "4")))
+            _offload.sleep(float(os.getenv("TV_CHANNEL_APP_DELAY_SECONDS", "4")))
 
     # A just-launched app needs time to draw before it will accept a keypress,
     # whether the next step is navigation or the digits themselves. This applies
@@ -826,7 +864,7 @@ def tv_channel(name: str, from_app_home: bool = False) -> dict:
                     "delay_secs": float(os.getenv("TV_CHANNEL_KEY_DELAY_SECONDS", "0.4")),
                 },
             )
-            time.sleep(float(os.getenv("TV_CHANNEL_LIVE_DELAY_SECONDS", "4")))
+            _offload.sleep(float(os.getenv("TV_CHANNEL_LIVE_DELAY_SECONDS", "4")))
             entered_live = True
         except RuntimeError as e:
             return {"error": f"Ne mogu ući u live TV: {e}"}
@@ -934,7 +972,7 @@ def get_ha_adk_tools() -> list:
     the HA token is broad. Only typed, allowlisted tools go to the agent;
     ha_call_service stays importable for internal/typed wrappers.
     """
-    return [
+    tools = [
         tv_turn_on,
         tv_turn_off,
         tv_volume,
@@ -948,3 +986,22 @@ def get_ha_adk_tools() -> list:
         tv_send_key,
         tv_status,
     ]
+    # Offload at registration, not on the functions themselves: the tools call
+    # each other (tv_channel opens an app first), and those inner calls must
+    # stay plain and synchronous — one thread, one deadline, one turn of the
+    # device lock for the whole operation.
+    #
+    # The key is "tv", the device, not the entity: remote.tv and
+    # media_player.tv are one television, and separate queues would let
+    # "otvori aplikaciju" and "promijeni kanal" interleave on it again.
+    wake = _offload.offload(
+        device="tv",
+        deadline_env="TV_WAKE_DEADLINE_SECONDS",
+        default_deadline=90.0,  # WoL + up to TV_WAKE_RETRIES rounds
+    )
+    normal = _offload.offload(
+        device="tv",
+        deadline_env="TV_OP_DEADLINE_SECONDS",
+        default_deadline=45.0,
+    )
+    return [(wake if fn is tv_turn_on else normal)(fn) for fn in tools]

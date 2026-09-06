@@ -32,6 +32,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional
 
+from tools.adk_tools import _offload
 from tools.adk_tools.ha_adk_tools import _ha_request
 
 logger = logging.getLogger(__name__)
@@ -416,8 +417,12 @@ def _statistics(entity_ids: list, days: int, period: str = "day") -> dict:
     start = (datetime.now(_tz.utc) - timedelta(days=days)).isoformat()
 
     try:
+        # The websocket path had its own fixed 25s, unconnected to the tool's
+        # budget — so a 40s tool could spend 25 of them here after already
+        # using 30. Same remaining budget as every other network call.
         return _run_coroutine(
-            _fetch_statistics_ws(ws_url, token, entity_ids, start, period), 25
+            _fetch_statistics_ws(ws_url, token, entity_ids, start, period),
+            _offload.clamp_timeout(25),
         )
     except RuntimeError:
         raise
@@ -531,11 +536,20 @@ def home_climate_history(zone: str = "", days: int = 1) -> dict:
 
 
 def get_ha_sensor_tools() -> list:
-    """Read-only senzorski alati za smart_home agenta."""
-    return [
+    """Read-only senzorski alati za smart_home agenta.
+
+    Offloaded like the TV tools — a sensor read is still a blocking urlopen,
+    and home_climate_history can wait 30s for statistics. No device lock:
+    these are reads, and queueing them behind a TV command would make the
+    house slower to answer, not safer.
+    """
+    offloaded = _offload.offload(
+        deadline_env="HA_SENSOR_DEADLINE_SECONDS", default_deadline=40.0,
+    )
+    return [offloaded(fn) for fn in (
         home_climate_read,
         home_air_quality_read,
         home_power_read,
         home_climate_history,
         home_sensor_search,
-    ]
+    )]
