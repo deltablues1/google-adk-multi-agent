@@ -8,6 +8,7 @@ from typing import Optional, List
 import re
 import logging
 
+from tools.resilience.retry_handler import UnconfirmedWrite
 logger = logging.getLogger(__name__)
 
 
@@ -38,24 +39,11 @@ def _get_credentials():
 # we share it directly with the actual recipient(s) at send time. This is
 # deterministic (runs in code, not at the LLM's discretion) and least-privilege.
 
-# Capture the file ID from the common Google Docs/Sheets/Slides/Drive link forms.
-_DRIVE_LINK_PATTERNS = [
-    re.compile(r"https?://docs\.google\.com/(?:document|spreadsheets|presentation)/d/([a-zA-Z0-9_-]+)"),
-    re.compile(r"https?://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)"),
-    re.compile(r"https?://drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)"),
-]
-
-
-def _extract_drive_file_ids(text: str) -> List[str]:
-    """Return de-duplicated Google Drive/Docs file IDs linked in *text*."""
-    ids: List[str] = []
-    if not text:
-        return ids
-    for pattern in _DRIVE_LINK_PATTERNS:
-        for fid in pattern.findall(text):
-            if fid not in ids:
-                ids.append(fid)
-    return ids
+# Shared with the approval gate, which has to name the same documents in its
+# question and fold them into the fingerprint. Two copies of this regex would
+# eventually disagree, and the disagreement would be a mail approved for one
+# set of documents going out sharing another.
+from services.drive_links import extract_file_ids as _extract_drive_file_ids
 
 
 def _parse_recipients(*fields: Optional[str]) -> List[str]:
@@ -71,36 +59,160 @@ def _parse_recipients(*fields: Optional[str]) -> List[str]:
     return emails
 
 
-async def _autoshare_linked_docs(creds, body: str, recipients: List[str]) -> List[str]:
+async def _autoshare_linked_docs(creds, body: str, recipients: List[str]):
     """Share any Google Doc/Drive file linked in *body* with *recipients* (reader).
 
-    Best-effort: failures never block the send, but they are returned as
-    warnings so the caller can tell the user a linked doc may not open.
-    Only files owned/shareable by the sending account will actually share.
+    Returns `(warnings, grants)`. Each grant is a permission THIS call created,
+    with the id needed to take it back. The old code threw that id away and
+    explained in a comment that drive_share_file did not return one, which was
+    not true.
+
+    Recipients who already have access are skipped, so a recorded grant is one
+    we created rather than someone's pre-existing access. That is a strong
+    guide, not a proof: reading the current permissions and creating a new one
+    are two calls with a gap between them, so a share made by somebody else in
+    that gap would still be recorded as ours. It is the best evidence
+    available without a transaction, and it is only ever used to undo a share
+    made moments earlier for a send that provably failed.
+
+    Best-effort: failures never block the send, but they come back as warnings
+    so the caller can tell the user a linked doc may not open.
     """
     warnings: List[str] = []
+    grants: List[dict] = []
     file_ids = _extract_drive_file_ids(body)
     if not file_ids or not recipients:
-        return warnings
+        return warnings, grants
     try:
-        from tools.api_implementations.drive_api import drive_share_file as drive_share_impl
+        from tools.api_implementations.drive_api import (
+            drive_list_permissions as drive_permissions_impl,
+            drive_share_file as drive_share_impl,
+        )
     except Exception as e:  # pragma: no cover - defensive
         logger.warning(f"[autoshare] drive_api import failed: {e}")
-        return [f"Could not share linked documents (drive_api unavailable: {e})"]
+        return (
+            [f"Could not share linked documents (drive_api unavailable: {e})"],
+            grants,
+        )
+
     for fid in file_ids:
+        already = await _existing_readers(drive_permissions_impl, creds, fid)
         for email in recipients:
+            if already is not None and email.lower() in already:
+                logger.info(f"[autoshare] {email} already has access to {fid}")
+                continue
             try:
                 # send_notification=False: we are about to email the recipient
-                # ourselves, so suppress Drive's duplicate "shared with you" mail.
-                await drive_share_impl(creds, fid, email, "reader", "user", send_notification=False)
+                # ourselves, so suppress Drive own "shared with you" mail.
+                result = await drive_share_impl(
+                    creds, fid, email, "reader", "user", send_notification=False
+                )
                 logger.info(f"[autoshare] shared {fid} with {email} (reader, no notify)")
+                permission_id = (result or {}).get("permission_id")
+                # `already is None` means the current access could not be read,
+                # so ours cannot be told apart from theirs afterwards. Share,
+                # but never offer to undo it.
+                if permission_id and already is not None:
+                    grants.append({
+                        "file_id": fid,
+                        "email": email,
+                        "permission_id": permission_id,
+                    })
             except Exception as e:
                 logger.warning(f"[autoshare] could not share {fid} with {email}: {e}")
                 warnings.append(
                     f"Linked document {fid} could not be shared with {email} — "
                     "the recipient may get 'access denied' when opening the link."
                 )
-    return warnings
+    return warnings, grants
+
+
+async def _existing_readers(list_permissions, creds, file_id):
+    """Lower-cased addresses that already have access, or None if unreadable."""
+    try:
+        result = await list_permissions(creds, file_id)
+    except Exception as e:
+        logger.warning(f"[autoshare] could not read permissions on {file_id}: {e}")
+        return None
+    addresses = set()
+    for permission in (result or {}).get("permissions", []):
+        address = (permission.get("emailAddress") or "").strip().lower()
+        if address:
+            addresses.add(address)
+    return addresses
+
+
+async def _revoke_grants(creds, grants: List[dict]) -> List[str]:
+    """Undo access this send granted, once the send provably did not happen."""
+    undone: List[str] = []
+    if not grants:
+        return undone
+    try:
+        from tools.api_implementations.drive_api import (
+            drive_revoke_permission as drive_revoke_impl,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"[autoshare] revoke unavailable: {e}")
+        return undone
+    for grant in grants:
+        try:
+            await drive_revoke_impl(creds, grant["file_id"], grant["permission_id"])
+            undone.append("{} -> {}".format(grant["file_id"], grant["email"]))
+        except Exception as e:
+            logger.warning(
+                "[autoshare] could not revoke %s on %s: %s",
+                grant["permission_id"], grant["file_id"], e,
+            )
+    return undone
+
+
+def _describe_grants(grants: List[dict]) -> str:
+    return ", ".join("{} -> {}".format(g["file_id"], g["email"]) for g in grants)
+
+
+def _proves_not_sent(error: Exception) -> bool:
+    """Can we prove the message never went out?
+
+    Only a rejection proves it: Gmail understood the request and refused it,
+    so nothing was delivered. Everything else may have happened anyway — a
+    timeout, a dropped connection, and also the quieter ones, a response that
+    would not parse or a field missing from a reply that arrived because the
+    send succeeded.
+
+    Asked in this direction on purpose. The first version asked "is this a
+    known transient error", which made every UNRECOGNISED error a reason to
+    revoke — so a JSONDecodeError after a successful send would have taken the
+    document away from someone already reading the mail.
+    """
+    try:
+        from googleapiclient.errors import HttpError
+
+        if isinstance(error, HttpError):
+            status = getattr(getattr(error, "resp", None), "status", None)
+            # 4xx is a refusal; 429 is "later", which is not the same thing.
+            return isinstance(status, int) and 400 <= status < 500 and status != 429
+    except Exception:  # pragma: no cover - googleapiclient not importable
+        pass
+    return False
+
+
+async def _undo_shares(creds, grants: List[dict], result: dict) -> None:
+    """Take back the access this send granted, and say so in the result."""
+    if not grants:
+        return
+    undone = await _revoke_grants(creds, grants)
+    if undone:
+        result["share_warning"] = (
+            result.get("share_warning", "") +
+            " Mail nije poslan, pa sam povukao pristup koji sam za njega "
+            "dodijelio: " + ", ".join(undone) + "."
+        ).strip()
+    else:
+        result["share_warning"] = (
+            result.get("share_warning", "") +
+            " NAPOMENA: mail nije poslan, a pristup dokumentima nisam uspio "
+            "povući: " + _describe_grants(grants) + "."
+        ).strip()
 
 
 # ============================================================================
@@ -239,10 +351,15 @@ async def gmail_send_message(
 
     # Least-privilege: share any linked Google Doc/Drive file with the actual
     # recipients before sending, so the emailed link opens (no public sharing).
-    share_warnings = await _autoshare_linked_docs(
+    share_warnings, grants = await _autoshare_linked_docs(
         creds, body, _parse_recipients(to, cc, bcc)
     )
 
+    # Three outcomes, not two. A send that was refused did not happen, so the
+    # access granted for it can be taken back. A send whose answer was lost may
+    # well have gone out, and revoking then takes the document away from
+    # someone already reading the mail — so those grants stay, and the user is
+    # told what is unresolved.
     try:
         from tools.api_implementations.gmail_api import gmail_send_message as gmail_send_impl
         result = await gmail_send_impl(creds, to, subject, body, thread_id, cc, bcc, attachment_path)
@@ -250,24 +367,24 @@ async def gmail_send_message(
         if isinstance(result, dict):
             if share_warnings:
                 result["share_warning"] = " ".join(share_warnings)
-            # Attachment was pre-validated, but the send itself can still
-            # fail — be honest that the docs remain shared (rollback would
-            # need the permission IDs, which drive_share_file doesn't return).
-            if result.get("status") == "failed" and _extract_drive_file_ids(body):
-                result["share_warning"] = (
-                    result.get("share_warning", "") +
-                    " NAPOMENA: linkani dokumenti su već podijeljeni s "
-                    "primateljima iako email nije poslan."
-                ).strip()
+            if result.get("status") == "failed":
+                await _undo_shares(creds, grants, result)
         return result
     except Exception as e:
         logger.error(f"gmail_send_message failed: {e}")
         failure = {"error": str(e), "status": "error"}
-        if _extract_drive_file_ids(body):
-            failure["share_warning"] = (
-                "NAPOMENA: linkani dokumenti su već podijeljeni s primateljima "
-                "iako slanje emaila nije uspjelo."
-            )
+        if share_warnings:
+            failure["share_warning"] = " ".join(share_warnings)
+        if _proves_not_sent(e):
+            await _undo_shares(creds, grants, failure)
+        else:
+            failure["outcome"] = "unknown"
+            if grants:
+                failure["share_warning"] = (
+                    failure.get("share_warning", "") +
+                    " NAPOMENA: ne znam je li mail poslan, pa NISAM povukao "
+                    "pristup dokumentima: " + _describe_grants(grants) + "."
+                ).strip()
         return failure
 
 
@@ -324,6 +441,13 @@ async def gmail_create_draft(
                 "the documents must be shared manually."
             )
         return result
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in gmail_create_draft: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"gmail_create_draft failed: {e}")
         return {"error": str(e), "status": "error"}

@@ -36,6 +36,7 @@ from typing import Optional
 from google.oauth2.credentials import Credentials
 import logging
 
+from tools.resilience.retry_handler import UnconfirmedWrite
 logger = logging.getLogger(__name__)
 
 
@@ -274,6 +275,13 @@ async def drive_upload_file(
         result = await drive_upload_impl(creds, file_name, content, mime_type, parent_folder_id)
         return result
 
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in drive_upload_file: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Error uploading file to Drive: {e}")
         return {
@@ -606,6 +614,13 @@ async def drive_create_folder(
         result = await drive_create_impl(creds, folder_name, parent_folder_id)
         return result
 
+    except UnconfirmedWrite as e:
+        # The write may already have landed; only the answer is gone. Reporting
+        # "failed" here would read as "nothing happened" and invite the model to
+        # call this tool again — the duplicate the missing retry was meant to
+        # prevent, arriving one level up instead.
+        logger.warning("Unconfirmed write in drive_create_folder: %s", e)
+        return {"error": str(e), "status": "unknown", "outcome": "unknown"}
     except Exception as e:
         logger.error(f"Error creating Drive folder: {e}")
         return {

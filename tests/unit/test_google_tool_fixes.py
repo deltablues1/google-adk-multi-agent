@@ -270,7 +270,7 @@ class TestGmailAttachmentSandbox:
 
         async def fake_autoshare(creds, body, recipients):
             share_called["value"] = True
-            return []
+            return [], []  # (warnings, grants)
 
         monkeypatch.setattr(gmail_adk, "_autoshare_linked_docs", fake_autoshare)
         monkeypatch.setattr(gmail_adk, "_get_credentials", lambda: fake_creds)

@@ -12,7 +12,9 @@ import io
 import re
 import logging
 
-from tools.resilience.retry_handler import with_retry, RetryConfig
+from tools.resilience.retry_handler import (
+    with_retry, RetryConfig, report_unconfirmed,
+)
 from tools.resilience.circuit_breaker import with_circuit_breaker
 from tools.resilience.rate_limiter import with_rate_limit
 from tools.resilience.cache import with_cache, invalidates_cache
@@ -273,7 +275,10 @@ async def drive_get_file(
 
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — upload creates a new file on every call; a retry leaves two copies.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("upload datoteke na Drive")
 @invalidates_cache("drive")
 async def drive_upload_file(
     credentials: Credentials,
@@ -376,6 +381,7 @@ async def drive_upload_file(
 
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
+# Retry is safe: sets a known file id to a known state.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("drive")
 async def drive_update_file(
@@ -452,6 +458,8 @@ async def drive_update_file(
 
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
+# Retry is safe: a second delete returns 404, which is not retried, and
+# the end state is the same either way.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("drive")
 async def drive_delete_file(
@@ -499,6 +507,88 @@ async def drive_delete_file(
 
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
+# Retry is safe: reading who has access changes nothing.
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+async def drive_list_permissions(
+    credentials: Credentials,
+    file_id: str,
+) -> Dict[str, Any]:
+    """Who can already open this file.
+
+    Needed before granting access on someone's behalf: a permission that was
+    already there is not ours to take away if the thing we granted it for
+    then fails.
+
+    Every page, not the first one. A partial list would say "this person has
+    no access" about somebody who does, and the caller uses that answer to
+    decide what it may revoke later.
+    """
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        permissions = []
+        page_token = None
+        while True:
+            result = await aexecute(service.permissions().list(
+                fileId=file_id,
+                fields='nextPageToken, permissions(id, type, role, emailAddress)',
+                pageSize=100,
+                pageToken=page_token,
+            ))
+            permissions.extend(result.get('permissions', []))
+            page_token = result.get('nextPageToken')
+            if not page_token:
+                break
+
+        return {'file_id': file_id, 'permissions': permissions}
+
+    except HttpError as e:
+        logger.error(f"Failed to list permissions for {file_id}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_list_permissions: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+# Retry is safe: a second delete of the same permission returns 404, which is
+# not retried, and the end state is the same either way.
+@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+@invalidates_cache("drive")
+async def drive_revoke_permission(
+    credentials: Credentials,
+    file_id: str,
+    permission_id: str,
+) -> Dict[str, Any]:
+    """Take back one specific permission, by the id that created it."""
+    try:
+        from tools.google_api_client import GoogleAPIClient
+
+        api_client = GoogleAPIClient(credentials=credentials)
+        service = api_client.drive_service()
+
+        await aexecute(service.permissions().delete(
+            fileId=file_id, permissionId=permission_id,
+        ))
+        logger.info(f"Revoked permission {permission_id} on {file_id}")
+        return {'file_id': file_id, 'permission_id': permission_id, 'status': 'revoked'}
+
+    except HttpError as e:
+        logger.error(f"Failed to revoke {permission_id} on {file_id}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in drive_revoke_permission: {e}")
+        raise
+
+
+@with_circuit_breaker("drive")
+@with_rate_limit("drive", user_id_param="credentials")
+# Retry is safe: granting the same role to the same address again leaves
+# the same access.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("drive")
 async def drive_share_file(
@@ -579,7 +669,10 @@ async def drive_share_file(
 
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
-@with_retry(RetryConfig(max_retries=3, base_delay=1.0))
+# NOTE: no @with_retry here — create makes a new folder every time, same name or not.
+# report_unconfirmed instead: a lost answer is reported as unknown, so
+# the agent checks the result rather than repeating the write.
+@report_unconfirmed("stvaranje mape na Driveu")
 @invalidates_cache("drive")
 async def drive_create_folder(
     credentials: Credentials,
@@ -642,6 +735,7 @@ async def drive_create_folder(
 
 @with_circuit_breaker("drive")
 @with_rate_limit("drive", user_id_param="credentials")
+# Retry is safe: the file ends up under the same parent either way.
 @with_retry(RetryConfig(max_retries=3, base_delay=1.0))
 @invalidates_cache("drive")
 async def drive_move_file(
