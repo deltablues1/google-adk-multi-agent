@@ -36,6 +36,22 @@ def _reported_status(response: Any) -> str:
     return ""
 
 
+def _append_text(existing: str, addition: str) -> str:
+    """Join two text parts without gluing sentences together.
+
+    A model that speaks, calls a tool, then speaks again emits two text
+    parts, and plain concatenation ran them into one word: seen 2026-09-06,
+    "...Provjeravam Poslano za trag.Provjerio sam --". On the voice lane that
+    is also a missing pause, because the sentence boundary is gone.
+    """
+    if not existing:
+        return addition
+    if existing[-1].isspace() or addition[0].isspace():
+        return existing + addition
+    # A sentence that ended gets a paragraph break; anything else a space.
+    separator = "\n\n" if existing.rstrip()[-1] in ".!?:" else " "
+    return existing + separator + addition
+
 async def run_agent_simple(
     agent,
     user_message: str,
@@ -140,7 +156,7 @@ async def run_agent_simple(
                     # Handle text parts
                     if hasattr(part, 'text') and part.text is not None and part.text.strip():
                         logger.info(f"[TEXT] from '{author}': {part.text[:150]}...")
-                        response_text += part.text
+                        response_text = _append_text(response_text, part.text)
 
                     # Handle function_call parts (log but don't include in text)
                     if hasattr(part, 'function_call') and part.function_call:
@@ -176,7 +192,7 @@ async def run_agent_simple(
 
             # Fallback: try direct text access (streaming events)
             elif hasattr(event, 'text') and event.text:
-                response_text += event.text
+                response_text = _append_text(response_text, event.text)
 
         # Log function calls if any were made
         if function_calls_made:
