@@ -65,6 +65,22 @@ class TestSharedFragment:
         assert "gmail_search_threads" in fragment
         assert "unknown" in fragment
 
+    def test_an_empty_search_result_is_not_proof_of_non_execution(self):
+        """The hole the first version left: 'not found' authorised a retry."""
+        fragment = load_shared_fragment("unknown_outcome")
+        assert "nije \"nije se dogodilo\"" in fragment
+        assert "NE ovlašćuje ponovni pokušaj" in fragment
+
+    def test_a_match_must_identify_this_action_not_the_topic(self):
+        """An older mail with the same subject is not evidence."""
+        fragment = load_shared_fragment("unknown_outcome")
+        assert "poklapa s tvojom radnjom" in fragment
+        assert "POSLIJE" in fragment
+
+    def test_the_retry_belongs_to_the_user(self):
+        fragment = load_shared_fragment("unknown_outcome")
+        assert "njegova odluka, ne tvoja pretpostavka" in fragment
+
     @pytest.mark.parametrize("name", sorted(_UNKNOWN_OUTCOME_AGENTS))
     def test_every_listed_agent_receives_it(self, name):
         built = _append_unknown_outcome_rule(
@@ -112,3 +128,9 @@ class TestMailerNoLongerSuggestsRetryingASend:
         errors = prompt.split("## Error Handling")[1]
         assert "Proven" in errors and "Unproven" in errors
         assert "Do NOT re-send" in errors
+
+    def test_the_sent_check_is_bound_to_this_message(self):
+        prompt = load_instruction_file("mailer")
+        errors = prompt.split("## Error Handling")[1]
+        assert "send time after your attempt" in errors
+        assert "including" in errors and "an empty result" in errors
