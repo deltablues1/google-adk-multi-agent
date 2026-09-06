@@ -190,16 +190,40 @@ class TestConfirmationThatArrivesBeforeTheAttempt:
     identifying which event. The consent was real; it just arrived early."""
 
     def test_a_yes_authorises_the_action_attempted_in_that_turn(self):
-        approvals.on_user_turn("s1", affirmative=True)   # nothing pending yet
+        # "held_actions" is what the gate stopped to ask about last turn.
+        approvals.on_user_turn(
+            "s1", affirmative=True, held_actions={"cal:delete-1"}
+        )
         approvals.register("cal:delete-1")               # model tries afterwards
         assert approvals.redeem("cal:delete-1") is True
 
-    def test_it_authorises_only_one_action(self):
-        approvals.on_user_turn("s1", affirmative=True)
-        approvals.register("cal:delete-1")
+    def test_it_authorises_only_the_action_that_was_asked_about(self):
+        # The yes used to be banked for whatever came next, so a confirmation
+        # meant for one thing could authorise something the user was never
+        # shown. Now it only fits the question that was asked.
+        approvals.on_user_turn(
+            "s1", affirmative=True, held_actions={"cal:delete-1"}
+        )
         approvals.register("erp:adjust-1")
-        assert approvals.redeem("cal:delete-1") is True
+        approvals.register("cal:delete-1")
+
         assert approvals.redeem("erp:adjust-1") is False
+        assert approvals.redeem("cal:delete-1") is True
+
+    def test_it_authorises_only_one_attempt_of_it(self):
+        approvals.on_user_turn(
+            "s1", affirmative=True, held_actions={"cal:delete-1"}
+        )
+        approvals.register("cal:delete-1")
+        assert approvals.redeem("cal:delete-1") is True
+
+        approvals.register("cal:delete-1")
+        assert approvals.redeem("cal:delete-1") is False
+
+    def test_a_yes_with_nothing_asked_authorises_nothing(self):
+        approvals.on_user_turn("s1", affirmative=True)   # gate held nothing
+        approvals.register("cal:delete-1")
+        assert approvals.redeem("cal:delete-1") is False
 
     def test_a_non_affirmative_turn_authorises_nothing(self):
         approvals.on_user_turn("s1", affirmative=False)
@@ -211,11 +235,15 @@ class TestConfirmationThatArrivesBeforeTheAttempt:
         assert approvals.redeem("cal:delete-1") is False
 
     def test_an_echoed_yes_cannot_repeat_what_just_ran(self):
-        approvals.on_user_turn("s1", affirmative=True)
+        approvals.on_user_turn(
+            "s1", affirmative=True, held_actions={"erp:adjust-5"}
+        )
         approvals.register("erp:adjust-5")
         assert approvals.redeem("erp:adjust-5") is True
 
-        approvals.on_user_turn("s1", affirmative=True)   # the echo
+        approvals.on_user_turn(                          # the echo
+            "s1", affirmative=True, held_actions={"erp:adjust-5"}
+        )
         approvals.register("erp:adjust-5")
         assert approvals.redeem("erp:adjust-5") is False
 
@@ -231,7 +259,9 @@ class TestConfirmationThatArrivesBeforeTheAttempt:
 
     def test_it_can_be_switched_off(self, monkeypatch):
         monkeypatch.setenv("APPROVAL_ALLOW_SAME_TURN", "false")
-        approvals.on_user_turn("s1", affirmative=True)
+        approvals.on_user_turn(
+            "s1", affirmative=True, held_actions={"cal:delete-1"}
+        )
         approvals.register("cal:delete-1")
         assert approvals.redeem("cal:delete-1") is False
 

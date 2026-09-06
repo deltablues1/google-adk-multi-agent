@@ -348,25 +348,60 @@ class TestRepeatingAHeldCallInTheSameTurn:
 class TestConsentGivenBeforeTheAttempt:
     """The gate used to decide the hold before applying a confirmation that had
     already arrived, so a yes given ahead of the attempt was recorded and then
-    thrown away — a calendar deletion sat unexecuted through three turns."""
+    thrown away — a calendar deletion sat unexecuted through three turns.
+
+    The yes is banked against the actions the gate actually asked about. It
+    used to be a bare flag: a confirmation meant for one thing then armed
+    whatever the model registered next, which could be something the user was
+    never shown.
+    """
+
+    @staticmethod
+    def _asked_then_answered(tool_name, **args):
+        """Turn 1 the gate asks; turn 2 the user says yes, registration gone."""
+        from services import approval_gate
+
+        held = _call(tool_name, **args)
+        assert held["status"] == "needs_confirmation"
+        actions = approval_gate.take_holds("s1")
+
+        # The pending entry has expired, so only the banked yes can help.
+        approvals._PENDING.clear()
+        approvals.on_user_turn("s1", affirmative=True, held_actions=actions)
 
     def test_a_yes_from_this_turn_lets_the_call_through(self):
-        approvals.on_user_turn("s1", affirmative=True)   # nothing pending yet
+        self._asked_then_answered("calendar_delete_event", event_id="E1")
+
         assert _call("calendar_delete_event", event_id="E1") is None
 
     def test_without_a_yes_it_is_still_held(self):
         approvals.on_user_turn("s1", affirmative=False)
         assert _call("calendar_delete_event", event_id="E1")["status"] == "needs_confirmation"
 
-    def test_one_yes_still_covers_only_one_action(self):
-        approvals.on_user_turn("s1", affirmative=True)
-        assert _call("calendar_delete_event", event_id="E1") is None
+    def test_the_yes_does_not_cover_a_different_action(self):
+        self._asked_then_answered("calendar_delete_event", event_id="E1")
+
+        # The user confirmed a deletion. The model tries a stock write.
         assert _call("erp_adjust_stock", product_id="P1", quantity_delta=-5) is not None
+
+    def test_the_yes_does_not_cover_the_same_tool_with_other_arguments(self):
+        self._asked_then_answered("calendar_delete_event", event_id="E1")
+
+        assert _call("calendar_delete_event", event_id="E2") is not None
+
+    def test_one_yes_still_covers_only_one_attempt(self):
+        self._asked_then_answered("calendar_delete_event", event_id="E1")
+
+        assert _call("calendar_delete_event", event_id="E1") is None
+        assert _call("calendar_delete_event", event_id="E1") is not None
 
     def test_a_mail_let_through_this_way_still_learns_the_address(self):
         from services import known_recipients
 
-        approvals.on_user_turn("s1", affirmative=True)
+        self._asked_then_answered(
+            "gmail_send_message", to="novi@example.com", subject="x"
+        )
+
         assert _call("gmail_send_message", to="novi@example.com", subject="x") is None
         assert known_recipients.is_known("novi@example.com") is True
 
@@ -420,3 +455,89 @@ class TestARepeatedHoldBecomesAHardStop:
         self._held(3)
         reset_holds("s1")
         assert _call("calendar_delete_event", event_id="E1")["status"] == "needs_confirmation"
+
+
+class TestTheFingerprintCoversWhatTheActionDoes:
+    """Recipients and subject were the whole key for a mail.
+
+    So an approval for "mail Ana about the offer" fitted a re-issued call with
+    a different body, a different attachment, and a different document shared
+    along the way — all three of which are what the mail actually does.
+    """
+
+    def _approve_then_retry(self, first, second):
+        """Approve `first`, then see whether `second` gets through on it."""
+        from services import approval_gate
+
+        assert _call("gmail_send_message", **first)["status"] == "needs_confirmation"
+        actions = approval_gate.take_holds("s1")
+        approvals._PENDING.clear()
+        approvals.on_user_turn("s1", affirmative=True, held_actions=actions)
+        return _call("gmail_send_message", **second)
+
+    def test_the_same_mail_goes_through(self):
+        mail = {"to": "ana@x.com", "subject": "Ponuda", "body": "U prilogu."}
+        assert self._approve_then_retry(mail, dict(mail)) is None
+
+    def test_a_different_body_does_not(self):
+        held = self._approve_then_retry(
+            {"to": "ana@x.com", "subject": "Ponuda", "body": "U prilogu."},
+            {"to": "ana@x.com", "subject": "Ponuda", "body": "Otkazujem sve."},
+        )
+        assert held is not None
+
+    def test_a_different_attachment_does_not(self, tmp_path):
+        first = tmp_path / "ponuda.pdf"
+        first.write_bytes(b"prava ponuda")
+
+        base = {"to": "ana@x.com", "subject": "Ponuda", "body": "U prilogu.",
+                "attachment_path": str(first)}
+
+        # The path is the same; the file is not. Hashing the name would have
+        # let this through.
+        def swap():
+            first.write_bytes(b"nesto sasvim drugo")
+            return dict(base)
+
+        from services import approval_gate
+
+        assert _call("gmail_send_message", **base)["status"] == "needs_confirmation"
+        actions = approval_gate.take_holds("s1")
+        approvals._PENDING.clear()
+        approvals.on_user_turn("s1", affirmative=True, held_actions=actions)
+
+        assert _call("gmail_send_message", **swap()) is not None
+
+    def test_a_different_linked_document_does_not(self):
+        link = "https://docs.google.com/document/d/{}/edit"
+        held = self._approve_then_retry(
+            {"to": "ana@x.com", "subject": "Ponuda",
+             "body": link.format("DOC_PONUDA_1234567890")},
+            {"to": "ana@x.com", "subject": "Ponuda",
+             "body": link.format("DOC_PLACE_0987654321")},
+        )
+        # Sending a link is not the same intent as changing who may open a
+        # document, and the mailer does the second on its way to the first.
+        assert held is not None
+
+
+class TestTheQuestionNamesTheDocumentsBeingShared:
+
+    def test_shared_documents_are_spelled_out(self):
+        held = _call(
+            "gmail_send_message",
+            to="ana@x.com",
+            subject="Ponuda",
+            body="https://docs.google.com/document/d/DOC_PONUDA_1234567890/edit",
+        )
+
+        question = held["question"]
+        assert "DOC_PONUDA_1234567890" in question
+        assert "pristup" in question
+        assert "ana@x.com" in question
+
+    def test_a_mail_without_links_is_asked_about_plainly(self):
+        held = _call("gmail_send_message", to="ana@x.com", subject="Ponuda",
+                     body="Nema linkova.")
+
+        assert "pristup" not in held["question"]

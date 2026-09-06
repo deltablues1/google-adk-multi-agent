@@ -21,11 +21,14 @@ moves money or stock.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from services import approvals, known_recipients
+from services.drive_links import extract_file_ids
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,41 @@ def _unknown_recipients(args: Dict[str, Any]) -> list:
     return [a for a in _recipients(args) if not known_recipients.is_known(a)]
 
 
+def _digest(text: Any) -> str:
+    """A short, stable stand-in for a value too long to put in a key."""
+    if not text:
+        return ""
+    return hashlib.sha256(str(text).encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _file_digest(path: Any) -> str:
+    """A digest of the attachment's CONTENT, not its name.
+
+    The path alone says nothing about what is being sent: a file can be
+    rewritten between the moment the user is shown the mail and the moment it
+    goes out, and the approval would still fit. An unreadable file gets a
+    marker of its own rather than passing as "no attachment".
+    """
+    if not path:
+        return ""
+    try:
+        data = Path(str(path)).read_bytes()
+    except Exception:
+        return f"unreadable:{_digest(path)}"
+    return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _shared_documents(args: Dict[str, Any]) -> list:
+    """Drive files this mail will hand the recipients access to.
+
+    Sending a link is not the same intent as changing who may open the
+    document, and the mailer does the second on its way to doing the first.
+    They belong in the key, or an approval for "mail X about Y" also covers
+    a re-issued call that quietly shares a different document.
+    """
+    return sorted(extract_file_ids(args.get("body", "")))
+
+
 class _Rule:
     def __init__(
         self,
@@ -64,13 +102,35 @@ class _Rule:
         self.on_confirmed = on_confirmed
 
 
+def _shares_note(args: Dict[str, Any]) -> str:
+    """Say out loud which documents the recipients are about to gain access to."""
+    documents = _shared_documents(args)
+    if not documents:
+        return ""
+    who = ", ".join(_recipients(args)) or "primateljima"
+    return (
+        f"; time daješ {who} pristup za čitanje dokumentima: "
+        f"{', '.join(documents)}"
+    )
+
+
 RULES: Dict[str, _Rule] = {
     "gmail_send_message": _Rule(
         when=lambda a: bool(_unknown_recipients(a)),
-        key=lambda a: {"to": sorted(_recipients(a)), "subject": a.get("subject", "")},
+        # Recipients and subject were the whole key, so the same approval
+        # fitted a re-issued call with a different body, a different
+        # attachment, and different documents shared along the way.
+        key=lambda a: {
+            "to": sorted(_recipients(a)),
+            "subject": a.get("subject", ""),
+            "body": _digest(a.get("body", "")),
+            "attachment": _file_digest(a.get("attachment_path", "")),
+            "shares": _shared_documents(a),
+        },
         question=lambda a: (
             f"poslati mail na {', '.join(_unknown_recipients(a))} "
             f"({a.get('subject', 'bez naslova')})"
+            + _shares_note(a)
         ),
         lane="mailer",
         # Confirmed once is known from then on, so the gate narrows to genuinely
@@ -123,6 +183,25 @@ RULES: Dict[str, _Rule] = {
 _holds_this_run: Dict[tuple, int] = {}
 
 
+def _note_confirmation_needed(action: str) -> None:
+    """Tell whoever is tracking this run that it stopped to ask."""
+    try:
+        from services import run_effects
+        run_effects.note_needs_confirmation(action)
+    except Exception:  # never let bookkeeping break the gate
+        logger.debug("Could not record a needed confirmation", exc_info=True)
+
+
+def _record_hold_for_run(action_id: str) -> None:
+    """Every hold counts, not only the autonomous refusal.
+
+    plan-execute reads this to tell "the step is waiting for a person" from
+    "the step is done" — a distinction the answer text cannot carry, because
+    the answer text is written by a model.
+    """
+    _note_confirmation_needed(action_id)
+
+
 def _record_hold(tool_context, action_id: str) -> int:
     # Keyed on the user's session, not the ADK invocation id: the orchestrator
     # calls a worker as a sub-agent, and each of those calls is its own
@@ -140,11 +219,27 @@ def _clear_holds(tool_context, action_id: str) -> None:
     _holds_this_run.pop((approvals.current_session(), action_id), None)
 
 
+def take_holds(session_id: Optional[str] = None) -> list:
+    """Which actions this session was asked about, clearing the count.
+
+    Called once per user message. The ids go to `approvals.on_user_turn`,
+    which is what lets a bare "da" arm the thing the user was actually shown
+    and nothing else.
+
+    Ordered, oldest first: a set loses which question was asked last, and the
+    last one is the one the user is answering.
+    """
+    session = session_id or approvals.current_session()
+    held = []
+    for key in [k for k in _holds_this_run if k[0] == session]:
+        held.append(key[1])
+        del _holds_this_run[key]
+    return held
+
+
 def reset_holds(session_id: Optional[str] = None) -> None:
     """A new user message starts the count over: asking once per turn is fine."""
-    session = session_id or approvals.current_session()
-    for key in [k for k in _holds_this_run if k[0] == session]:
-        del _holds_this_run[key]
+    take_holds(session_id)
 
 
 def gate_enabled() -> bool:
@@ -179,11 +274,28 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
             )
         }
 
+    # The fingerprint is computed before the autonomous branch so both paths
+    # can record WHICH action was held, not just which tool. Two calls of the
+    # same tool with different arguments are different actions.
+    try:
+        action_id = approvals.fingerprint(name, **rule.key(args))
+    except Exception as exc:
+        # Same reasoning as above: without a fingerprint there is nothing to
+        # confirm against, so there is no way to let this through safely.
+        logger.error("Approval key for '%s' failed — refusing the call: %s", name, exc)
+        return {
+            "error": (
+                f"APPROVAL KEY FAILED za '{name}'. Radnja NIJE izvršena. Javi "
+                "korisniku da je sigurnosna provjera pukla."
+            )
+        }
+
     if approvals.is_autonomous():
         # Nobody is listening. Registering here would leave a pending approval
         # that a later "da" in some other channel could arm, and returning
         # "ask the user" would send the model round the loop guard for nothing.
         logger.warning("[APPROVAL] refusing %s in an autonomous run: %s", name, question)
+        _note_confirmation_needed(action_id)
         return {
             "status": "not_permitted",
             "action": name,
@@ -193,19 +305,6 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
                 "posao bez korisnika. Nemoj ponavljati poziv — javi u odgovoru da "
                 "radnja nije izvršena i zašto."
             ),
-        }
-
-    try:
-        action_id = approvals.fingerprint(name, **rule.key(args))
-    except Exception as exc:
-        # Same reasoning: without a fingerprint there is nothing to confirm
-        # against, so there is no way to let this through safely.
-        logger.error("Approval key for '%s' failed — refusing the call: %s", name, exc)
-        return {
-            "error": (
-                f"APPROVAL KEY FAILED za '{name}'. Radnja NIJE izvršena. Javi "
-                "korisniku da je sigurnosna provjera pukla."
-            )
         }
 
     if approvals.redeem(action_id):
@@ -235,6 +334,7 @@ def approval_before_tool(tool=None, args=None, tool_context=None, **_kwargs):
         return None
 
     holds = _record_hold(tool_context, action_id)
+    _record_hold_for_run(action_id)
     logger.info(
         "[APPROVAL] holding %s until the user confirms (attempt %d): %s",
         name, holds, question,

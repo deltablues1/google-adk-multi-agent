@@ -293,17 +293,38 @@ def _norm_slot_time(value: str) -> str:
     return dt.astimezone(_tz.utc).isoformat(timespec="seconds")
 
 
-def _slot_action_id(start_iso: str, end_iso: str) -> str:
+def _norm_attendees(emails) -> list:
+    """Sorted, lower-cased, de-duplicated. The set, not the order it arrived in."""
+    seen = []
+    for email in emails or []:
+        address = str(email).strip().lower()
+        if address and address not in seen:
+            seen.append(address)
+    return sorted(seen)
+
+
+def _slot_action_id(start_iso: str, end_iso: str, attendees=None) -> str:
+    """Identity of "this meeting", not just "this hour".
+
+    Attendees belong in it: approving a slot for one set of people used to
+    redeem a create for the same slot with an entirely different guest list.
+
+    The summary does not, and cannot — at proposal time the user has not said
+    what the meeting is called. Requiring it would mean no proposal ever
+    matched its own creation, and every meeting would fall through to the
+    custom-time path, which turns a real gate into noise.
+    """
     return _approvals.fingerprint(
         "calendar_create_meeting",
         start=_norm_slot_time(start_iso),
         end=_norm_slot_time(end_iso),
+        attendees=_norm_attendees(attendees),
     )
 
 
-def _register_slot(start_iso: str, end_iso: str) -> None:
+def _register_slot(start_iso: str, end_iso: str, attendees=None) -> None:
     _approvals.register(
-        _slot_action_id(start_iso, end_iso),
+        _slot_action_id(start_iso, end_iso, attendees),
         question=f"{start_iso} - {end_iso}",
         arm_mode=_approvals.NEXT_TURN,
         ttl=_approvals.PROPOSAL_TTL_SECONDS,
@@ -311,9 +332,9 @@ def _register_slot(start_iso: str, end_iso: str) -> None:
     )
 
 
-def _register_proposed_slots(slots) -> None:
+def _register_proposed_slots(slots, attendees=None) -> None:
     for start, end in slots:
-        _register_slot(start.isoformat(), end.isoformat())
+        _register_slot(start.isoformat(), end.isoformat(), attendees)
 
 
 def arm_pending_proposals(session_id=None) -> None:
@@ -324,10 +345,10 @@ def arm_pending_proposals(session_id=None) -> None:
     )
 
 
-def _consume_proposed_slot(start_time: str, end_time: str) -> bool:
+def _consume_proposed_slot(start_time: str, end_time: str, attendees=None) -> bool:
     """Consume an ARMED slot (proposed/registered in an earlier turn)."""
     try:
-        action_id = _slot_action_id(start_time, end_time)
+        action_id = _slot_action_id(start_time, end_time, attendees)
     except ValueError:
         return False
     return _approvals.redeem(action_id)
@@ -425,8 +446,9 @@ async def calendar_propose_meeting_slots(
             working_hours=(working_hours_start, working_hours_end),
             tz_name=tz_name,
         )
-        # Only proposed slots may be turned into meetings (create-gate).
-        _register_proposed_slots(slots)
+        # Only proposed slots may be turned into meetings (create-gate), and
+        # only for the people they were proposed for.
+        _register_proposed_slots(slots, attendee_emails)
 
         return {
             "status": "ok",
@@ -483,13 +505,13 @@ async def calendar_create_meeting(
     if creds is None:
         return {"error": "Authentication required"}
 
-    if not _consume_proposed_slot(start_time, end_time):
+    if not _consume_proposed_slot(start_time, end_time, attendee_emails):
         # Not an armed proposed slot. Custom (user-dictated) times go through
         # the same turn gate: register now, demand the user's reply, accept
         # only on the NEXT turn with the explicit flag. The model cannot
         # bypass the gate by setting the flag itself in the same turn.
         try:
-            _register_slot(start_time, end_time)
+            _register_slot(start_time, end_time, attendee_emails)
         except ValueError:
             return {
                 "status": "error",

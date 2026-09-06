@@ -200,7 +200,8 @@ class TestAdkWrappers:
         tz = ZoneInfo("Europe/Zagreb")
         slot = (datetime(2026, 7, 13, 10, 0, tzinfo=tz),
                 datetime(2026, 7, 13, 11, 0, tzinfo=tz))
-        calendar_adk._register_proposed_slots([slot])
+        # Proposed FOR these people: the guest list is part of what was shown.
+        calendar_adk._register_proposed_slots([slot], ["ana@x.com"])
         calendar_adk.arm_pending_proposals()  # user replied in a new turn
 
         result = asyncio.run(calendar_adk.calendar_create_meeting(
@@ -212,6 +213,50 @@ class TestAdkWrappers:
         assert captured["add_meet_link"] is True
         assert captured["send_updates"] == "all"
         assert result["meet_link"]
+
+    def test_the_guest_list_is_part_of_what_was_approved(self, monkeypatch, fake_creds):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        captured = {}
+        calendar_adk = self._fake_create(monkeypatch, fake_creds, captured)
+
+        tz = ZoneInfo("Europe/Zagreb")
+        slot = (datetime(2026, 7, 13, 10, 0, tzinfo=tz),
+                datetime(2026, 7, 13, 11, 0, tzinfo=tz))
+        calendar_adk._register_proposed_slots([slot], ["ana@x.com"])
+        calendar_adk.arm_pending_proposals()
+
+        # Same hour, different people. The key used to be start+end alone, so
+        # approving a slot for Ana also created it for whoever came next.
+        result = asyncio.run(calendar_adk.calendar_create_meeting(
+            "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
+            ["ana@x.com", "sef@konkurencija.com"],
+        ))
+
+        assert result["status"] == "needs_confirmation"
+        assert captured == {}
+
+    def test_the_order_of_the_guest_list_does_not_matter(self, monkeypatch, fake_creds):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        captured = {}
+        calendar_adk = self._fake_create(monkeypatch, fake_creds, captured)
+
+        tz = ZoneInfo("Europe/Zagreb")
+        slot = (datetime(2026, 7, 13, 10, 0, tzinfo=tz),
+                datetime(2026, 7, 13, 11, 0, tzinfo=tz))
+        calendar_adk._register_proposed_slots([slot], ["Ana@x.com", "ivo@x.com"])
+        calendar_adk.arm_pending_proposals()
+
+        result = asyncio.run(calendar_adk.calendar_create_meeting(
+            "Sastanak", "2026-07-13T10:00:00+02:00", "2026-07-13T11:00:00+02:00",
+            ["ivo@x.com", "ana@x.com"],
+        ))
+
+        assert result.get("status") != "needs_confirmation"
+        assert captured["attendees"] == ["ivo@x.com", "ana@x.com"]
 
         # consume-on-use: creating the SAME slot again is gated (no double create)
         repeat = asyncio.run(calendar_adk.calendar_create_meeting(

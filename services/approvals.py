@@ -35,7 +35,7 @@ import os
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,11 @@ _PENDING: Dict[Tuple[str, str], _Pending] = {}
 # model asks its own clarifying question first — measured 2026-09-04, deleting
 # a calendar event took three turns because turn one was spent identifying
 # which event. The consent is real, it just arrived before the attempt.
-_affirmative_turn: Dict[str, bool] = {}
+# session -> action ids a bare "da" may still authorise this turn. It used to
+# be a plain flag, so a yes with nothing pending armed whatever action was
+# registered next — including one the user had never been asked about. Now it
+# carries the ids the gate actually held.
+_affirmative_turn: Dict[str, set] = {}
 
 # What was executed a moment ago, so a repeated "da" cannot run it twice.
 _recently_redeemed: Dict[Tuple[str, str], float] = {}
@@ -111,6 +115,18 @@ def set_session(session_id: Optional[str]) -> None:
 
 def current_session() -> str:
     return _session_var.get()
+
+
+def set_user(user_id: Optional[str]) -> None:
+    """Bind the turn's user, for flows that must name who is being asked."""
+    _user_var.set(user_id or "")
+
+
+def current_user() -> str:
+    return _user_var.get()
+
+
+_user_var: ContextVar[str] = ContextVar("approval_user", default="")
 
 
 def set_autonomous(flag: bool) -> None:
@@ -161,11 +177,13 @@ def register(
     if (
         arm_mode == AFFIRMATIVE
         and allow_same_turn()
-        and _affirmative_turn.get(sess)
+        and action_id in _affirmative_turn.get(sess, ())
         and not _redeemed_recently(sess, action_id)
     ):
         armed_now = True
-        _affirmative_turn[sess] = False
+        # Spent. Not "one fewer": the whole bank goes, so a second attempt in
+        # the same turn has to be asked about again.
+        _affirmative_turn.pop(sess, None)
         logger.info("Approval armed by this turn's confirmation: %s", action_id)
 
     _PENDING[(sess, action_id)] = _Pending(
@@ -197,13 +215,23 @@ def _live(session_id: str, now: float):
     return [e for (s, _), e in _PENDING.items() if s == session_id and not e.expired(now)]
 
 
-def on_user_turn(session_id: Optional[str], *, affirmative: bool) -> Optional[str]:
+def on_user_turn(
+    session_id: Optional[str],
+    *,
+    affirmative: bool,
+    held_actions: Iterable[str] = (),
+) -> Optional[str]:
     """A new user message arrived. Returns the action_id armed by a yes, if any.
 
     Slot-style proposals arm on any turn — the user answers them by choosing.
     Yes/no approvals arm only on an actual yes, and only the newest: two
     questions pending and one "da" must authorise one of them, not both.
     A non-yes drops them, so "ne" and a change of subject both cancel.
+
+    `held_actions` are the actions the gate stopped to ask about last turn.
+    A "da" with nothing pending is banked only for those. Before this, it was
+    banked for whatever action happened to be registered next, so a yes meant
+    for one thing could authorise something the user was never shown.
     """
     sess = _norm(session_id)
     now = time.monotonic()
@@ -213,7 +241,16 @@ def on_user_turn(session_id: Optional[str], *, affirmative: bool) -> Optional[st
     had_affirmative_pending = any(
         e.arm_mode == AFFIRMATIVE for e in _live(sess, now)
     )
-    _affirmative_turn[sess] = bool(affirmative) and not had_affirmative_pending
+    # Banked only when the yes has nothing pending to arm directly, and only
+    # for the LAST thing the gate asked about. Keeping the whole set meant one
+    # "da" could redeem two of them, because register() removed only the id it
+    # had just used. One answer, one action — and the newest is the one the
+    # user was looking at, the same rule the pending branch below uses.
+    asked = [a for a in held_actions if a]
+    if affirmative and not had_affirmative_pending and asked:
+        _affirmative_turn[sess] = {asked[-1]}
+    else:
+        _affirmative_turn.pop(sess, None)
 
     for entry in _live(sess, now):
         if entry.arm_mode == NEXT_TURN:
